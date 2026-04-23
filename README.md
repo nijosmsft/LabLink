@@ -88,66 +88,36 @@ The script issues a node-specific server certificate, deploys `LabLinkAgent.exe`
 
 You'll be prompted for the node's WinRM credentials if you don't pass `-Credential`.
 
-#### No WinRM? Bootstrap a node manually
+#### No WinRM? Build a hand-carry install package
 
-If WinRM is disabled, blocked, or you simply prefer to touch the node by hand (RDP, console, USB stick), you can do everything `bootstrap-windows-node.ps1` does over WinRM yourself. The operator-side steps still rely on the bundled binaries; the node-side steps run on the lab machine itself.
-
-**On the operator** — issue a server certificate for the node:
+If WinRM is disabled, blocked, or you'd rather not give the operator a credential on the node, run the same bootstrap with `-Manual`:
 
 ```powershell
-$node    = 'lab-node-3'                # used for the cert SAN and nodes.json key
-$pki     = "$HOME\.lablink\pki"
-$srvDir  = "$pki\issued\servers\$node"
-New-Item -ItemType Directory -Path $srvDir -Force | Out-Null
-
-# 1. Generate a CSR + private key for the node.
-.\bin\LabLinkAgent.exe --generate-server-csr `
-    --tls-server-name $node `
-    --csr-out "$srvDir\server.csr" `
-    --key-out "$srvDir\server.key"
-
-# 2. Sign it with the local LabLink CA (created by bootstrap-operator.ps1).
-.\bin\lablink-ca.exe sign-server-csr `
-    -pki-dir $pki `
-    -csr     "$srvDir\server.csr" `
-    -cert-out "$srvDir\server.crt"
+.\scripts\bootstrap-windows-node.ps1 -Manual -Machine lab-node-3,lab-node-4 -Role client
 ```
 
-You now have four files to hand-carry to the node:
+This delegates to `scripts\build-manual-package.ps1`, which (per machine):
 
-| File | Where it goes on the node |
-|------|---------------------------|
-| `bin\LabLinkAgent.exe`                                      | `C:\LabLink\LabLinkAgent.exe` |
-| `~\.lablink\pki\ca-bundle\ca.crt`                           | `C:\LabLink\tls\ca.crt`       |
-| `~\.lablink\pki\issued\servers\<node>\server.crt`           | `C:\LabLink\tls\server.crt`   |
-| `~\.lablink\pki\issued\servers\<node>\server.key`           | `C:\LabLink\tls\server.key`   |
-| `~\.lablink\agent.token` (the contents, not the path)       | written via `install-agent.ps1` below |
+- issues a server certificate signed by your local LabLink CA,
+- assembles `~\.lablink\manual\<node>\` with `LabLinkAgent.exe`, `install.ps1`, the CA bundle, the server cert + key, the auth token, and a `metadata.json` describing the node,
+- zips it to `~\.lablink\manual\lablink-<node>.zip`, and
+- pre-registers the node in `~\.lablink\nodes.json` so the MCP server recognizes it as soon as the agent comes up.
 
-Also copy `scripts\install-agent.ps1` (or the whole `scripts\` folder) onto the node so you can run it locally.
-
-**On the node** — open an elevated PowerShell:
+Hand the zip to the owner of the remote machine. They extract it and, from an elevated PowerShell:
 
 ```powershell
-# Paste the operator's token value here. Get it from:  Get-Content $HOME\.lablink\agent.token
-$token = 'paste-the-token-here'
-
-C:\LabLink\scripts\install-agent.ps1 `
-    -AgentDir  C:\LabLink `
-    -Token     $token `
-    -Port      9091 `
-    -Transport mtls `
-    -TlsCA     C:\LabLink\tls\ca.crt `
-    -TlsCert   C:\LabLink\tls\server.crt `
-    -TlsKey    C:\LabLink\tls\server.key
+.\install.ps1
 ```
 
-`install-agent.ps1` writes the token to a locked-down file, installs the **LabLink Agent** Windows service, opens the firewall on `-Port`, and starts the service. Confirm with:
+That's the entire node-side procedure. `install.ps1` mirrors the bundled files into `C:\LabLink`, locks down the token + private key, installs the **LabLink Agent** Windows service, opens the firewall, starts it, and (by default) deletes the bundled token + key copies. Override `-AgentDir` or `-Port` if needed.
+
+You can also call the package builder directly without going through `bootstrap-windows-node.ps1`:
 
 ```powershell
-Get-Service 'LabLink Agent'
+.\scripts\build-manual-package.ps1 -Machine lab-node-3 -Role server -OutDir C:\handoff
 ```
 
-**Back on the operator** — verify connectivity and register the node:
+Once the remote owner reports success, verify from the operator:
 
 ```powershell
 $env:LABLINK_TRANSPORT        = 'mtls'
@@ -160,23 +130,7 @@ $env:LABLINK_TLS_SERVER_NAME  = 'lab-node-3'
 .\bin\LabLinkProbe.exe 10.0.0.23:9091
 ```
 
-A successful probe ends with `Probe OK`. Once it does, add the node to `~\.lablink\nodes.json` (create the file if it doesn't exist):
-
-```json
-{
-  "nodes": {
-    "lab-node-3": {
-      "name": "lab-node-3",
-      "address": "10.0.0.23:9091",
-      "role": "server",
-      "transport_mode": "mtls",
-      "tls_server_name": "lab-node-3"
-    }
-  }
-}
-```
-
-That's it — your AI client will see `lab-node-3` the next time the LabLink MCP server starts.
+A successful probe ends with `Probe OK`. The `nodes.json` entry is already in place; your AI client will see the node the next time the LabLink MCP server starts.
 
 ### 4. Wire LabLink into your AI client
 

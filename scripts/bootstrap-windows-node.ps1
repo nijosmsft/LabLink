@@ -63,7 +63,15 @@ param(
 
     [switch]$RotateToken,
 
-    [switch]$SkipRegister
+    [switch]$SkipRegister,
+
+    # When set, do NOT touch WinRM. Instead build a hand-carry install
+    # package per machine (delegates to build-manual-package.ps1).
+    [switch]$Manual,
+
+    [string]$ManualOutDir,
+
+    [switch]$ManualNoZip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,6 +100,40 @@ function Test-AlignedList {
 Test-AlignedList 'IPv4Address'   $IPv4Address   $Machine.Count
 Test-AlignedList 'NodeName'      $NodeName      $Machine.Count
 Test-AlignedList 'TlsServerName' $TlsServerName $Machine.Count
+
+# In manual mode we hand off entirely to build-manual-package.ps1: no WinRM
+# credential, no remote deploy, no probe. The package builder reuses the same
+# operator bootstrap, signs server certs from the same PKI, and writes to the
+# same nodes.json so the experience converges with the WinRM path once the
+# remote owner runs install.ps1.
+if ($Manual) {
+    $builder = Join-Path $PSScriptRoot 'build-manual-package.ps1'
+    if (-not (Test-Path $builder)) {
+        throw "Required file not found: $builder"
+    }
+    $builderArgs = @{
+        Machine    = $Machine
+        Role       = $Role
+        Port       = $Port
+        HomeDir    = $HomeDir
+        PkiDir     = $PkiDir
+        ClientName = $ClientName
+        TokenFile  = $TokenFile
+        NodesFile  = $NodesFile
+        AgentBinary = $AgentBinary
+        CaBinary    = $CaBinary
+    }
+    if ($IPv4Address)   { $builderArgs.IPv4Address   = $IPv4Address }
+    if ($NodeName)      { $builderArgs.NodeName      = $NodeName }
+    if ($TlsServerName) { $builderArgs.TlsServerName = $TlsServerName }
+    if ($ManualOutDir)  { $builderArgs.OutDir        = $ManualOutDir }
+    if ($RotateServerCert) { $builderArgs.RotateServerCert = $true }
+    if ($RotateToken)      { $builderArgs.RotateToken      = $true }
+    if ($SkipRegister)     { $builderArgs.NoRegister       = $true }
+    if ($ManualNoZip)      { $builderArgs.NoZip            = $true }
+    & $builder @builderArgs
+    exit $LASTEXITCODE
+}
 
 if (-not $Credential) {
     $msg = if ($Machine.Count -eq 1) {
