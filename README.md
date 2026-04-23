@@ -31,7 +31,7 @@ Typical things an AI client can ask LabLink to do:
 You'll need:
 
 - A Windows operator machine.
-- One or more Windows lab nodes reachable over WinRM (for the initial deploy).
+- One or more Windows lab nodes. WinRM isn't mandatory, but having it enabled lets the bootstrap script deploy in a single command — the [No WinRM?](#no-winrm-build-a-hand-carry-install-package) flow below covers nodes where it's blocked.
 - PowerShell 5+ on both sides.
 
 ### 1. Download the latest release
@@ -158,15 +158,15 @@ That's it. Restart your AI client and ask it to `list_nodes`.
 
 ## The local operations portal
 
-When `LabLinkServer.exe` starts it also serves a tiny web UI on a random `127.0.0.1` port that lists every long-running operation (`execute_command`, `execute_script`, `push_file`, `pull_file`) and lets you cancel any of them. The bookmarkable URL — including a per-process access key — is printed on startup:
+When `LabLinkServer.exe` starts it also serves a tiny web UI on a random `127.0.0.1` port that lists every long-running operation (`execute_command`, `execute_script`, `push_file`, `pull_file`) and lets you cancel any of them. The bookmarkable URL — including a per-process access key — looks like:
 
 ```
-LabLink portal: http://127.0.0.1:49869/?k=3c76da1b807c58bd390d7cf028307d06
+http://127.0.0.1:49869/?k=3c76da1b807c58bd390d7cf028307d06
 ```
+
+When the server runs as an MCP child of an AI client, its stderr is usually swallowed, so just ask the AI client — e.g. *"what is the portal url?"* — and it will call the `get_portal_url` tool to hand it back. (When you launch `LabLinkServer.exe` directly, the same URL is logged on startup.)
 
 Open it in any browser on the operator machine. Updates stream live over Server-Sent Events. The portal binds **only** to loopback and rejects requests without the access key.
-
-If you missed the startup log line, just ask the AI client — e.g. *"what is the portal url?"* — and it will call the `get_portal_url` tool to hand it back.
 
 This first version is **per-process**: each AI client spawns its own `LabLinkServer.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
 
