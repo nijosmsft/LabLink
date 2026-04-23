@@ -109,6 +109,7 @@ func main() {
 		if err != nil {
 			log.Printf("LabLink portal disabled: %v", err)
 		} else {
+			mcptools.SetPortalURL(p.URL())
 			log.Printf("LabLink portal: %s", p.URL())
 		}
 	}
@@ -147,6 +148,7 @@ Use export_nodes / import_nodes to save/restore the node registry as YAML.`),
 	mcptools.RegisterPackage(s, reg, pool)
 	patchCfg := mcptools.NewPatchConfig(configDir)
 	mcptools.RegisterPatch(s, reg, pool, auditLog, patchCfg)
+	mcptools.RegisterPortal(s)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

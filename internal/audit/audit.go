@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nijosmsft/lablink/internal/flock"
 )
 
 const (
@@ -29,6 +31,11 @@ type Entry struct {
 }
 
 // Log is an append-only audit logger.
+//
+// The in-process mutex serialises writers within one LabLinkServer process;
+// the OS-level lock on a sidecar file serialises across processes so that
+// rotation (rename of history.jsonl -> history.1.jsonl) and concurrent
+// appends from a sibling LabLinkServer cannot interleave or lose lines.
 type Log struct {
 	mu      sync.Mutex
 	dirPath string
@@ -43,6 +50,10 @@ func (l *Log) logPath() string {
 	return filepath.Join(l.dirPath, logFileName)
 }
 
+func (l *Log) lockPath() string {
+	return filepath.Join(l.dirPath, logFileName+".lock")
+}
+
 // Append writes an entry to the audit log.
 func (l *Log) Append(e Entry) error {
 	l.mu.Lock()
@@ -52,7 +63,12 @@ func (l *Log) Append(e Entry) error {
 		return err
 	}
 
-	// Rotate if needed.
+	lk, err := flock.Lock(l.lockPath())
+	if err != nil {
+		return fmt.Errorf("acquire audit lock: %w", err)
+	}
+	defer lk.Close()
+
 	if info, err := os.Stat(l.logPath()); err == nil && info.Size() > maxLogSize {
 		rotated := filepath.Join(l.dirPath, "history.1.jsonl")
 		os.Remove(rotated)
@@ -78,6 +94,13 @@ func (l *Log) Append(e Entry) error {
 func (l *Log) Query(node string, commandFilter string, lastN int) ([]Entry, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	// Take the cross-process lock to ensure we don't read mid-rotation
+	// (rename + new append from a sibling process). It's fine if the lock
+	// can't be created (e.g. dir missing) — we just attempt the read.
+	if lk, err := flock.Lock(l.lockPath()); err == nil {
+		defer lk.Close()
+	}
 
 	data, err := os.ReadFile(l.logPath())
 	if err != nil {

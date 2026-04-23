@@ -166,6 +166,8 @@ LabLink portal: http://127.0.0.1:49869/?k=3c76da1b807c58bd390d7cf028307d06
 
 Open it in any browser on the operator machine. Updates stream live over Server-Sent Events. The portal binds **only** to loopback and rejects requests without the access key.
 
+If you missed the startup log line, just ask the AI client — e.g. *"what is the portal url?"* — and it will call the `get_portal_url` tool to hand it back.
+
 This first version is **per-process**: each AI client spawns its own `LabLinkServer.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
 
 To turn it off, set `LABLINK_PORTAL=disabled`. To pin it to a fixed port for bookmarking, set `LABLINK_PORTAL_ADDR=127.0.0.1:9092`.
@@ -214,6 +216,7 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 | `get_crash_dumps` | List and optionally pull crash dumps from `Minidump` and `MEMORY.DMP`. |
 | `enable_kd` / `disable_kd` / `get_kd_status` | Configure network kernel debugging on a remote VM. |
 | `get_history` | Query the local audit log of past commands. |
+| `get_portal_url` | Return the bookmarkable URL of the local operations portal (loopback + per-process key). |
 
 ### Patching and lifecycle
 | Tool | What it does |
@@ -253,6 +256,54 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 .\bin\lablink-ca.exe issue-client   -pki-dir C:\lablink-pki -name operator
 .\bin\lablink-ca.exe sign-server-csr -pki-dir C:\lablink-pki -csr <path>
 ```
+
+## Running multiple LabLink instances
+
+Everything `LabLinkServer.exe` reads or writes — `nodes.json`, `history.jsonl`, `credentials.json`, `cache/`, `pki/` — lives under a single config directory. By default that's `~/.lablink`, but you can point any installation at a different one with `LABLINK_HOME`. This lets one operator machine run several isolated LabLink "worlds" side by side: separate PKI roots, separate node inventories, separate audit logs, separate AI-client sessions.
+
+Two common reasons to do this:
+
+- **Isolating environments.** Keep `prod` and `lab` nodes in different homes so a bad command in one can't reach the other.
+- **Per-session scratch.** Spin up a throwaway home for an experiment without touching your main inventory.
+
+The bootstrap scripts already accept a `-HomeDir` parameter — pass the same alternate path everywhere:
+
+```powershell
+# 1. Initialise the alternate operator home (creates PKI + the operator client cert).
+.\bootstrap-operator.ps1 -HomeDir C:\Users\nijos\.lablink-prod
+
+# 2. Onboard a node into THAT home (its TLS material is signed by that home's CA
+#    and its entry lands in C:\Users\nijos\.lablink-prod\nodes.json).
+.\bootstrap-windows-node.ps1 `
+    -HomeDir C:\Users\nijos\.lablink-prod `
+    -Machine 10.0.0.10 -Node prod-server-01 -Role server
+
+# 3. Manual install package, same idea — the package the operator hands to the
+#    remote installer is also tied to that home's CA.
+.\bootstrap-windows-node.ps1 -Manual `
+    -HomeDir C:\Users\nijos\.lablink-prod `
+    -Machine 10.0.0.11 -Node prod-server-02 -Role server
+```
+
+Then add a matching MCP server entry that points `LABLINK_HOME` at the same directory:
+
+```jsonc
+"lablink-prod": {
+  "command": "C:\\Users\\nijos\\MCP\\lablink\\bin\\LabLinkServer.exe",
+  "env": {
+    "LABLINK_HOME":            "C:\\Users\\nijos\\.lablink-prod",
+    "LABLINK_TRANSPORT":       "mtls",
+    "LABLINK_TLS_CA":          "C:\\Users\\nijos\\.lablink-prod\\pki\\ca-bundle\\ca.crt",
+    "LABLINK_TLS_CERT":        "C:\\Users\\nijos\\.lablink-prod\\pki\\clients\\default\\client.crt",
+    "LABLINK_TLS_KEY":         "C:\\Users\\nijos\\.lablink-prod\\pki\\clients\\default\\client.key",
+    "LABLINK_AGENT_TOKEN_FILE":"C:\\Users\\nijos\\.lablink-prod\\agent.token"
+  }
+}
+```
+
+You can register as many `lablink-*` entries as you want; each gets its own portal, its own audit log, and its own slice of the agent fleet.
+
+**Sharing one home across processes.** If two AI clients both use the *same* `LABLINK_HOME` (the default setup), that's fine too — `nodes.json` and `history.jsonl` are protected by an OS-level advisory lock and atomic rename, so concurrent `register_node` / context updates / audit writes from sibling `LabLinkServer.exe` instances stay consistent.
 
 ## Configuration reference
 
