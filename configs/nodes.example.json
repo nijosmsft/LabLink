@@ -1,0 +1,40 @@
+{
+  "nodes": {
+    "server-25": {
+      "name": "server-25",
+      "address": "10.100.0.25:9091",
+      "transport_mode": "mtls",
+      "tls_server_name": "server-25.lablink",
+      "role": "server",
+      "os": "windows",
+      "arch": "amd64",
+      "cpu_count": 80,
+      "memory_bytes": 137438953472
+    },
+    "client-26": {
+      "name": "client-26",
+      "address": "10.100.0.26:9091",
+      "transport_mode": "mtls",
+      "tls_server_name": "client-26.lablink",
+      "role": "client",
+      "os": "windows",
+      "arch": "amd64",
+      "cpu_count": 80,
+      "memory_bytes": 137438953472
+    }
+  },
+  "topologies": {
+    "perf-lab": {
+      "name": "perf-lab",
+      "roles": {
+        "server": ["server-25"],
+        "client": ["client-26"]
+      }
+    }
+  },
+  "node_contexts": {
+    "server-25": {
+      "working_dir": "C:\\xdp-test"
+    }
+  }
+}

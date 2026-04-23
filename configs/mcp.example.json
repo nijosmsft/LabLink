@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "lablink": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\LabLinkServer.exe",
+      "args": [],
+      "env": {
+        "LABLINK_AGENT_TOKEN_FILE": "C:\\Users\\you\\.lablink\\agent.token",
+        "LABLINK_TRANSPORT": "mtls",
+        "LABLINK_TLS_CA": "C:\\Users\\you\\.lablink\\pki\\ca-bundle\\ca.crt",
+        "LABLINK_TLS_CERT": "C:\\Users\\you\\.lablink\\pki\\clients\\default\\client.crt",
+        "LABLINK_TLS_KEY": "C:\\Users\\you\\.lablink\\pki\\clients\\default\\client.key"
+      }
+    }
+  }
+}

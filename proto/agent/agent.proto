@@ -1,0 +1,114 @@
+syntax = "proto3";
+package agent;
+option go_package = "github.com/nijosmsft/lablink/proto/agent";
+
+service NodeAgent {
+  // Execute a command and stream stdout/stderr back in real-time.
+  rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
+
+  // Execute an inline script (pushed as temp file, executed, cleaned up).
+  rpc ExecuteScript(ExecuteScriptRequest) returns (stream ExecuteResponse);
+
+  // Push a file from MCP server to the agent node.
+  rpc PushFile(stream PushFileRequest) returns (PushFileResponse);
+
+  // Pull a file from the agent node to the MCP server.
+  rpc PullFile(PullFileRequest) returns (stream PullFileResponse);
+
+  // List running processes.
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+
+  // Kill a process by PID.
+  rpc KillProcess(KillProcessRequest) returns (KillProcessResponse);
+
+  // Health check and node metadata.
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+}
+
+message ExecuteRequest {
+  string command = 1;
+  string shell = 2;             // "powershell", "cmd", "bash" (auto-detect if empty)
+  string working_dir = 3;
+  map<string, string> env = 4;
+  int32 timeout_seconds = 5;    // 0 = no timeout
+  bool detach = 6;              // Start detached (survives agent restart)
+}
+
+message ExecuteScriptRequest {
+  string script_body = 1;       // Inline script content
+  string shell = 2;             // "powershell", "bash" (auto-detect if empty)
+  string working_dir = 3;
+  map<string, string> env = 4;
+  int32 timeout_seconds = 5;
+  repeated string args = 6;     // Script arguments
+}
+
+message ExecuteResponse {
+  enum Stream {
+    STDOUT = 0;
+    STDERR = 1;
+  }
+  Stream stream = 1;
+  bytes data = 2;
+  bool done = 3;
+  int32 exit_code = 4;          // Valid when done=true
+  int32 pid = 5;                // PID of spawned process (sent in first message)
+}
+
+message PushFileRequest {
+  string remote_path = 1;       // Destination path on the agent node
+  bytes chunk = 2;              // File data chunk (64KB)
+  bool is_last = 3;             // True for the final chunk
+  int64 file_size = 4;          // Total size (sent in first message, 0 if unknown)
+}
+
+message PushFileResponse {
+  int64 bytes_written = 1;
+  string remote_path = 2;
+}
+
+message PullFileRequest {
+  string remote_path = 1;       // File path on the agent node
+}
+
+message PullFileResponse {
+  bytes chunk = 1;              // File data chunk
+  int64 total_size = 2;         // Total file size (sent in first message)
+}
+
+message ListProcessesRequest {
+  string name_filter = 1;       // Optional substring filter on process name
+}
+
+message ListProcessesResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message ProcessInfo {
+  int32 pid = 1;
+  string name = 2;
+  string command_line = 3;
+  int64 memory_bytes = 4;
+  double cpu_percent = 5;
+}
+
+message KillProcessRequest {
+  int32 pid = 1;
+  bool force = 2;               // SIGKILL / TerminateProcess
+}
+
+message KillProcessResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetInfoRequest {}
+
+message GetInfoResponse {
+  string hostname = 1;
+  string os = 2;                // "windows" or "linux"
+  string arch = 3;              // "amd64", "arm64"
+  int32 cpu_count = 4;
+  int64 memory_bytes = 5;
+  string agent_version = 6;
+}

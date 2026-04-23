@@ -1,0 +1,60 @@
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.1.0). Required for manual runs.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build & publish release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $env:GITHUB_REF.Substring('refs/tags/'.Length)
+          } else {
+            '${{ inputs.version }}'
+          }
+          if (-not $v) { throw 'no version resolved' }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: .\scripts\build-release.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      - name: Upload artifacts (workflow run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lablink-${{ steps.ver.outputs.version }}
+          path: release/*
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.ver.outputs.version }}
+          tag_name: ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            release/lablink-*-windows-amd64.zip
+            release/lablink-*-linux-amd64.zip
+            release/SHA256SUMS.txt

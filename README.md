@@ -1,0 +1,343 @@
+# LabLink
+
+**Give your AI assistant secure remote-hands on a fleet of Windows lab machines.**
+
+LabLink is an [MCP](https://modelcontextprotocol.io) server plus a lightweight node agent. Once installed, an MCP-aware AI client (Claude Desktop, Copilot CLI, Cursor, etc.) can run commands, move files, inspect processes, and orchestrate work across many lab machines — over mutually-authenticated TLS, with a shared auth token.
+
+```
+┌──────────────────┐       MCP / stdio       ┌──────────────────┐    mTLS + token    ┌──────────────────┐
+│   AI client      │ ──────────────────────▶ │  LabLinkServer   │ ─────────────────▶ │  LabLinkAgent    │
+│ (Claude, etc.)   │                         │   (operator)     │                    │  (each node)     │
+└──────────────────┘                         └──────────────────┘                    └──────────────────┘
+```
+
+Typical things an AI client can ask LabLink to do:
+
+- "Run `ipconfig /all` on `lab-node-3` and summarize the output."
+- "Push this build artifact to all nodes in the `clients` role and start the test."
+- "Tail the last 200 lines of `C:\logs\app.log` on the server node."
+- "List every node where `echo_server.exe` is currently running and kill it."
+
+## Why LabLink?
+
+- **One config in your AI client** → access to many remote machines.
+- **mTLS by default**, with a shared bearer token for application-level auth.
+- **No SSH, no RDP, no opening WinRM to your AI** — only a single gRPC port (default `9091`) per node.
+- **Bootstrap scripts** generate the PKI, the token, and the MCP config snippet for you.
+- **Pure Go**, no external runtimes on the nodes.
+
+## Get started in ~5 minutes
+
+You'll need:
+
+- A Windows operator machine.
+- One or more Windows lab nodes reachable over WinRM (for the initial deploy).
+- PowerShell 5+ on both sides.
+
+### 1. Download the latest release
+
+Grab `lablink-vX.Y.Z-windows-amd64.zip` from the [Releases page](https://github.com/nijosmsft/LabLink/releases/latest), verify it against `SHA256SUMS.txt`, and extract:
+
+```powershell
+$ver = 'v0.1.0'  # or whatever the latest tag is
+Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/lablink-$ver-windows-amd64.zip" -OutFile lablink.zip
+Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/SHA256SUMS.txt"               -OutFile SHA256SUMS.txt
+$expected = (Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").ToString().Split(' ')[0]
+$actual   = (Get-FileHash lablink.zip -Algorithm SHA256).Hash.ToLower()
+if ($expected -ne $actual) { throw 'checksum mismatch' }
+Expand-Archive lablink.zip -DestinationPath C:\LabLink
+cd C:\LabLink
+```
+
+The archive contains:
+
+| Path | Where it runs | Purpose |
+|------|---------------|---------|
+| `bin\LabLinkServer.exe` | Operator | The MCP server your AI client launches over stdio. |
+| `bin\LabLinkAgent.exe`  | Each node | gRPC agent that executes the work. |
+| `bin\LabLinkProbe.exe`  | Operator | Smoke-test a node from the command line. |
+| `bin\lablink-ca.exe`    | Operator | Local certificate authority used by the bootstrap scripts. |
+| `scripts\*.ps1`         | Operator | Bootstrap and deployment scripts. |
+| `configs\mcp.example.json` | Operator | Template for your AI client's `.mcp.json`. |
+
+> **Building from source instead?** See [Build from source](#build-from-source) at the bottom.
+
+### 2. Bootstrap your operator machine (one time)
+
+```powershell
+.\scripts\bootstrap-operator.ps1
+```
+
+This creates a local PKI, an operator client certificate, an auth token, and a ready-to-paste MCP snippet under `~\.lablink\`.
+
+### 3. Bootstrap each Windows node
+
+```powershell
+.\scripts\bootstrap-windows-node.ps1 -Machine lab-node-3 -Role server
+```
+
+You can also pass several machines at once. They share the same WinRM credential and run sequentially; one failure does not stop the rest:
+
+```powershell
+.\scripts\bootstrap-windows-node.ps1 -Machine lab-node-3,lab-node-4,lab-node-5 -Role server
+```
+
+If a machine name resolves over DNS the IPv4 address is auto-detected; otherwise pass them positionally with `-IPv4Address 10.0.0.23,10.0.0.24,10.0.0.25`.
+
+The script issues a node-specific server certificate, deploys `LabLinkAgent.exe` over WinRM, installs the **LabLink Agent** Windows service, opens the firewall port, verifies the node with `LabLinkProbe.exe`, and registers it in `~\.lablink\nodes.json`.
+
+You'll be prompted for the node's WinRM credentials if you don't pass `-Credential`.
+
+#### No WinRM? Bootstrap a node manually
+
+If WinRM is disabled, blocked, or you simply prefer to touch the node by hand (RDP, console, USB stick), you can do everything `bootstrap-windows-node.ps1` does over WinRM yourself. The operator-side steps still rely on the bundled binaries; the node-side steps run on the lab machine itself.
+
+**On the operator** — issue a server certificate for the node:
+
+```powershell
+$node    = 'lab-node-3'                # used for the cert SAN and nodes.json key
+$pki     = "$HOME\.lablink\pki"
+$srvDir  = "$pki\issued\servers\$node"
+New-Item -ItemType Directory -Path $srvDir -Force | Out-Null
+
+# 1. Generate a CSR + private key for the node.
+.\bin\LabLinkAgent.exe --generate-server-csr `
+    --tls-server-name $node `
+    --csr-out "$srvDir\server.csr" `
+    --key-out "$srvDir\server.key"
+
+# 2. Sign it with the local LabLink CA (created by bootstrap-operator.ps1).
+.\bin\lablink-ca.exe sign-server-csr `
+    -pki-dir $pki `
+    -csr     "$srvDir\server.csr" `
+    -cert-out "$srvDir\server.crt"
+```
+
+You now have four files to hand-carry to the node:
+
+| File | Where it goes on the node |
+|------|---------------------------|
+| `bin\LabLinkAgent.exe`                                      | `C:\LabLink\LabLinkAgent.exe` |
+| `~\.lablink\pki\ca-bundle\ca.crt`                           | `C:\LabLink\tls\ca.crt`       |
+| `~\.lablink\pki\issued\servers\<node>\server.crt`           | `C:\LabLink\tls\server.crt`   |
+| `~\.lablink\pki\issued\servers\<node>\server.key`           | `C:\LabLink\tls\server.key`   |
+| `~\.lablink\agent.token` (the contents, not the path)       | written via `install-agent.ps1` below |
+
+Also copy `scripts\install-agent.ps1` (or the whole `scripts\` folder) onto the node so you can run it locally.
+
+**On the node** — open an elevated PowerShell:
+
+```powershell
+# Paste the operator's token value here. Get it from:  Get-Content $HOME\.lablink\agent.token
+$token = 'paste-the-token-here'
+
+C:\LabLink\scripts\install-agent.ps1 `
+    -AgentDir  C:\LabLink `
+    -Token     $token `
+    -Port      9091 `
+    -Transport mtls `
+    -TlsCA     C:\LabLink\tls\ca.crt `
+    -TlsCert   C:\LabLink\tls\server.crt `
+    -TlsKey    C:\LabLink\tls\server.key
+```
+
+`install-agent.ps1` writes the token to a locked-down file, installs the **LabLink Agent** Windows service, opens the firewall on `-Port`, and starts the service. Confirm with:
+
+```powershell
+Get-Service 'LabLink Agent'
+```
+
+**Back on the operator** — verify connectivity and register the node:
+
+```powershell
+$env:LABLINK_TRANSPORT        = 'mtls'
+$env:LABLINK_AGENT_TOKEN_FILE = "$HOME\.lablink\agent.token"
+$env:LABLINK_TLS_CA           = "$HOME\.lablink\pki\ca-bundle\ca.crt"
+$env:LABLINK_TLS_CERT         = "$HOME\.lablink\pki\clients\default\client.crt"
+$env:LABLINK_TLS_KEY          = "$HOME\.lablink\pki\clients\default\client.key"
+$env:LABLINK_TLS_SERVER_NAME  = 'lab-node-3'
+
+.\bin\LabLinkProbe.exe 10.0.0.23:9091
+```
+
+A successful probe ends with `Probe OK`. Once it does, add the node to `~\.lablink\nodes.json` (create the file if it doesn't exist):
+
+```json
+{
+  "nodes": {
+    "lab-node-3": {
+      "name": "lab-node-3",
+      "address": "10.0.0.23:9091",
+      "role": "server",
+      "transport_mode": "mtls",
+      "tls_server_name": "lab-node-3"
+    }
+  }
+}
+```
+
+That's it — your AI client will see `lab-node-3` the next time the LabLink MCP server starts.
+
+### 4. Wire LabLink into your AI client
+
+Open `~\.lablink\mcp.example.json` (generated in step 2) and merge it into your AI client's MCP config — for example, `~\.cursor\mcp.json` or `claude_desktop_config.json`. The snippet looks like this:
+
+```json
+{
+  "mcpServers": {
+    "lablink": {
+      "command": "C:\\path\\to\\LabLinkServer.exe",
+      "args": [],
+      "env": {
+        "LABLINK_TRANSPORT": "mtls",
+        "LABLINK_AGENT_TOKEN_FILE": "C:\\Users\\you\\.lablink\\agent.token",
+        "LABLINK_TLS_CA":   "C:\\Users\\you\\.lablink\\pki\\ca-bundle\\ca.crt",
+        "LABLINK_TLS_CERT": "C:\\Users\\you\\.lablink\\pki\\clients\\default\\client.crt",
+        "LABLINK_TLS_KEY":  "C:\\Users\\you\\.lablink\\pki\\clients\\default\\client.key"
+      }
+    }
+  }
+}
+```
+
+That's it. Restart your AI client and ask it to `list_nodes`.
+
+## The local operations portal
+
+When `LabLinkServer.exe` starts it also serves a tiny web UI on a random `127.0.0.1` port that lists every long-running operation (`execute_command`, `execute_script`, `push_file`, `pull_file`) and lets you cancel any of them. The bookmarkable URL — including a per-process access key — is printed on startup:
+
+```
+LabLink portal: http://127.0.0.1:49869/?k=3c76da1b807c58bd390d7cf028307d06
+```
+
+Open it in any browser on the operator machine. Updates stream live over Server-Sent Events. The portal binds **only** to loopback and rejects requests without the access key.
+
+This first version is **per-process**: each AI client spawns its own `LabLinkServer.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
+
+To turn it off, set `LABLINK_PORTAL=disabled`. To pin it to a fixed port for bookmarking, set `LABLINK_PORTAL_ADDR=127.0.0.1:9092`.
+
+## What the AI client can do
+
+LabLink exposes the following MCP tools. Names are stable; argument schemas are described in the tool's own `description` field that AI clients see at startup.
+
+### Inventory and topology
+| Tool | What it does |
+|------|--------------|
+| `register_node` | Register a node in the inventory. Probes the agent for OS, CPU, and memory. |
+| `list_nodes` | List registered nodes with status and metadata. |
+| `remove_node` | Remove a node from the registry. |
+| `rename_node` | Rename a node, preserving context and topology references. |
+| `register_topology` | Define a named group of nodes with role assignments (e.g. `server`, `client`). |
+| `set_node_context` | Persist a default working directory and environment for a node. |
+| `import_nodes` / `export_nodes` | Round-trip the registry to a YAML file. |
+
+### Execution
+| Tool | What it does |
+|------|--------------|
+| `execute_command` | Run a shell command on a node. |
+| `execute_script` | Push an inline script and execute it atomically. |
+| `execute_on_role` | Run the same command on every node with a given role, in parallel. |
+| `run_script_on_role` | Run the same inline script on every node with a given role, in parallel. |
+| `schedule_command` | Run a command after a delay (useful for synchronized starts). |
+| `list_processes` / `kill_process` | Inspect or terminate remote processes. |
+
+### Files and packaging
+| Tool | What it does |
+|------|--------------|
+| `push_file` / `pull_file` | Transfer files in either direction. |
+| `copy_between_nodes` | Copy directly between two nodes (no operator-side staging). |
+| `tail_file` | Read the last N lines of a remote file. |
+| `install_package` | Push a directory or zip to a node and extract it on the other side. |
+
+### Diagnostics and debugging
+| Tool | What it does |
+|------|--------------|
+| `get_node_info` | Live system info: OS build, hostname, uptime, NICs, installed driver state. |
+| `wait_for_node` | Poll until a node's agent responds (e.g., after a reboot). |
+| `ping_nodes` | Quick online/offline sweep across all registered nodes. |
+| `sync_time` | Force `w32tm /resync` across all nodes or a topology. |
+| `collect_etw_trace` | Start WPR on a node, wait, stop, and pull the `.etl` back. |
+| `get_crash_dumps` | List and optionally pull crash dumps from `Minidump` and `MEMORY.DMP`. |
+| `enable_kd` / `disable_kd` / `get_kd_status` | Configure network kernel debugging on a remote VM. |
+| `get_history` | Query the local audit log of past commands. |
+
+### Patching and lifecycle
+| Tool | What it does |
+|------|--------------|
+| `patch_binary` | Replace a protected Windows system binary using a Windows engineering replace-utility you supply (path passed via `SFPCOPY_SOURCE`). Backs up the original first. |
+| `restore_binary` | Roll back a previously patched binary. |
+| `ensure_test_signing` | Enable `bcdedit /set testsigning on` and report whether a reboot is needed. |
+| `reboot_node` | Reboot a node and wait for the agent to come back. |
+
+### Onboarding (operator-side)
+| Tool | What it does |
+|------|--------------|
+| `deploy_agent` | Deploy the agent to a new Windows node via PS Remoting. |
+| `save_credential` / `list_credentials` | Manage named WinRM credential profiles for `deploy_agent`. |
+
+For day-to-day onboarding, the bootstrap scripts are recommended over `deploy_agent` because they don't require persisting WinRM credentials on the operator machine.
+
+## Security model at a glance
+
+- **Transport:** mTLS by default. The agent only accepts client certificates signed by your local LabLink CA.
+- **Auth:** every gRPC call carries a shared bearer token. Empty token = request denied (fail-closed).
+- **Secrets at rest:** the token file and private keys are written with restricted ACLs (your user + Administrators + SYSTEM).
+- **Insecure mode:** plaintext gRPC still exists for migration testing but is disabled unless you explicitly set both `LABLINK_TRANSPORT=insecure` and `LABLINK_ALLOW_INSECURE=true`. Don't use it for anything other than a private bench.
+
+See [SECURITY.md](SECURITY.md) for the full posture and threat model.
+
+## Going further
+
+- [`docs/quickstart.md`](docs/quickstart.md) — manual mTLS setup without the bootstrap scripts.
+- [`docs/Project.md`](docs/Project.md) — architecture and design notes.
+- [`docs/mtls-self-managed-cert-plan.md`](docs/mtls-self-managed-cert-plan.md) — PKI design and rationale.
+
+`lablink-ca.exe` exposes the underlying CA primitives if you'd rather drive PKI by hand:
+
+```powershell
+.\bin\lablink-ca.exe init           -pki-dir C:\lablink-pki
+.\bin\lablink-ca.exe issue-client   -pki-dir C:\lablink-pki -name operator
+.\bin\lablink-ca.exe sign-server-csr -pki-dir C:\lablink-pki -csr <path>
+```
+
+## Configuration reference
+
+| Variable | Purpose |
+|----------|---------|
+| `LABLINK_AGENT_TOKEN` | Shared token value (use the file form in production). |
+| `LABLINK_AGENT_TOKEN_FILE` | Path to a file containing the shared token. |
+| `LABLINK_TRANSPORT` | `mtls` (default) or `insecure`. |
+| `LABLINK_TLS_CA` | CA bundle PEM (verifies the peer). |
+| `LABLINK_TLS_CERT` | Client cert PEM (server/probe) or server cert PEM (agent). |
+| `LABLINK_TLS_KEY` | Matching private key for `LABLINK_TLS_CERT`. |
+| `LABLINK_TLS_SERVER_NAME` | Optional override for TLS SNI / server-name verification. |
+| `LABLINK_NODES` | Path to the node registry JSON file. |
+| `LABLINK_HOME` | Base config directory (default `~/.lablink`). |
+| `LABLINK_PORTAL` | `disabled` to suppress the local web portal. |
+| `LABLINK_PORTAL_ADDR` | Override the portal bind address (loopback only, e.g. `127.0.0.1:9092`). |
+
+Long-form aliases (`LABLINK_TLS_CA_CERT`, `LABLINK_TLS_CLIENT_CERT`, …) and legacy `DEVICE_*` names are still accepted for backwards compatibility.
+
+## Build from source
+
+If you don't want to use the published release zips:
+
+```powershell
+git clone https://github.com/nijosmsft/LabLink
+cd LabLink
+make build-all
+```
+
+This produces the same four binaries under `.\bin\`. From that point on, every step in [Get started](#get-started-in-5-minutes) works exactly the same way.
+
+To package your own release zips locally — useful for internal mirrors:
+
+```powershell
+.\scripts\build-release.ps1 -Version v0.1.0
+```
+
+Artifacts land under `.\release\`. The same script is what the GitHub Actions release workflow runs.
+
+## License
+
+[MIT](LICENSE).
