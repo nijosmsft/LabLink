@@ -168,6 +168,13 @@ When the server runs as an MCP child of an AI client, its stderr is usually swal
 
 Open it in any browser on the operator machine. Updates stream live over Server-Sent Events. The portal binds **only** to loopback and rejects requests without the access key.
 
+The portal has two tabs:
+
+- **Operations** — in-flight tool calls with a Cancel button.
+- **Jobs** — background (detached) commands. Any `execute_command` or `schedule_command` with `detach:true` is tracked as a *job* with a stable `job_id`, captured stdout/stderr, exit code, and lifecycle status (`running` / `exited` / `canceled` / `orphaned`). From the UI you can view captured output (stdout / stderr / both, last 500 lines by default), cancel a running job, or delete a finished one. Updates stream live via `WatchJobs` gRPC into a single `/api/jobs/stream` SSE feed. The same primitives are exposed to AI clients as `list_jobs`, `get_job_status`, `get_job_output`, `cancel_job`, and `delete_job`.
+
+Jobs are stored on each node under `%ProgramData%\LabLink\agent\jobs\<job_id>\` (Windows) or `/var/lib/lablink-agent/jobs/<job_id>/` (Linux). Terminal jobs are auto-pruned after 7 days; override with `LABLINK_JOB_RETENTION=Nd` (or any Go duration) on the **agent** side.
+
 This first version is **per-process**: each AI client spawns its own `LabLinkServer.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
 
 To turn it off, set `LABLINK_PORTAL=disabled`. To pin it to a fixed port for bookmarking, set `LABLINK_PORTAL_ADDR=127.0.0.1:9092`.
@@ -190,12 +197,14 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 ### Execution
 | Tool | What it does |
 |------|--------------|
-| `execute_command` | Run a shell command on a node. |
+| `execute_command` | Run a shell command on a node. Set `detach:true` to fire-and-forget — returns a `job_id` you can tail/cancel later. |
 | `execute_script` | Push an inline script and execute it atomically. |
 | `execute_on_role` | Run the same command on every node with a given role, in parallel. |
 | `run_script_on_role` | Run the same inline script on every node with a given role, in parallel. |
-| `schedule_command` | Run a command after a delay (useful for synchronized starts). |
+| `schedule_command` | Run a command after a delay (useful for synchronized starts). Returns a `job_id`. |
 | `list_processes` / `kill_process` | Inspect or terminate remote processes. |
+| `list_jobs` / `get_job_status` / `get_job_output` | Inspect background (detached) jobs on a node. |
+| `cancel_job` / `delete_job` | Cancel a running job or delete a terminal job's captured output. |
 
 ### Files and packaging
 | Tool | What it does |

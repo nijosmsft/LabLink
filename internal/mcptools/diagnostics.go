@@ -16,7 +16,7 @@ import (
 )
 
 func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("collect_etw_trace",
 			mcp.WithDescription("Collect an ETW/WPR trace on a remote node. Starts WPR, waits for the specified duration, stops, and pulls the .etl file back to the local machine."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -27,7 +27,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 		collectEtwTraceHandler(reg, pool, auditLog),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("get_crash_dumps",
 			mcp.WithDescription("List and optionally pull crash dumps from a remote node (C:\\Windows\\Minidump and C:\\Windows\\MEMORY.DMP)."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -36,7 +36,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 		getCrashDumpsHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("sync_time",
 			mcp.WithDescription("Synchronize system clocks across all nodes or a specific topology by forcing a time resync (w32tm /resync)."),
 			mcp.WithString("topology", mcp.Description("Topology name (if omitted, syncs all nodes)")),
@@ -44,7 +44,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 		syncTimeHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("enable_kd",
 			mcp.WithDescription("Enable kernel debugging on a remote VM. Configures bcdedit for network KD (kdnet). Requires a reboot to take effect."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -56,7 +56,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 		enableKdHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("disable_kd",
 			mcp.WithDescription("Disable kernel debugging on a remote VM. Requires a reboot to take effect."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -65,7 +65,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 		disableKdHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("get_kd_status",
 			mcp.WithDescription("Check kernel debugging status and settings on a remote VM."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),

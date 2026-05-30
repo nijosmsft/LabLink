@@ -16,7 +16,7 @@ import (
 )
 
 func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("wait_for_node",
 			mcp.WithDescription("Wait for a node to come online (e.g., after a reboot). Polls the gRPC agent until it responds."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -25,7 +25,7 @@ func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 		waitForNodeHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("get_node_info",
 			mcp.WithDescription("Get live system info from a node: OS build, hostname, uptime, installed drivers (xdp, ebpf), NIC details."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -33,7 +33,7 @@ func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 		getNodeInfoHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("tail_file",
 			mcp.WithDescription("Read the last N lines of a file on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -43,14 +43,14 @@ func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 		tailFileHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("ping_nodes",
 			mcp.WithDescription("Quick health check of all registered nodes. Returns online/offline status only."),
 		),
 		pingNodesHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("copy_between_nodes",
 			mcp.WithDescription("Copy a file from one node to another without staging through the dev machine."),
 			mcp.WithString("source_node", mcp.Required(), mcp.Description("Node to copy from")),

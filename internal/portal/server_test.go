@@ -14,7 +14,7 @@ import (
 
 func TestServerRequiresKey(t *testing.T) {
 	reg := ops.NewRegistry(10)
-	s, err := New(reg, "127.0.0.1:0")
+	s, err := New(reg, nil, nil, "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -38,14 +38,14 @@ func TestServerRequiresKey(t *testing.T) {
 		t.Fatalf("expected 200 with key, got %d", resp2.StatusCode)
 	}
 	body, _ := io.ReadAll(resp2.Body)
-	if !strings.Contains(string(body), "LabLink operations") {
+	if !strings.Contains(string(body), "<title>LabLink</title>") {
 		t.Fatalf("unexpected body: %s", body)
 	}
 }
 
 func TestCancelEndpoint(t *testing.T) {
 	reg := ops.NewRegistry(10)
-	s, err := New(reg, "127.0.0.1:0")
+	s, err := New(reg, nil, nil, "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestCancelEndpoint(t *testing.T) {
 
 func TestRefusesNonLoopbackBind(t *testing.T) {
 	reg := ops.NewRegistry(10)
-	if _, err := New(reg, "0.0.0.0:0"); err == nil {
+	if _, err := New(reg, nil, nil, "0.0.0.0:0"); err == nil {
 		t.Fatalf("expected error binding 0.0.0.0")
 	}
 }

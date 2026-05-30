@@ -38,7 +38,7 @@ type yamlFile struct {
 }
 
 func RegisterImportExport(s *server.MCPServer, reg *registry.Registry) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("export_nodes",
 			mcp.WithDescription("Export all nodes, topologies, and contexts to a YAML file."),
 			mcp.WithString("file", mcp.Required(), mcp.Description("Output YAML file path")),
@@ -46,7 +46,7 @@ func RegisterImportExport(s *server.MCPServer, reg *registry.Registry) {
 		exportNodesHandler(reg),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("import_nodes",
 			mcp.WithDescription("Import nodes, topologies, and contexts from a YAML file. Existing entries with the same name are overwritten."),
 			mcp.WithString("file", mcp.Required(), mcp.Description("Input YAML file path")),

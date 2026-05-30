@@ -93,7 +93,8 @@ func executeAndCollect(ctx context.Context, client pb.NodeAgentClient, command, 
 	if err != nil {
 		return "", -1, 0, err
 	}
-	return collectStreamOutput(stream)
+	out, exit, pid, _, err := collectStreamOutput(stream)
+	return out, exit, pid, err
 }
 
 // pushFileToNode pushes a local file to a remote node. Returns bytes written.

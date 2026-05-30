@@ -16,7 +16,7 @@ import (
 )
 
 func RegisterPackage(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("install_package",
 			mcp.WithDescription("Push a local directory or zip file to a remote node. Directories are zipped automatically, transferred, and extracted on the node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),

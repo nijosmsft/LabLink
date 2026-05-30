@@ -105,7 +105,7 @@ func main() {
 		if listenAddr == "" {
 			listenAddr = "127.0.0.1:0"
 		}
-		p, err := portal.New(opsReg, listenAddr)
+		p, err := portal.New(opsReg, reg, pool, listenAddr)
 		if err != nil {
 			log.Printf("LabLink portal disabled: %v", err)
 		} else {
@@ -148,7 +148,9 @@ Use export_nodes / import_nodes to save/restore the node registry as YAML.`),
 	mcptools.RegisterPackage(s, reg, pool)
 	patchCfg := mcptools.NewPatchConfig(configDir)
 	mcptools.RegisterPatch(s, reg, pool, auditLog, patchCfg)
+	mcptools.RegisterJobs(s, reg, pool)
 	mcptools.RegisterPortal(s)
+	mcptools.RegisterForward(s, reg, pool)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

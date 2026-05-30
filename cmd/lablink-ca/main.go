@@ -62,8 +62,8 @@ func runInit(args []string) error {
 	outDir := fs.String("out", "", "alias for -pki-dir")
 	rootCN := fs.String("root-cn", "LabLink Root CA", "root CA common name")
 	issuingCN := fs.String("issuing-cn", "LabLink Issuing CA", "issuing CA common name")
-	rootDays := fs.Int("root-days", 365*5, "root CA validity in days")
-	issuingDays := fs.Int("issuing-days", 365, "issuing CA validity in days")
+	rootDays := fs.Int("root-days", 365*10, "root CA validity in days")
+	issuingDays := fs.Int("issuing-days", 365*10, "issuing CA validity in days")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,7 +119,7 @@ func runIssueClient(args []string) error {
 	caDir := fs.String("ca-dir", "", "alias for -pki-dir")
 	name := fs.String("name", "default", "client profile name")
 	commonName := fs.String("common-name", "", "alias for -name")
-	validDays := fs.Int("days", 90, "client certificate validity in days")
+	validDays := fs.Int("days", 365*5, "client certificate validity in days")
 	certOut := fs.String("cert-out", "", "path to write the client certificate chain PEM")
 	keyOut := fs.String("key-out", "", "path to write the client private key PEM")
 	if err := fs.Parse(args); err != nil {
@@ -169,7 +169,7 @@ func runSignServerCSR(args []string) error {
 	caDir := fs.String("ca-dir", "", "alias for -pki-dir")
 	csrPath := fs.String("csr", "", "path to the server CSR PEM")
 	certOut := fs.String("cert-out", "", "path to write the signed server certificate chain PEM")
-	validDays := fs.Int("days", 30, "server certificate validity in days")
+	validDays := fs.Int("days", 365*5, "server certificate validity in days")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

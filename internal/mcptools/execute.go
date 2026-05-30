@@ -118,7 +118,7 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 			return mcp.NewToolResultError(fmt.Sprintf("execute: %v", err)), nil
 		}
 
-		output, exitCode, pid, err := collectStreamOutput(stream)
+		output, exitCode, pid, jobID, err := collectStreamOutput(stream)
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err
@@ -140,7 +140,7 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 			Truncated:   truncated,
 		})
 
-		result := formatExecResult(nodeName, command, pid, exitCode, output, truncated, spillPath, duration)
+		result := formatExecResult(nodeName, command, pid, exitCode, jobID, output, truncated, spillPath, duration)
 		return mcp.NewToolResultText(result), nil
 	}
 }
@@ -197,7 +197,7 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 			return mcp.NewToolResultError(fmt.Sprintf("execute_script: %v", err)), nil
 		}
 
-		output, exitCode, pid, err := collectStreamOutput(stream)
+		output, exitCode, pid, _, err := collectStreamOutput(stream)
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err
@@ -219,7 +219,7 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 			Truncated:   truncated,
 		})
 
-		result := formatExecResult(nodeName, "(inline script)", pid, exitCode, output, truncated, spillPath, duration)
+		result := formatExecResult(nodeName, "(inline script)", pid, exitCode, "", output, truncated, spillPath, duration)
 		return mcp.NewToolResultText(result), nil
 	}
 }
@@ -240,9 +240,10 @@ type executeStream interface {
 	Recv() (*pb.ExecuteResponse, error)
 }
 
-func collectStreamOutput(stream executeStream) (string, int, int, error) {
+func collectStreamOutput(stream executeStream) (string, int, int, string, error) {
 	var buf strings.Builder
 	var exitCode, pid int
+	var jobID string
 
 	for {
 		resp, err := stream.Recv()
@@ -250,10 +251,13 @@ func collectStreamOutput(stream executeStream) (string, int, int, error) {
 			break
 		}
 		if err != nil {
-			return buf.String(), exitCode, pid, err
+			return buf.String(), exitCode, pid, jobID, err
 		}
 		if resp.Pid != 0 && pid == 0 {
 			pid = int(resp.Pid)
+		}
+		if resp.JobId != "" && jobID == "" {
+			jobID = resp.JobId
 		}
 		if len(resp.Data) > 0 {
 			buf.Write(resp.Data)
@@ -263,7 +267,7 @@ func collectStreamOutput(stream executeStream) (string, int, int, error) {
 			break
 		}
 	}
-	return buf.String(), exitCode, pid, nil
+	return buf.String(), exitCode, pid, jobID, nil
 }
 
 func truncateOutput(output string) (bool, string, string) {
@@ -282,9 +286,12 @@ func truncateOutput(output string) (bool, string, string) {
 	return true, truncated, tmpFile
 }
 
-func formatExecResult(node, command string, pid, exitCode int, output string, truncated bool, spillPath string, duration time.Duration) string {
+func formatExecResult(node, command string, pid, exitCode int, jobID, output string, truncated bool, spillPath string, duration time.Duration) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("**Node**: %s | **PID**: %d | **Exit**: %d | **Duration**: %s\n", node, pid, exitCode, duration.Round(time.Millisecond)))
+	if jobID != "" {
+		sb.WriteString(fmt.Sprintf("**Job ID**: `%s` — use `get_job_status` / `get_job_output` / `cancel_job` to manage.\n", jobID))
+	}
 	if truncated && spillPath != "" {
 		sb.WriteString(fmt.Sprintf("**Output truncated** — full output at: `%s`\n", spillPath))
 	}

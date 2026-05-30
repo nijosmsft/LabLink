@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterHistory(s *server.MCPServer, auditLog *audit.Log) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("get_history",
 			mcp.WithDescription("Query the command audit log. Useful to recall what was previously executed."),
 			mcp.WithString("node", mcp.Description("Filter by node name")),

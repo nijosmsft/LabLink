@@ -15,7 +15,7 @@ import (
 )
 
 func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("register_node",
 			mcp.WithDescription("Register a test machine in the node inventory. Probes the agent to get OS/CPU/memory info."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Friendly name (e.g., server-25)")),
@@ -27,14 +27,14 @@ func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentc
 		registerNodeHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("list_nodes",
 			mcp.WithDescription("List all registered nodes with their status and metadata."),
 		),
 		listNodesHandler(reg, pool),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("remove_node",
 			mcp.WithDescription("Remove a node from the registry."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Node name to remove")),
@@ -42,7 +42,7 @@ func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentc
 		removeNodeHandler(reg),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("rename_node",
 			mcp.WithDescription("Rename a node in the registry. Preserves all metadata, context, and topology references."),
 			mcp.WithString("old_name", mcp.Required(), mcp.Description("Current node name")),

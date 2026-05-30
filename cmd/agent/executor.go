@@ -89,31 +89,24 @@ func executeCommand(ctx context.Context, command, shell, workingDir string, env 
 		shell = defaultShell()
 	}
 
+	if detach {
+		job, err := startDetachedJob(command, shell, workingDir, env)
+		if err != nil {
+			return fmt.Errorf("start detached job: %w", err)
+		}
+		stream.Send(&pb.ExecuteResponse{
+			Pid:   job.Pid,
+			JobId: job.JobId,
+			Done:  true,
+		})
+		return nil
+	}
+
 	cmd := buildCommand(shell, command)
 	if workingDir != "" {
 		cmd.Dir = workingDir
 	}
 	applyEnv(cmd, env)
-
-	if detach {
-		setDetached(cmd)
-		devNull, err := attachDetachedIO(cmd)
-		if err != nil {
-			return fmt.Errorf("failed to configure detached stdio: %w", err)
-		}
-		if err := cmd.Start(); err != nil {
-			devNull.Close()
-			return fmt.Errorf("failed to start detached process: %w", err)
-		}
-		devNull.Close()
-		stream.Send(&pb.ExecuteResponse{
-			Pid:  int32(cmd.Process.Pid),
-			Done: true,
-		})
-		// Release the process so it's not waited on.
-		cmd.Process.Release()
-		return nil
-	}
 
 	return runAndStream(ctx, cmd, timeoutSec, stream)
 }

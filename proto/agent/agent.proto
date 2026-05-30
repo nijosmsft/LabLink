@@ -23,6 +23,33 @@ service NodeAgent {
 
   // Health check and node metadata.
   rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+
+  // List tracked background jobs (detached executions).
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+  // Get a single job's metadata.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+
+  // Get captured output for a job (stdout and/or stderr).
+  rpc GetJobOutput(GetJobOutputRequest) returns (GetJobOutputResponse);
+
+  // Cancel a running job (terminates the process tree).
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // Delete a terminal job (removes the job directory).
+  rpc DeleteJob(DeleteJobRequest) returns (DeleteJobResponse);
+
+  // Watch job lifecycle events. On connect, the agent replays a snapshot of
+  // current jobs as Started events, then streams live updates.
+  rpc WatchJobs(WatchJobsRequest) returns (stream JobEvent);
+
+  // Forward TCP bytes bidirectionally between the operator and a target on
+  // the agent node. The first client message MUST set target_addr; the agent
+  // dials it (TCP) and then byte-shuttles in both directions. Either side
+  // sends {close: true} to signal half-close. Used to tunnel application
+  // protocols (e.g. an MCP server bound to localhost on the node) through the
+  // node agent's existing mTLS channel.
+  rpc Forward(stream ForwardChunk) returns (stream ForwardChunk);
 }
 
 message ExecuteRequest {
@@ -53,6 +80,7 @@ message ExecuteResponse {
   bool done = 3;
   int32 exit_code = 4;          // Valid when done=true
   int32 pid = 5;                // PID of spawned process (sent in first message)
+  string job_id = 6;            // Set when detach=true; empty for foreground executions
 }
 
 message PushFileRequest {
@@ -111,4 +139,124 @@ message GetInfoResponse {
   int32 cpu_count = 4;
   int64 memory_bytes = 5;
   string agent_version = 6;
+}
+
+// -----------------------------------------------------------------------------
+// Background jobs
+//
+// A "job" is a detached (fire-and-forget) execution whose stdout/stderr the
+// agent captures to disk, and whose terminal status the agent records.
+// -----------------------------------------------------------------------------
+
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  JOB_STATUS_RUNNING     = 1;   // Tracker goroutine alive, process alive
+  JOB_STATUS_EXITED      = 2;   // Process exited; exit_code valid
+  JOB_STATUS_CANCELED    = 3;   // Operator canceled; process killed
+  JOB_STATUS_ORPHANED    = 4;   // Tracker died (agent restart) and pid is gone
+}
+
+message Job {
+  string job_id = 1;
+  string command = 2;
+  string shell = 3;
+  string working_dir = 4;
+  map<string, string> env = 5;
+  int32 pid = 6;
+  JobStatus status = 7;
+  int32 exit_code = 8;          // Valid when status=EXITED
+  string started_at = 9;        // RFC3339
+  string ended_at = 10;         // RFC3339; empty while running
+  int64 stdout_bytes = 11;
+  int64 stderr_bytes = 12;
+  string error = 13;            // Last recorded error (e.g. start failure)
+}
+
+message ListJobsRequest {
+  JobStatus status_filter = 1;  // UNSPECIFIED = no filter
+  int32 limit = 2;              // 0 = default (50)
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;        // Newest-first
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message GetJobOutputRequest {
+  string job_id = 1;
+  enum Stream {
+    BOTH   = 0;                 // Interleaved by merge of stdout then stderr
+    STDOUT = 1;
+    STDERR = 2;
+  }
+  Stream stream = 2;
+  int32 tail_lines = 3;         // 0 = whole file (subject to max_bytes)
+  int64 max_bytes = 4;          // 0 = default (1 MiB), clamped to 8 MiB
+}
+
+message GetJobOutputResponse {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  bool truncated = 3;           // True if the cap was hit
+  int64 stdout_total_bytes = 4;
+  int64 stderr_total_bytes = 5;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+  bool force = 2;               // Force-terminate (taskkill /F / SIGKILL)
+}
+
+message CancelJobResponse {
+  Job job = 1;                  // Updated job meta
+}
+
+message DeleteJobRequest {
+  string job_id = 1;
+}
+
+message DeleteJobResponse {
+  bool deleted = 1;
+}
+
+message WatchJobsRequest {}
+
+message JobEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    SNAPSHOT         = 1;       // Replay on connect
+    STARTED          = 2;
+    UPDATED          = 3;
+    COMPLETED        = 4;       // Terminal (exited / canceled / orphaned)
+    DELETED          = 5;       // Job removed; only job_id is set
+  }
+  Kind kind = 1;
+  Job job = 2;
+  string job_id = 3;            // For DELETED events
+}
+
+// -----------------------------------------------------------------------------
+// TCP forwarding
+// -----------------------------------------------------------------------------
+
+// ForwardChunk carries a TCP tunnel control message or a slab of data.
+//
+// First-message convention: the first client→server ForwardChunk MUST set
+// target_addr (e.g. "127.0.0.1:8765"). The agent dials that TCP address with
+// a short timeout, then enters a byte-shuttling loop. Subsequent messages on
+// either direction carry application bytes in `data`. Setting `close=true`
+// indicates the sender is done writing (half-close); the agent forwards EOF
+// to the target socket. When the target socket closes its read side, the
+// agent sends {close: true} back and ends the stream.
+message ForwardChunk {
+  string target_addr = 1;       // First client message only
+  bytes data = 2;
+  bool close = 3;
 }

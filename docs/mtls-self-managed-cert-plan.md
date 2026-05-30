@@ -113,12 +113,12 @@ Reasons:
 
 Recommended defaults:
 
-- root CA: 5 years
-- issuing CA: 1 year
-- client cert: 90 days
-- server cert: 30 days
+- root CA: 10 years
+- issuing CA: 10 years
+- client cert: 5 years
+- server cert: 5 years
 
-Short-lived leaf certificates reduce the need for revocation infrastructure in the first version.
+Long-lived leaf certificates trade off the original short-lived-leaf strategy for operator ergonomics: there is no revocation infrastructure yet, so a compromised key is in scope until its `NotAfter` or until the issuing CA is rotated. Operators who need tighter blast radius should override `-days` on `lablink-ca issue-client` / `sign-server-csr` and rotate via `bootstrap-operator.ps1 -RotateClientCert` and `bootstrap-windows-node.ps1 -RotateServerCert`.
 
 ## Identity and name verification
 

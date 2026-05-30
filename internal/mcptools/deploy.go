@@ -18,7 +18,7 @@ import (
 )
 
 func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, agentToken string) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("deploy_agent",
 			mcp.WithDescription("Deploy the LabLink agent to a remote Windows machine via PS Remoting. Installs as a Windows service, writes token to registry, creates firewall rule, and registers the node."),
 			mcp.WithString("machine", mcp.Required(), mcp.Description("IP address or hostname of the target machine")),
@@ -37,7 +37,7 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 		deployAgentHandler(reg, pool, creds, agentToken),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("save_credential",
 			mcp.WithDescription("Save a named credential profile for use with deploy_agent. Credentials are stored locally in ~/.lablink/credentials.json."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Profile name (e.g., lab-admin)")),
@@ -47,7 +47,7 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 		saveCredentialHandler(creds),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("list_credentials",
 			mcp.WithDescription("List saved credential profile names (passwords are not shown)."),
 		),

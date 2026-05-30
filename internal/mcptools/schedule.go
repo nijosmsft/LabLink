@@ -14,7 +14,7 @@ import (
 )
 
 func RegisterSchedule(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("schedule_command",
 			mcp.WithDescription("Schedule a command to run after a delay on a remote node. The command runs detached. Useful for synchronized starts across multiple nodes (schedule all to start at the same wall-clock time)."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -71,7 +71,7 @@ func scheduleCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("schedule failed: %v", err)), nil
 		}
-		output, exitCode, pid, err := collectStreamOutput(stream)
+		output, exitCode, pid, jobID, err := collectStreamOutput(stream)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("schedule stream failed: %v", err)), nil
 		}
@@ -86,6 +86,9 @@ func scheduleCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 
 		result := fmt.Sprintf("Scheduled on **%s** with **%s** (PID %d): will run in %d seconds\n```\n%s\n```",
 			nodeName, normalizedShell, pid, delaySec, command)
+		if jobID != "" {
+			result += fmt.Sprintf("\n\n**Job ID**: `%s` — use `get_job_status` / `get_job_output` / `cancel_job` to manage.", jobID)
+		}
 		if strings.TrimSpace(output) != "" {
 			result += fmt.Sprintf("\n```\n%s```", strings.TrimSpace(output))
 		}

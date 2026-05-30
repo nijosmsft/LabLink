@@ -16,7 +16,7 @@ import (
 )
 
 func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("run_script_on_role",
 			mcp.WithDescription("Execute the same inline script on all nodes with a given role, in parallel. Optionally scope to a topology."),
 			mcp.WithString("role", mcp.Required(), mcp.Description("Node role to target (e.g., client)")),
@@ -28,7 +28,7 @@ func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentc
 		runScriptOnRoleHandler(reg, pool, auditLog),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("execute_on_role",
 			mcp.WithDescription("Execute the same command on all nodes with a given role, in parallel. Optionally scope to a topology."),
 			mcp.WithString("role", mcp.Required(), mcp.Description("Node role to target (e.g., client)")),
@@ -217,7 +217,7 @@ func executeScriptOnNode(ctx context.Context, node *registry.Node, scriptBody, s
 		return result
 	}
 
-	output, exitCode, pid, err := collectStreamOutput(stream)
+	output, exitCode, pid, _, err := collectStreamOutput(stream)
 	result.Duration = time.Since(start)
 	result.Output = output
 	result.ExitCode = exitCode
@@ -259,7 +259,7 @@ func executeOnNode(ctx context.Context, node *registry.Node, command, shell stri
 		return result
 	}
 
-	output, exitCode, pid, err := collectStreamOutput(stream)
+	output, exitCode, pid, _, err := collectStreamOutput(stream)
 	result.Duration = time.Since(start)
 	result.Output = output
 	result.ExitCode = exitCode

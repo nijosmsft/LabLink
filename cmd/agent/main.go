@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nijosmsft/lablink/internal/security"
@@ -15,7 +17,9 @@ import (
 
 	"github.com/shirou/gopsutil/v4/mem"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/status"
 )
 
 var agentVersion = "0.1.0"
@@ -195,14 +199,41 @@ func runServer() error {
 	log.Printf("authentication enabled (source: %s)", tokenSource)
 
 	srv := grpc.NewServer(opts...)
-	pb.RegisterNodeAgentServer(srv, &agentServer{})
+	// Initialise the background-job manager before registering RPCs so the
+	// Execute detach path and the new Jobs RPCs see a ready manager.
+	jm, err := NewJobManager(jobsDir(), parseRetention(os.Getenv("LABLINK_JOB_RETENTION")))
+	if err != nil {
+		return fmt.Errorf("init job manager: %w", err)
+	}
+	jm.Recover()
+	setJobManager(jm)
+	pb.RegisterNodeAgentServer(srv, &agentServer{jobs: jm})
 
 	hostname, _ := os.Hostname()
 	log.Printf("LabLink agent transport: %s", transportCfg.Mode)
+	log.Printf("LabLink agent jobs dir: %s", jobsDir())
 	log.Printf("LabLink agent %s starting on %s (host=%s, os=%s/%s, cpus=%d)",
 		agentVersion, *listenAddr, hostname, runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
 
 	return srv.Serve(lis)
+}
+
+// parseRetention parses a duration like "168h" or "7d". Empty/invalid falls
+// back to the manager default.
+func parseRetention(s string) time.Duration {
+	if s == "" {
+		return 0
+	}
+	// Accept "<N>d" as a friendly shorthand.
+	if strings.HasSuffix(s, "d") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(s, "d")); err == nil && n > 0 {
+			return time.Duration(n) * 24 * time.Hour
+		}
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	return 0
 }
 
 // tokenSource returns a human-readable description of where the token came from.
@@ -230,6 +261,7 @@ func tokenSource() string {
 
 type agentServer struct {
 	pb.UnimplementedNodeAgentServer
+	jobs *JobManager
 }
 
 func (s *agentServer) GetInfo(_ context.Context, _ *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
@@ -270,4 +302,111 @@ func (s *agentServer) ListProcesses(ctx context.Context, req *pb.ListProcessesRe
 
 func (s *agentServer) KillProcess(ctx context.Context, req *pb.KillProcessRequest) (*pb.KillProcessResponse, error) {
 	return killProcess(ctx, req.Pid, req.Force)
+}
+
+// -----------------------------------------------------------------------------
+// Background-job RPCs
+// -----------------------------------------------------------------------------
+
+func (s *agentServer) ListJobs(_ context.Context, req *pb.ListJobsRequest) (*pb.ListJobsResponse, error) {
+	if s.jobs == nil {
+		return &pb.ListJobsResponse{}, nil
+	}
+	return &pb.ListJobsResponse{Jobs: s.jobs.List(req.StatusFilter, req.Limit)}, nil
+}
+
+func (s *agentServer) GetJob(_ context.Context, req *pb.GetJobRequest) (*pb.GetJobResponse, error) {
+	if s.jobs == nil {
+		return nil, status.Error(codes.Unavailable, "job manager not initialised")
+	}
+	if !isValidJobID(req.JobId) {
+		return nil, status.Error(codes.InvalidArgument, "invalid job id")
+	}
+	job, err := s.jobs.Get(req.JobId)
+	if err != nil {
+		if err == ErrJobNotFound {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &pb.GetJobResponse{Job: job}, nil
+}
+
+func (s *agentServer) GetJobOutput(_ context.Context, req *pb.GetJobOutputRequest) (*pb.GetJobOutputResponse, error) {
+	if s.jobs == nil {
+		return nil, status.Error(codes.Unavailable, "job manager not initialised")
+	}
+	if !isValidJobID(req.JobId) {
+		return nil, status.Error(codes.InvalidArgument, "invalid job id")
+	}
+	resp, err := s.jobs.GetOutput(req.JobId, req.Stream, req.TailLines, req.MaxBytes)
+	if err != nil {
+		if err == ErrJobNotFound {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return resp, nil
+}
+
+func (s *agentServer) CancelJob(_ context.Context, req *pb.CancelJobRequest) (*pb.CancelJobResponse, error) {
+	if s.jobs == nil {
+		return nil, status.Error(codes.Unavailable, "job manager not initialised")
+	}
+	if !isValidJobID(req.JobId) {
+		return nil, status.Error(codes.InvalidArgument, "invalid job id")
+	}
+	job, err := s.jobs.Cancel(req.JobId, req.Force)
+	if err != nil {
+		if err == ErrJobNotFound {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return &pb.CancelJobResponse{Job: job}, nil
+}
+
+func (s *agentServer) DeleteJob(_ context.Context, req *pb.DeleteJobRequest) (*pb.DeleteJobResponse, error) {
+	if s.jobs == nil {
+		return nil, status.Error(codes.Unavailable, "job manager not initialised")
+	}
+	if !isValidJobID(req.JobId) {
+		return nil, status.Error(codes.InvalidArgument, "invalid job id")
+	}
+	ok, err := s.jobs.Delete(req.JobId)
+	if err != nil {
+		if err == ErrJobNotFound {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &pb.DeleteJobResponse{Deleted: ok}, nil
+}
+
+func (s *agentServer) WatchJobs(_ *pb.WatchJobsRequest, stream pb.NodeAgent_WatchJobsServer) error {
+	if s.jobs == nil {
+		return status.Error(codes.Unavailable, "job manager not initialised")
+	}
+	// Replay current state first so a fresh client paints immediately.
+	for _, job := range s.jobs.Snapshot() {
+		if err := stream.Send(&pb.JobEvent{Kind: pb.JobEvent_SNAPSHOT, Job: job}); err != nil {
+			return err
+		}
+	}
+	ch, cancel := s.jobs.Subscribe()
+	defer cancel()
+	ctx := stream.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(ev); err != nil {
+				return err
+			}
+		}
+	}
 }

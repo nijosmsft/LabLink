@@ -16,22 +16,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/ops"
+	"github.com/nijosmsft/lablink/internal/registry"
 )
 
 // Server is a per-process portal.
 type Server struct {
-	reg     *ops.Registry
+	reg     *registry.Registry
+	pool    *agentclient.Pool
+	opsReg  *ops.Registry
 	key     string
 	addr    string
 	httpSrv *http.Server
 }
 
 // New constructs a Server bound to a random 127.0.0.1 port. listenAddr may be
-// "" (default 127.0.0.1:0) or a fixed value like "127.0.0.1:9092".
-func New(reg *ops.Registry, listenAddr string) (*Server, error) {
-	if reg == nil {
-		return nil, errors.New("portal: nil registry")
+// "" (default 127.0.0.1:0) or a fixed value like "127.0.0.1:9092". reg and
+// pool may be nil; the /api/jobs/* handlers will report 503 in that case.
+func New(opsReg *ops.Registry, reg *registry.Registry, pool *agentclient.Pool, listenAddr string) (*Server, error) {
+	if opsReg == nil {
+		return nil, errors.New("portal: nil ops registry")
 	}
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:0"
@@ -48,15 +53,18 @@ func New(reg *ops.Registry, listenAddr string) (*Server, error) {
 		return nil, fmt.Errorf("portal: listen: %w", err)
 	}
 	s := &Server{
-		reg:  reg,
-		key:  key,
-		addr: ln.Addr().String(),
+		opsReg: opsReg,
+		reg:    reg,
+		pool:   pool,
+		key:    key,
+		addr:   ln.Addr().String(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/ops", s.handleList)
 	mux.HandleFunc("/api/ops/cancel", s.handleCancel)
 	mux.HandleFunc("/api/ops/stream", s.handleStream)
+	s.registerJobsHandlers(mux)
 	s.httpSrv = &http.Server{
 		Handler:           s.requireKey(mux),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -124,7 +132,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"ops": s.reg.List()})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ops": s.opsReg.List()})
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +145,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	if !s.reg.Cancel(id) {
+	if !s.opsReg.Cancel(id) {
 		http.Error(w, "unknown or already finished", http.StatusNotFound)
 		return
 	}
@@ -154,11 +162,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	ch, cancel := s.reg.Subscribe()
+	ch, cancel := s.opsReg.Subscribe()
 	defer cancel()
 
 	// Send a snapshot first so a fresh tab paints immediately.
-	snap, _ := json.Marshal(map[string]any{"kind": "snapshot", "ops": s.reg.List()})
+	snap, _ := json.Marshal(map[string]any{"kind": "snapshot", "ops": s.opsReg.List()})
 	fmt.Fprintf(w, "data: %s\n\n", snap)
 	flusher.Flush()
 

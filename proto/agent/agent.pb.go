@@ -21,6 +21,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type JobStatus int32
+
+const (
+	JobStatus_JOB_STATUS_UNSPECIFIED JobStatus = 0
+	JobStatus_JOB_STATUS_RUNNING     JobStatus = 1 // Tracker goroutine alive, process alive
+	JobStatus_JOB_STATUS_EXITED      JobStatus = 2 // Process exited; exit_code valid
+	JobStatus_JOB_STATUS_CANCELED    JobStatus = 3 // Operator canceled; process killed
+	JobStatus_JOB_STATUS_ORPHANED    JobStatus = 4 // Tracker died (agent restart) and pid is gone
+)
+
+// Enum value maps for JobStatus.
+var (
+	JobStatus_name = map[int32]string{
+		0: "JOB_STATUS_UNSPECIFIED",
+		1: "JOB_STATUS_RUNNING",
+		2: "JOB_STATUS_EXITED",
+		3: "JOB_STATUS_CANCELED",
+		4: "JOB_STATUS_ORPHANED",
+	}
+	JobStatus_value = map[string]int32{
+		"JOB_STATUS_UNSPECIFIED": 0,
+		"JOB_STATUS_RUNNING":     1,
+		"JOB_STATUS_EXITED":      2,
+		"JOB_STATUS_CANCELED":    3,
+		"JOB_STATUS_ORPHANED":    4,
+	}
+)
+
+func (x JobStatus) Enum() *JobStatus {
+	p := new(JobStatus)
+	*p = x
+	return p
+}
+
+func (x JobStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (JobStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_agent_agent_proto_enumTypes[0].Descriptor()
+}
+
+func (JobStatus) Type() protoreflect.EnumType {
+	return &file_proto_agent_agent_proto_enumTypes[0]
+}
+
+func (x JobStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use JobStatus.Descriptor instead.
+func (JobStatus) EnumDescriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{0}
+}
+
 type ExecuteResponse_Stream int32
 
 const (
@@ -51,11 +106,11 @@ func (x ExecuteResponse_Stream) String() string {
 }
 
 func (ExecuteResponse_Stream) Descriptor() protoreflect.EnumDescriptor {
-	return file_proto_agent_agent_proto_enumTypes[0].Descriptor()
+	return file_proto_agent_agent_proto_enumTypes[1].Descriptor()
 }
 
 func (ExecuteResponse_Stream) Type() protoreflect.EnumType {
-	return &file_proto_agent_agent_proto_enumTypes[0]
+	return &file_proto_agent_agent_proto_enumTypes[1]
 }
 
 func (x ExecuteResponse_Stream) Number() protoreflect.EnumNumber {
@@ -65,6 +120,113 @@ func (x ExecuteResponse_Stream) Number() protoreflect.EnumNumber {
 // Deprecated: Use ExecuteResponse_Stream.Descriptor instead.
 func (ExecuteResponse_Stream) EnumDescriptor() ([]byte, []int) {
 	return file_proto_agent_agent_proto_rawDescGZIP(), []int{2, 0}
+}
+
+type GetJobOutputRequest_Stream int32
+
+const (
+	GetJobOutputRequest_BOTH   GetJobOutputRequest_Stream = 0 // Interleaved by merge of stdout then stderr
+	GetJobOutputRequest_STDOUT GetJobOutputRequest_Stream = 1
+	GetJobOutputRequest_STDERR GetJobOutputRequest_Stream = 2
+)
+
+// Enum value maps for GetJobOutputRequest_Stream.
+var (
+	GetJobOutputRequest_Stream_name = map[int32]string{
+		0: "BOTH",
+		1: "STDOUT",
+		2: "STDERR",
+	}
+	GetJobOutputRequest_Stream_value = map[string]int32{
+		"BOTH":   0,
+		"STDOUT": 1,
+		"STDERR": 2,
+	}
+)
+
+func (x GetJobOutputRequest_Stream) Enum() *GetJobOutputRequest_Stream {
+	p := new(GetJobOutputRequest_Stream)
+	*p = x
+	return p
+}
+
+func (x GetJobOutputRequest_Stream) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GetJobOutputRequest_Stream) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_agent_agent_proto_enumTypes[2].Descriptor()
+}
+
+func (GetJobOutputRequest_Stream) Type() protoreflect.EnumType {
+	return &file_proto_agent_agent_proto_enumTypes[2]
+}
+
+func (x GetJobOutputRequest_Stream) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GetJobOutputRequest_Stream.Descriptor instead.
+func (GetJobOutputRequest_Stream) EnumDescriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{19, 0}
+}
+
+type JobEvent_Kind int32
+
+const (
+	JobEvent_KIND_UNSPECIFIED JobEvent_Kind = 0
+	JobEvent_SNAPSHOT         JobEvent_Kind = 1 // Replay on connect
+	JobEvent_STARTED          JobEvent_Kind = 2
+	JobEvent_UPDATED          JobEvent_Kind = 3
+	JobEvent_COMPLETED        JobEvent_Kind = 4 // Terminal (exited / canceled / orphaned)
+	JobEvent_DELETED          JobEvent_Kind = 5 // Job removed; only job_id is set
+)
+
+// Enum value maps for JobEvent_Kind.
+var (
+	JobEvent_Kind_name = map[int32]string{
+		0: "KIND_UNSPECIFIED",
+		1: "SNAPSHOT",
+		2: "STARTED",
+		3: "UPDATED",
+		4: "COMPLETED",
+		5: "DELETED",
+	}
+	JobEvent_Kind_value = map[string]int32{
+		"KIND_UNSPECIFIED": 0,
+		"SNAPSHOT":         1,
+		"STARTED":          2,
+		"UPDATED":          3,
+		"COMPLETED":        4,
+		"DELETED":          5,
+	}
+)
+
+func (x JobEvent_Kind) Enum() *JobEvent_Kind {
+	p := new(JobEvent_Kind)
+	*p = x
+	return p
+}
+
+func (x JobEvent_Kind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (JobEvent_Kind) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_agent_agent_proto_enumTypes[3].Descriptor()
+}
+
+func (JobEvent_Kind) Type() protoreflect.EnumType {
+	return &file_proto_agent_agent_proto_enumTypes[3]
+}
+
+func (x JobEvent_Kind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use JobEvent_Kind.Descriptor instead.
+func (JobEvent_Kind) EnumDescriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{26, 0}
 }
 
 type ExecuteRequest struct {
@@ -242,6 +404,7 @@ type ExecuteResponse struct {
 	Done          bool                   `protobuf:"varint,3,opt,name=done,proto3" json:"done,omitempty"`
 	ExitCode      int32                  `protobuf:"varint,4,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"` // Valid when done=true
 	Pid           int32                  `protobuf:"varint,5,opt,name=pid,proto3" json:"pid,omitempty"`                           // PID of spawned process (sent in first message)
+	JobId         string                 `protobuf:"bytes,6,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`           // Set when detach=true; empty for foreground executions
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -309,6 +472,13 @@ func (x *ExecuteResponse) GetPid() int32 {
 		return x.Pid
 	}
 	return 0
+}
+
+func (x *ExecuteResponse) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
 }
 
 type PushFileRequest struct {
@@ -915,6 +1085,823 @@ func (x *GetInfoResponse) GetAgentVersion() string {
 	return ""
 }
 
+type Job struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Command       string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
+	Shell         string                 `protobuf:"bytes,3,opt,name=shell,proto3" json:"shell,omitempty"`
+	WorkingDir    string                 `protobuf:"bytes,4,opt,name=working_dir,json=workingDir,proto3" json:"working_dir,omitempty"`
+	Env           map[string]string      `protobuf:"bytes,5,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Pid           int32                  `protobuf:"varint,6,opt,name=pid,proto3" json:"pid,omitempty"`
+	Status        JobStatus              `protobuf:"varint,7,opt,name=status,proto3,enum=agent.JobStatus" json:"status,omitempty"`
+	ExitCode      int32                  `protobuf:"varint,8,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`   // Valid when status=EXITED
+	StartedAt     string                 `protobuf:"bytes,9,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"` // RFC3339
+	EndedAt       string                 `protobuf:"bytes,10,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`      // RFC3339; empty while running
+	StdoutBytes   int64                  `protobuf:"varint,11,opt,name=stdout_bytes,json=stdoutBytes,proto3" json:"stdout_bytes,omitempty"`
+	StderrBytes   int64                  `protobuf:"varint,12,opt,name=stderr_bytes,json=stderrBytes,proto3" json:"stderr_bytes,omitempty"`
+	Error         string                 `protobuf:"bytes,13,opt,name=error,proto3" json:"error,omitempty"` // Last recorded error (e.g. start failure)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Job) Reset() {
+	*x = Job{}
+	mi := &file_proto_agent_agent_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Job) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Job) ProtoMessage() {}
+
+func (x *Job) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Job.ProtoReflect.Descriptor instead.
+func (*Job) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *Job) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *Job) GetCommand() string {
+	if x != nil {
+		return x.Command
+	}
+	return ""
+}
+
+func (x *Job) GetShell() string {
+	if x != nil {
+		return x.Shell
+	}
+	return ""
+}
+
+func (x *Job) GetWorkingDir() string {
+	if x != nil {
+		return x.WorkingDir
+	}
+	return ""
+}
+
+func (x *Job) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *Job) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *Job) GetStatus() JobStatus {
+	if x != nil {
+		return x.Status
+	}
+	return JobStatus_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *Job) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *Job) GetStartedAt() string {
+	if x != nil {
+		return x.StartedAt
+	}
+	return ""
+}
+
+func (x *Job) GetEndedAt() string {
+	if x != nil {
+		return x.EndedAt
+	}
+	return ""
+}
+
+func (x *Job) GetStdoutBytes() int64 {
+	if x != nil {
+		return x.StdoutBytes
+	}
+	return 0
+}
+
+func (x *Job) GetStderrBytes() int64 {
+	if x != nil {
+		return x.StderrBytes
+	}
+	return 0
+}
+
+func (x *Job) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+type ListJobsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StatusFilter  JobStatus              `protobuf:"varint,1,opt,name=status_filter,json=statusFilter,proto3,enum=agent.JobStatus" json:"status_filter,omitempty"` // UNSPECIFIED = no filter
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                                                        // 0 = default (50)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListJobsRequest) Reset() {
+	*x = ListJobsRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListJobsRequest) ProtoMessage() {}
+
+func (x *ListJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListJobsRequest.ProtoReflect.Descriptor instead.
+func (*ListJobsRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListJobsRequest) GetStatusFilter() JobStatus {
+	if x != nil {
+		return x.StatusFilter
+	}
+	return JobStatus_JOB_STATUS_UNSPECIFIED
+}
+
+func (x *ListJobsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type ListJobsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Jobs          []*Job                 `protobuf:"bytes,1,rep,name=jobs,proto3" json:"jobs,omitempty"` // Newest-first
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListJobsResponse) Reset() {
+	*x = ListJobsResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListJobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListJobsResponse) ProtoMessage() {}
+
+func (x *ListJobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListJobsResponse.ProtoReflect.Descriptor instead.
+func (*ListJobsResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ListJobsResponse) GetJobs() []*Job {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
+type GetJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetJobRequest) Reset() {
+	*x = GetJobRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetJobRequest) ProtoMessage() {}
+
+func (x *GetJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetJobRequest.ProtoReflect.Descriptor instead.
+func (*GetJobRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *GetJobRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type GetJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetJobResponse) Reset() {
+	*x = GetJobResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetJobResponse) ProtoMessage() {}
+
+func (x *GetJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetJobResponse.ProtoReflect.Descriptor instead.
+func (*GetJobResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *GetJobResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+type GetJobOutputRequest struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	JobId         string                     `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Stream        GetJobOutputRequest_Stream `protobuf:"varint,2,opt,name=stream,proto3,enum=agent.GetJobOutputRequest_Stream" json:"stream,omitempty"`
+	TailLines     int32                      `protobuf:"varint,3,opt,name=tail_lines,json=tailLines,proto3" json:"tail_lines,omitempty"` // 0 = whole file (subject to max_bytes)
+	MaxBytes      int64                      `protobuf:"varint,4,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`    // 0 = default (1 MiB), clamped to 8 MiB
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetJobOutputRequest) Reset() {
+	*x = GetJobOutputRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetJobOutputRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetJobOutputRequest) ProtoMessage() {}
+
+func (x *GetJobOutputRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetJobOutputRequest.ProtoReflect.Descriptor instead.
+func (*GetJobOutputRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetJobOutputRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *GetJobOutputRequest) GetStream() GetJobOutputRequest_Stream {
+	if x != nil {
+		return x.Stream
+	}
+	return GetJobOutputRequest_BOTH
+}
+
+func (x *GetJobOutputRequest) GetTailLines() int32 {
+	if x != nil {
+		return x.TailLines
+	}
+	return 0
+}
+
+func (x *GetJobOutputRequest) GetMaxBytes() int64 {
+	if x != nil {
+		return x.MaxBytes
+	}
+	return 0
+}
+
+type GetJobOutputResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Stdout           []byte                 `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr           []byte                 `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	Truncated        bool                   `protobuf:"varint,3,opt,name=truncated,proto3" json:"truncated,omitempty"` // True if the cap was hit
+	StdoutTotalBytes int64                  `protobuf:"varint,4,opt,name=stdout_total_bytes,json=stdoutTotalBytes,proto3" json:"stdout_total_bytes,omitempty"`
+	StderrTotalBytes int64                  `protobuf:"varint,5,opt,name=stderr_total_bytes,json=stderrTotalBytes,proto3" json:"stderr_total_bytes,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *GetJobOutputResponse) Reset() {
+	*x = GetJobOutputResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetJobOutputResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetJobOutputResponse) ProtoMessage() {}
+
+func (x *GetJobOutputResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetJobOutputResponse.ProtoReflect.Descriptor instead.
+func (*GetJobOutputResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *GetJobOutputResponse) GetStdout() []byte {
+	if x != nil {
+		return x.Stdout
+	}
+	return nil
+}
+
+func (x *GetJobOutputResponse) GetStderr() []byte {
+	if x != nil {
+		return x.Stderr
+	}
+	return nil
+}
+
+func (x *GetJobOutputResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *GetJobOutputResponse) GetStdoutTotalBytes() int64 {
+	if x != nil {
+		return x.StdoutTotalBytes
+	}
+	return 0
+}
+
+func (x *GetJobOutputResponse) GetStderrTotalBytes() int64 {
+	if x != nil {
+		return x.StderrTotalBytes
+	}
+	return 0
+}
+
+type CancelJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Force         bool                   `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"` // Force-terminate (taskkill /F / SIGKILL)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobRequest) Reset() {
+	*x = CancelJobRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobRequest) ProtoMessage() {}
+
+func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
+func (*CancelJobRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *CancelJobRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *CancelJobRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+type CancelJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"` // Updated job meta
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CancelJobResponse) Reset() {
+	*x = CancelJobResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CancelJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CancelJobResponse) ProtoMessage() {}
+
+func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CancelJobResponse.ProtoReflect.Descriptor instead.
+func (*CancelJobResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *CancelJobResponse) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+type DeleteJobRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteJobRequest) Reset() {
+	*x = DeleteJobRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteJobRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteJobRequest) ProtoMessage() {}
+
+func (x *DeleteJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteJobRequest.ProtoReflect.Descriptor instead.
+func (*DeleteJobRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *DeleteJobRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+type DeleteJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       bool                   `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteJobResponse) Reset() {
+	*x = DeleteJobResponse{}
+	mi := &file_proto_agent_agent_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteJobResponse) ProtoMessage() {}
+
+func (x *DeleteJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteJobResponse.ProtoReflect.Descriptor instead.
+func (*DeleteJobResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *DeleteJobResponse) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+type WatchJobsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WatchJobsRequest) Reset() {
+	*x = WatchJobsRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WatchJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WatchJobsRequest) ProtoMessage() {}
+
+func (x *WatchJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WatchJobsRequest.ProtoReflect.Descriptor instead.
+func (*WatchJobsRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{25}
+}
+
+type JobEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Kind          JobEvent_Kind          `protobuf:"varint,1,opt,name=kind,proto3,enum=agent.JobEvent_Kind" json:"kind,omitempty"`
+	Job           *Job                   `protobuf:"bytes,2,opt,name=job,proto3" json:"job,omitempty"`
+	JobId         string                 `protobuf:"bytes,3,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"` // For DELETED events
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JobEvent) Reset() {
+	*x = JobEvent{}
+	mi := &file_proto_agent_agent_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JobEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JobEvent) ProtoMessage() {}
+
+func (x *JobEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JobEvent.ProtoReflect.Descriptor instead.
+func (*JobEvent) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *JobEvent) GetKind() JobEvent_Kind {
+	if x != nil {
+		return x.Kind
+	}
+	return JobEvent_KIND_UNSPECIFIED
+}
+
+func (x *JobEvent) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+func (x *JobEvent) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+// ForwardChunk carries a TCP tunnel control message or a slab of data.
+//
+// First-message convention: the first client→server ForwardChunk MUST set
+// target_addr (e.g. "127.0.0.1:8765"). The agent dials that TCP address with
+// a short timeout, then enters a byte-shuttling loop. Subsequent messages on
+// either direction carry application bytes in `data`. Setting `close=true`
+// indicates the sender is done writing (half-close); the agent forwards EOF
+// to the target socket. When the target socket closes its read side, the
+// agent sends {close: true} back and ends the stream.
+type ForwardChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TargetAddr    string                 `protobuf:"bytes,1,opt,name=target_addr,json=targetAddr,proto3" json:"target_addr,omitempty"` // First client message only
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	Close         bool                   `protobuf:"varint,3,opt,name=close,proto3" json:"close,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardChunk) Reset() {
+	*x = ForwardChunk{}
+	mi := &file_proto_agent_agent_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardChunk) ProtoMessage() {}
+
+func (x *ForwardChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardChunk.ProtoReflect.Descriptor instead.
+func (*ForwardChunk) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ForwardChunk) GetTargetAddr() string {
+	if x != nil {
+		return x.TargetAddr
+	}
+	return ""
+}
+
+func (x *ForwardChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *ForwardChunk) GetClose() bool {
+	if x != nil {
+		return x.Close
+	}
+	return false
+}
+
 var File_proto_agent_agent_proto protoreflect.FileDescriptor
 
 const file_proto_agent_agent_proto_rawDesc = "" +
@@ -942,13 +1929,14 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\x04args\x18\x06 \x03(\tR\x04args\x1a6\n" +
 	"\bEnvEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc1\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd8\x01\n" +
 	"\x0fExecuteResponse\x125\n" +
 	"\x06stream\x18\x01 \x01(\x0e2\x1d.agent.ExecuteResponse.StreamR\x06stream\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x12\n" +
 	"\x04done\x18\x03 \x01(\bR\x04done\x12\x1b\n" +
 	"\texit_code\x18\x04 \x01(\x05R\bexitCode\x12\x10\n" +
-	"\x03pid\x18\x05 \x01(\x05R\x03pid\" \n" +
+	"\x03pid\x18\x05 \x01(\x05R\x03pid\x12\x15\n" +
+	"\x06job_id\x18\x06 \x01(\tR\x05jobId\" \n" +
 	"\x06Stream\x12\n" +
 	"\n" +
 	"\x06STDOUT\x10\x00\x12\n" +
@@ -996,7 +1984,90 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\x04arch\x18\x03 \x01(\tR\x04arch\x12\x1b\n" +
 	"\tcpu_count\x18\x04 \x01(\x05R\bcpuCount\x12!\n" +
 	"\fmemory_bytes\x18\x05 \x01(\x03R\vmemoryBytes\x12#\n" +
-	"\ragent_version\x18\x06 \x01(\tR\fagentVersion2\xd9\x03\n" +
+	"\ragent_version\x18\x06 \x01(\tR\fagentVersion\"\xbb\x03\n" +
+	"\x03Job\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
+	"\acommand\x18\x02 \x01(\tR\acommand\x12\x14\n" +
+	"\x05shell\x18\x03 \x01(\tR\x05shell\x12\x1f\n" +
+	"\vworking_dir\x18\x04 \x01(\tR\n" +
+	"workingDir\x12%\n" +
+	"\x03env\x18\x05 \x03(\v2\x13.agent.Job.EnvEntryR\x03env\x12\x10\n" +
+	"\x03pid\x18\x06 \x01(\x05R\x03pid\x12(\n" +
+	"\x06status\x18\a \x01(\x0e2\x10.agent.JobStatusR\x06status\x12\x1b\n" +
+	"\texit_code\x18\b \x01(\x05R\bexitCode\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\t \x01(\tR\tstartedAt\x12\x19\n" +
+	"\bended_at\x18\n" +
+	" \x01(\tR\aendedAt\x12!\n" +
+	"\fstdout_bytes\x18\v \x01(\x03R\vstdoutBytes\x12!\n" +
+	"\fstderr_bytes\x18\f \x01(\x03R\vstderrBytes\x12\x14\n" +
+	"\x05error\x18\r \x01(\tR\x05error\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"^\n" +
+	"\x0fListJobsRequest\x125\n" +
+	"\rstatus_filter\x18\x01 \x01(\x0e2\x10.agent.JobStatusR\fstatusFilter\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"2\n" +
+	"\x10ListJobsResponse\x12\x1e\n" +
+	"\x04jobs\x18\x01 \x03(\v2\n" +
+	".agent.JobR\x04jobs\"&\n" +
+	"\rGetJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\".\n" +
+	"\x0eGetJobResponse\x12\x1c\n" +
+	"\x03job\x18\x01 \x01(\v2\n" +
+	".agent.JobR\x03job\"\xcf\x01\n" +
+	"\x13GetJobOutputRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x129\n" +
+	"\x06stream\x18\x02 \x01(\x0e2!.agent.GetJobOutputRequest.StreamR\x06stream\x12\x1d\n" +
+	"\n" +
+	"tail_lines\x18\x03 \x01(\x05R\ttailLines\x12\x1b\n" +
+	"\tmax_bytes\x18\x04 \x01(\x03R\bmaxBytes\"*\n" +
+	"\x06Stream\x12\b\n" +
+	"\x04BOTH\x10\x00\x12\n" +
+	"\n" +
+	"\x06STDOUT\x10\x01\x12\n" +
+	"\n" +
+	"\x06STDERR\x10\x02\"\xc0\x01\n" +
+	"\x14GetJobOutputResponse\x12\x16\n" +
+	"\x06stdout\x18\x01 \x01(\fR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\x02 \x01(\fR\x06stderr\x12\x1c\n" +
+	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12,\n" +
+	"\x12stdout_total_bytes\x18\x04 \x01(\x03R\x10stdoutTotalBytes\x12,\n" +
+	"\x12stderr_total_bytes\x18\x05 \x01(\x03R\x10stderrTotalBytes\"?\n" +
+	"\x10CancelJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\"1\n" +
+	"\x11CancelJobResponse\x12\x1c\n" +
+	"\x03job\x18\x01 \x01(\v2\n" +
+	".agent.JobR\x03job\")\n" +
+	"\x10DeleteJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"-\n" +
+	"\x11DeleteJobResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\"\x12\n" +
+	"\x10WatchJobsRequest\"\xcb\x01\n" +
+	"\bJobEvent\x12(\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x14.agent.JobEvent.KindR\x04kind\x12\x1c\n" +
+	"\x03job\x18\x02 \x01(\v2\n" +
+	".agent.JobR\x03job\x12\x15\n" +
+	"\x06job_id\x18\x03 \x01(\tR\x05jobId\"`\n" +
+	"\x04Kind\x12\x14\n" +
+	"\x10KIND_UNSPECIFIED\x10\x00\x12\f\n" +
+	"\bSNAPSHOT\x10\x01\x12\v\n" +
+	"\aSTARTED\x10\x02\x12\v\n" +
+	"\aUPDATED\x10\x03\x12\r\n" +
+	"\tCOMPLETED\x10\x04\x12\v\n" +
+	"\aDELETED\x10\x05\"Y\n" +
+	"\fForwardChunk\x12\x1f\n" +
+	"\vtarget_addr\x18\x01 \x01(\tR\n" +
+	"targetAddr\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x14\n" +
+	"\x05close\x18\x03 \x01(\bR\x05close*\x88\x01\n" +
+	"\tJobStatus\x12\x1a\n" +
+	"\x16JOB_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12JOB_STATUS_RUNNING\x10\x01\x12\x15\n" +
+	"\x11JOB_STATUS_EXITED\x10\x02\x12\x17\n" +
+	"\x13JOB_STATUS_CANCELED\x10\x03\x12\x17\n" +
+	"\x13JOB_STATUS_ORPHANED\x10\x042\x88\a\n" +
 	"\tNodeAgent\x12:\n" +
 	"\aExecute\x12\x15.agent.ExecuteRequest\x1a\x16.agent.ExecuteResponse0\x01\x12F\n" +
 	"\rExecuteScript\x12\x1b.agent.ExecuteScriptRequest\x1a\x16.agent.ExecuteResponse0\x01\x12=\n" +
@@ -1004,7 +2075,14 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\bPullFile\x12\x16.agent.PullFileRequest\x1a\x17.agent.PullFileResponse0\x01\x12J\n" +
 	"\rListProcesses\x12\x1b.agent.ListProcessesRequest\x1a\x1c.agent.ListProcessesResponse\x12D\n" +
 	"\vKillProcess\x12\x19.agent.KillProcessRequest\x1a\x1a.agent.KillProcessResponse\x128\n" +
-	"\aGetInfo\x12\x15.agent.GetInfoRequest\x1a\x16.agent.GetInfoResponseB*Z(github.com/nijosmsft/lablink/proto/agentb\x06proto3"
+	"\aGetInfo\x12\x15.agent.GetInfoRequest\x1a\x16.agent.GetInfoResponse\x12;\n" +
+	"\bListJobs\x12\x16.agent.ListJobsRequest\x1a\x17.agent.ListJobsResponse\x125\n" +
+	"\x06GetJob\x12\x14.agent.GetJobRequest\x1a\x15.agent.GetJobResponse\x12G\n" +
+	"\fGetJobOutput\x12\x1a.agent.GetJobOutputRequest\x1a\x1b.agent.GetJobOutputResponse\x12>\n" +
+	"\tCancelJob\x12\x17.agent.CancelJobRequest\x1a\x18.agent.CancelJobResponse\x12>\n" +
+	"\tDeleteJob\x12\x17.agent.DeleteJobRequest\x1a\x18.agent.DeleteJobResponse\x127\n" +
+	"\tWatchJobs\x12\x17.agent.WatchJobsRequest\x1a\x0f.agent.JobEvent0\x01\x127\n" +
+	"\aForward\x12\x13.agent.ForwardChunk\x1a\x13.agent.ForwardChunk(\x010\x01B*Z(github.com/nijosmsft/lablink/proto/agentb\x06proto3"
 
 var (
 	file_proto_agent_agent_proto_rawDescOnce sync.Once
@@ -1018,51 +2096,92 @@ func file_proto_agent_agent_proto_rawDescGZIP() []byte {
 	return file_proto_agent_agent_proto_rawDescData
 }
 
-var file_proto_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_proto_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_proto_agent_agent_proto_goTypes = []any{
-	(ExecuteResponse_Stream)(0),   // 0: agent.ExecuteResponse.Stream
-	(*ExecuteRequest)(nil),        // 1: agent.ExecuteRequest
-	(*ExecuteScriptRequest)(nil),  // 2: agent.ExecuteScriptRequest
-	(*ExecuteResponse)(nil),       // 3: agent.ExecuteResponse
-	(*PushFileRequest)(nil),       // 4: agent.PushFileRequest
-	(*PushFileResponse)(nil),      // 5: agent.PushFileResponse
-	(*PullFileRequest)(nil),       // 6: agent.PullFileRequest
-	(*PullFileResponse)(nil),      // 7: agent.PullFileResponse
-	(*ListProcessesRequest)(nil),  // 8: agent.ListProcessesRequest
-	(*ListProcessesResponse)(nil), // 9: agent.ListProcessesResponse
-	(*ProcessInfo)(nil),           // 10: agent.ProcessInfo
-	(*KillProcessRequest)(nil),    // 11: agent.KillProcessRequest
-	(*KillProcessResponse)(nil),   // 12: agent.KillProcessResponse
-	(*GetInfoRequest)(nil),        // 13: agent.GetInfoRequest
-	(*GetInfoResponse)(nil),       // 14: agent.GetInfoResponse
-	nil,                           // 15: agent.ExecuteRequest.EnvEntry
-	nil,                           // 16: agent.ExecuteScriptRequest.EnvEntry
+	(JobStatus)(0),                  // 0: agent.JobStatus
+	(ExecuteResponse_Stream)(0),     // 1: agent.ExecuteResponse.Stream
+	(GetJobOutputRequest_Stream)(0), // 2: agent.GetJobOutputRequest.Stream
+	(JobEvent_Kind)(0),              // 3: agent.JobEvent.Kind
+	(*ExecuteRequest)(nil),          // 4: agent.ExecuteRequest
+	(*ExecuteScriptRequest)(nil),    // 5: agent.ExecuteScriptRequest
+	(*ExecuteResponse)(nil),         // 6: agent.ExecuteResponse
+	(*PushFileRequest)(nil),         // 7: agent.PushFileRequest
+	(*PushFileResponse)(nil),        // 8: agent.PushFileResponse
+	(*PullFileRequest)(nil),         // 9: agent.PullFileRequest
+	(*PullFileResponse)(nil),        // 10: agent.PullFileResponse
+	(*ListProcessesRequest)(nil),    // 11: agent.ListProcessesRequest
+	(*ListProcessesResponse)(nil),   // 12: agent.ListProcessesResponse
+	(*ProcessInfo)(nil),             // 13: agent.ProcessInfo
+	(*KillProcessRequest)(nil),      // 14: agent.KillProcessRequest
+	(*KillProcessResponse)(nil),     // 15: agent.KillProcessResponse
+	(*GetInfoRequest)(nil),          // 16: agent.GetInfoRequest
+	(*GetInfoResponse)(nil),         // 17: agent.GetInfoResponse
+	(*Job)(nil),                     // 18: agent.Job
+	(*ListJobsRequest)(nil),         // 19: agent.ListJobsRequest
+	(*ListJobsResponse)(nil),        // 20: agent.ListJobsResponse
+	(*GetJobRequest)(nil),           // 21: agent.GetJobRequest
+	(*GetJobResponse)(nil),          // 22: agent.GetJobResponse
+	(*GetJobOutputRequest)(nil),     // 23: agent.GetJobOutputRequest
+	(*GetJobOutputResponse)(nil),    // 24: agent.GetJobOutputResponse
+	(*CancelJobRequest)(nil),        // 25: agent.CancelJobRequest
+	(*CancelJobResponse)(nil),       // 26: agent.CancelJobResponse
+	(*DeleteJobRequest)(nil),        // 27: agent.DeleteJobRequest
+	(*DeleteJobResponse)(nil),       // 28: agent.DeleteJobResponse
+	(*WatchJobsRequest)(nil),        // 29: agent.WatchJobsRequest
+	(*JobEvent)(nil),                // 30: agent.JobEvent
+	(*ForwardChunk)(nil),            // 31: agent.ForwardChunk
+	nil,                             // 32: agent.ExecuteRequest.EnvEntry
+	nil,                             // 33: agent.ExecuteScriptRequest.EnvEntry
+	nil,                             // 34: agent.Job.EnvEntry
 }
 var file_proto_agent_agent_proto_depIdxs = []int32{
-	15, // 0: agent.ExecuteRequest.env:type_name -> agent.ExecuteRequest.EnvEntry
-	16, // 1: agent.ExecuteScriptRequest.env:type_name -> agent.ExecuteScriptRequest.EnvEntry
-	0,  // 2: agent.ExecuteResponse.stream:type_name -> agent.ExecuteResponse.Stream
-	10, // 3: agent.ListProcessesResponse.processes:type_name -> agent.ProcessInfo
-	1,  // 4: agent.NodeAgent.Execute:input_type -> agent.ExecuteRequest
-	2,  // 5: agent.NodeAgent.ExecuteScript:input_type -> agent.ExecuteScriptRequest
-	4,  // 6: agent.NodeAgent.PushFile:input_type -> agent.PushFileRequest
-	6,  // 7: agent.NodeAgent.PullFile:input_type -> agent.PullFileRequest
-	8,  // 8: agent.NodeAgent.ListProcesses:input_type -> agent.ListProcessesRequest
-	11, // 9: agent.NodeAgent.KillProcess:input_type -> agent.KillProcessRequest
-	13, // 10: agent.NodeAgent.GetInfo:input_type -> agent.GetInfoRequest
-	3,  // 11: agent.NodeAgent.Execute:output_type -> agent.ExecuteResponse
-	3,  // 12: agent.NodeAgent.ExecuteScript:output_type -> agent.ExecuteResponse
-	5,  // 13: agent.NodeAgent.PushFile:output_type -> agent.PushFileResponse
-	7,  // 14: agent.NodeAgent.PullFile:output_type -> agent.PullFileResponse
-	9,  // 15: agent.NodeAgent.ListProcesses:output_type -> agent.ListProcessesResponse
-	12, // 16: agent.NodeAgent.KillProcess:output_type -> agent.KillProcessResponse
-	14, // 17: agent.NodeAgent.GetInfo:output_type -> agent.GetInfoResponse
-	11, // [11:18] is the sub-list for method output_type
-	4,  // [4:11] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	32, // 0: agent.ExecuteRequest.env:type_name -> agent.ExecuteRequest.EnvEntry
+	33, // 1: agent.ExecuteScriptRequest.env:type_name -> agent.ExecuteScriptRequest.EnvEntry
+	1,  // 2: agent.ExecuteResponse.stream:type_name -> agent.ExecuteResponse.Stream
+	13, // 3: agent.ListProcessesResponse.processes:type_name -> agent.ProcessInfo
+	34, // 4: agent.Job.env:type_name -> agent.Job.EnvEntry
+	0,  // 5: agent.Job.status:type_name -> agent.JobStatus
+	0,  // 6: agent.ListJobsRequest.status_filter:type_name -> agent.JobStatus
+	18, // 7: agent.ListJobsResponse.jobs:type_name -> agent.Job
+	18, // 8: agent.GetJobResponse.job:type_name -> agent.Job
+	2,  // 9: agent.GetJobOutputRequest.stream:type_name -> agent.GetJobOutputRequest.Stream
+	18, // 10: agent.CancelJobResponse.job:type_name -> agent.Job
+	3,  // 11: agent.JobEvent.kind:type_name -> agent.JobEvent.Kind
+	18, // 12: agent.JobEvent.job:type_name -> agent.Job
+	4,  // 13: agent.NodeAgent.Execute:input_type -> agent.ExecuteRequest
+	5,  // 14: agent.NodeAgent.ExecuteScript:input_type -> agent.ExecuteScriptRequest
+	7,  // 15: agent.NodeAgent.PushFile:input_type -> agent.PushFileRequest
+	9,  // 16: agent.NodeAgent.PullFile:input_type -> agent.PullFileRequest
+	11, // 17: agent.NodeAgent.ListProcesses:input_type -> agent.ListProcessesRequest
+	14, // 18: agent.NodeAgent.KillProcess:input_type -> agent.KillProcessRequest
+	16, // 19: agent.NodeAgent.GetInfo:input_type -> agent.GetInfoRequest
+	19, // 20: agent.NodeAgent.ListJobs:input_type -> agent.ListJobsRequest
+	21, // 21: agent.NodeAgent.GetJob:input_type -> agent.GetJobRequest
+	23, // 22: agent.NodeAgent.GetJobOutput:input_type -> agent.GetJobOutputRequest
+	25, // 23: agent.NodeAgent.CancelJob:input_type -> agent.CancelJobRequest
+	27, // 24: agent.NodeAgent.DeleteJob:input_type -> agent.DeleteJobRequest
+	29, // 25: agent.NodeAgent.WatchJobs:input_type -> agent.WatchJobsRequest
+	31, // 26: agent.NodeAgent.Forward:input_type -> agent.ForwardChunk
+	6,  // 27: agent.NodeAgent.Execute:output_type -> agent.ExecuteResponse
+	6,  // 28: agent.NodeAgent.ExecuteScript:output_type -> agent.ExecuteResponse
+	8,  // 29: agent.NodeAgent.PushFile:output_type -> agent.PushFileResponse
+	10, // 30: agent.NodeAgent.PullFile:output_type -> agent.PullFileResponse
+	12, // 31: agent.NodeAgent.ListProcesses:output_type -> agent.ListProcessesResponse
+	15, // 32: agent.NodeAgent.KillProcess:output_type -> agent.KillProcessResponse
+	17, // 33: agent.NodeAgent.GetInfo:output_type -> agent.GetInfoResponse
+	20, // 34: agent.NodeAgent.ListJobs:output_type -> agent.ListJobsResponse
+	22, // 35: agent.NodeAgent.GetJob:output_type -> agent.GetJobResponse
+	24, // 36: agent.NodeAgent.GetJobOutput:output_type -> agent.GetJobOutputResponse
+	26, // 37: agent.NodeAgent.CancelJob:output_type -> agent.CancelJobResponse
+	28, // 38: agent.NodeAgent.DeleteJob:output_type -> agent.DeleteJobResponse
+	30, // 39: agent.NodeAgent.WatchJobs:output_type -> agent.JobEvent
+	31, // 40: agent.NodeAgent.Forward:output_type -> agent.ForwardChunk
+	27, // [27:41] is the sub-list for method output_type
+	13, // [13:27] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_proto_agent_agent_proto_init() }
@@ -1075,8 +2194,8 @@ func file_proto_agent_agent_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_agent_proto_rawDesc), len(file_proto_agent_agent_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   16,
+			NumEnums:      4,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -26,6 +26,13 @@ const (
 	NodeAgent_ListProcesses_FullMethodName = "/agent.NodeAgent/ListProcesses"
 	NodeAgent_KillProcess_FullMethodName   = "/agent.NodeAgent/KillProcess"
 	NodeAgent_GetInfo_FullMethodName       = "/agent.NodeAgent/GetInfo"
+	NodeAgent_ListJobs_FullMethodName      = "/agent.NodeAgent/ListJobs"
+	NodeAgent_GetJob_FullMethodName        = "/agent.NodeAgent/GetJob"
+	NodeAgent_GetJobOutput_FullMethodName  = "/agent.NodeAgent/GetJobOutput"
+	NodeAgent_CancelJob_FullMethodName     = "/agent.NodeAgent/CancelJob"
+	NodeAgent_DeleteJob_FullMethodName     = "/agent.NodeAgent/DeleteJob"
+	NodeAgent_WatchJobs_FullMethodName     = "/agent.NodeAgent/WatchJobs"
+	NodeAgent_Forward_FullMethodName       = "/agent.NodeAgent/Forward"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -46,6 +53,26 @@ type NodeAgentClient interface {
 	KillProcess(ctx context.Context, in *KillProcessRequest, opts ...grpc.CallOption) (*KillProcessResponse, error)
 	// Health check and node metadata.
 	GetInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoResponse, error)
+	// List tracked background jobs (detached executions).
+	ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error)
+	// Get a single job's metadata.
+	GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*GetJobResponse, error)
+	// Get captured output for a job (stdout and/or stderr).
+	GetJobOutput(ctx context.Context, in *GetJobOutputRequest, opts ...grpc.CallOption) (*GetJobOutputResponse, error)
+	// Cancel a running job (terminates the process tree).
+	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
+	// Delete a terminal job (removes the job directory).
+	DeleteJob(ctx context.Context, in *DeleteJobRequest, opts ...grpc.CallOption) (*DeleteJobResponse, error)
+	// Watch job lifecycle events. On connect, the agent replays a snapshot of
+	// current jobs as Started events, then streams live updates.
+	WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JobEvent], error)
+	// Forward TCP bytes bidirectionally between the operator and a target on
+	// the agent node. The first client message MUST set target_addr; the agent
+	// dials it (TCP) and then byte-shuttles in both directions. Either side
+	// sends {close: true} to signal half-close. Used to tunnel application
+	// protocols (e.g. an MCP server bound to localhost on the node) through the
+	// node agent's existing mTLS channel.
+	Forward(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ForwardChunk, ForwardChunk], error)
 }
 
 type nodeAgentClient struct {
@@ -156,6 +183,88 @@ func (c *nodeAgentClient) GetInfo(ctx context.Context, in *GetInfoRequest, opts 
 	return out, nil
 }
 
+func (c *nodeAgentClient) ListJobs(ctx context.Context, in *ListJobsRequest, opts ...grpc.CallOption) (*ListJobsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListJobsResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ListJobs_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) GetJob(ctx context.Context, in *GetJobRequest, opts ...grpc.CallOption) (*GetJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetJobResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) GetJobOutput(ctx context.Context, in *GetJobOutputRequest, opts ...grpc.CallOption) (*GetJobOutputResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetJobOutputResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_GetJobOutput_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelJobResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_CancelJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) DeleteJob(ctx context.Context, in *DeleteJobRequest, opts ...grpc.CallOption) (*DeleteJobResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteJobResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_DeleteJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JobEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[4], NodeAgent_WatchJobs_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchJobsRequest, JobEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_WatchJobsClient = grpc.ServerStreamingClient[JobEvent]
+
+func (c *nodeAgentClient) Forward(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ForwardChunk, ForwardChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[5], NodeAgent_Forward_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ForwardChunk, ForwardChunk]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ForwardClient = grpc.BidiStreamingClient[ForwardChunk, ForwardChunk]
+
 // NodeAgentServer is the server API for NodeAgent service.
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
@@ -174,6 +283,26 @@ type NodeAgentServer interface {
 	KillProcess(context.Context, *KillProcessRequest) (*KillProcessResponse, error)
 	// Health check and node metadata.
 	GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error)
+	// List tracked background jobs (detached executions).
+	ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error)
+	// Get a single job's metadata.
+	GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error)
+	// Get captured output for a job (stdout and/or stderr).
+	GetJobOutput(context.Context, *GetJobOutputRequest) (*GetJobOutputResponse, error)
+	// Cancel a running job (terminates the process tree).
+	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
+	// Delete a terminal job (removes the job directory).
+	DeleteJob(context.Context, *DeleteJobRequest) (*DeleteJobResponse, error)
+	// Watch job lifecycle events. On connect, the agent replays a snapshot of
+	// current jobs as Started events, then streams live updates.
+	WatchJobs(*WatchJobsRequest, grpc.ServerStreamingServer[JobEvent]) error
+	// Forward TCP bytes bidirectionally between the operator and a target on
+	// the agent node. The first client message MUST set target_addr; the agent
+	// dials it (TCP) and then byte-shuttles in both directions. Either side
+	// sends {close: true} to signal half-close. Used to tunnel application
+	// protocols (e.g. an MCP server bound to localhost on the node) through the
+	// node agent's existing mTLS channel.
+	Forward(grpc.BidiStreamingServer[ForwardChunk, ForwardChunk]) error
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -204,6 +333,27 @@ func (UnimplementedNodeAgentServer) KillProcess(context.Context, *KillProcessReq
 }
 func (UnimplementedNodeAgentServer) GetInfo(context.Context, *GetInfoRequest) (*GetInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetInfo not implemented")
+}
+func (UnimplementedNodeAgentServer) ListJobs(context.Context, *ListJobsRequest) (*ListJobsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListJobs not implemented")
+}
+func (UnimplementedNodeAgentServer) GetJob(context.Context, *GetJobRequest) (*GetJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetJob not implemented")
+}
+func (UnimplementedNodeAgentServer) GetJobOutput(context.Context, *GetJobOutputRequest) (*GetJobOutputResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetJobOutput not implemented")
+}
+func (UnimplementedNodeAgentServer) CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
+}
+func (UnimplementedNodeAgentServer) DeleteJob(context.Context, *DeleteJobRequest) (*DeleteJobResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteJob not implemented")
+}
+func (UnimplementedNodeAgentServer) WatchJobs(*WatchJobsRequest, grpc.ServerStreamingServer[JobEvent]) error {
+	return status.Error(codes.Unimplemented, "method WatchJobs not implemented")
+}
+func (UnimplementedNodeAgentServer) Forward(grpc.BidiStreamingServer[ForwardChunk, ForwardChunk]) error {
+	return status.Error(codes.Unimplemented, "method Forward not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -320,6 +470,114 @@ func _NodeAgent_GetInfo_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ListJobs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListJobsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ListJobs(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ListJobs_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ListJobs(ctx, req.(*ListJobsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_GetJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetJob(ctx, req.(*GetJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_GetJobOutput_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetJobOutputRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).GetJobOutput(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_GetJobOutput_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).GetJobOutput(ctx, req.(*GetJobOutputRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_CancelJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).CancelJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_CancelJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).CancelJob(ctx, req.(*CancelJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_DeleteJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteJobRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).DeleteJob(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_DeleteJob_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).DeleteJob(ctx, req.(*DeleteJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_WatchJobs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchJobsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NodeAgentServer).WatchJobs(m, &grpc.GenericServerStream[WatchJobsRequest, JobEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_WatchJobsServer = grpc.ServerStreamingServer[JobEvent]
+
+func _NodeAgent_Forward_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(NodeAgentServer).Forward(&grpc.GenericServerStream[ForwardChunk, ForwardChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ForwardServer = grpc.BidiStreamingServer[ForwardChunk, ForwardChunk]
+
 // NodeAgent_ServiceDesc is the grpc.ServiceDesc for NodeAgent service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -338,6 +596,26 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInfo",
 			Handler:    _NodeAgent_GetInfo_Handler,
+		},
+		{
+			MethodName: "ListJobs",
+			Handler:    _NodeAgent_ListJobs_Handler,
+		},
+		{
+			MethodName: "GetJob",
+			Handler:    _NodeAgent_GetJob_Handler,
+		},
+		{
+			MethodName: "GetJobOutput",
+			Handler:    _NodeAgent_GetJobOutput_Handler,
+		},
+		{
+			MethodName: "CancelJob",
+			Handler:    _NodeAgent_CancelJob_Handler,
+		},
+		{
+			MethodName: "DeleteJob",
+			Handler:    _NodeAgent_DeleteJob_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
@@ -360,6 +638,17 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "PullFile",
 			Handler:       _NodeAgent_PullFile_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchJobs",
+			Handler:       _NodeAgent_WatchJobs_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "Forward",
+			Handler:       _NodeAgent_Forward_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "proto/agent/agent.proto",

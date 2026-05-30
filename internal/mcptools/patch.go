@@ -68,7 +68,7 @@ func (pc *PatchConfig) localSfpCopyPath() (string, error) {
 }
 
 func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, patchCfg *PatchConfig) {
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("patch_binary",
 			mcp.WithDescription("Patch a protected Windows system binary on a remote node. Pushes the local binary, backs up the original, and replaces it via a Windows engineering replace-utility (path supplied by the operator via SFPCOPY_SOURCE). Ensures test signing is enabled. A reboot may be required for kernel binaries."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -79,7 +79,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 		patchBinaryHandler(reg, pool, auditLog, patchCfg),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("reboot_node",
 			mcp.WithDescription("Reboot a remote node. Waits for the agent to come back online."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -88,7 +88,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 		rebootNodeHandler(reg, pool, auditLog),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("restore_binary",
 			mcp.WithDescription("Restore a previously patched binary from the backup directory on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -99,7 +99,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 		restoreBinaryHandler(reg, pool, auditLog),
 	)
 
-	s.AddTool(
+	addTool(s, 
 		mcp.NewTool("ensure_test_signing",
 			mcp.WithDescription("Check and enable test signing (bcdedit /set testsigning on) on a remote node. Returns whether a reboot is needed."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
