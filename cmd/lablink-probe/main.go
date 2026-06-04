@@ -12,11 +12,11 @@ import (
 	"google.golang.org/grpc"
 )
 
-var probeVersion = "0.3.0"
+var probeVersion = "v0.3.0"
 
 func main() {
 	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Printf("lablink-probe v%s\n", probeVersion)
+		fmt.Printf("lablink-probe %s\n", probeVersion)
 		return
 	}
 	if len(os.Args) < 2 {

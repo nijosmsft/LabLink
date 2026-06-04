@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var agentVersion = "0.3.0"
+var agentVersion = "v0.3.0"
 
 var (
 	listenAddr        = flag.String("listen", ":9091", "gRPC listen address")
@@ -47,7 +47,7 @@ func main() {
 	flag.Parse()
 
 	if *versionFlag {
-		fmt.Printf("lablink-agent v%s\n", agentVersion)
+		fmt.Printf("lablink-agent %s\n", agentVersion)
 		return
 	}
 

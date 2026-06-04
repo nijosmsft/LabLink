@@ -19,13 +19,13 @@ import (
 	"github.com/nijosmsft/lablink/internal/security"
 )
 
-var serverVersion = "0.3.0"
+var serverVersion = "v0.3.0"
 
 func main() {
 	// Handle --version before any other startup work so the call is cheap and
 	// safe in automated post-install verification.
 	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
-		fmt.Printf("lablink-server v%s\n", serverVersion)
+		fmt.Printf("lablink-server %s\n", serverVersion)
 		return
 	}
 
