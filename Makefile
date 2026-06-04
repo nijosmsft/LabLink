@@ -5,19 +5,19 @@ BIN_DIR := bin
 build: build-server build-agent-windows build-ca build-probe
 
 build-server:
-	go build -o $(BIN_DIR)/LabLinkServer.exe ./cmd/lablink-server/
+	go build -o $(BIN_DIR)/lablink-server.exe ./cmd/lablink-server/
 
 build-agent-windows:
-	GOOS=windows GOARCH=amd64 go build -o $(BIN_DIR)/LabLinkAgent.exe ./cmd/lablink-agent/
+	GOOS=windows GOARCH=amd64 go build -o $(BIN_DIR)/lablink-agent.exe ./cmd/lablink-agent/
 
 build-agent-linux:
-	GOOS=linux GOARCH=amd64 go build -o $(BIN_DIR)/LabLinkAgent-linux-amd64 ./cmd/lablink-agent/
+	GOOS=linux GOARCH=amd64 go build -o $(BIN_DIR)/lablink-agent-linux-amd64 ./cmd/lablink-agent/
 
 build-ca:
 	go build -o $(BIN_DIR)/lablink-ca.exe ./cmd/lablink-ca/
 
 build-probe:
-	go build -o $(BIN_DIR)/LabLinkProbe.exe ./cmd/lablink-probe/
+	go build -o $(BIN_DIR)/lablink-probe.exe ./cmd/lablink-probe/
 
 build-all: build-server build-agent-windows build-agent-linux build-ca build-probe
 
