@@ -18,7 +18,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/security"
 )
 
-var serverVersion = "0.1.0"
+var serverVersion = "0.2.0"
 
 func main() {
 	// Determine config directory.
@@ -128,7 +128,20 @@ Use set_node_context to avoid repeating working_dir and env vars on every comman
 Use get_history to recall previously executed commands.
 Use patch_binary to replace protected Windows system binaries (e.g., a kernel driver) using a replace-utility the operator supplies via SFPCOPY_SOURCE.
 Use ensure_test_signing to enable test signing, and reboot_node to reboot machines.
-Use export_nodes / import_nodes to save/restore the node registry as YAML.`),
+Use export_nodes / import_nodes to save/restore the node registry as YAML.
+
+ANTI-PATTERNS — DO NOT do these things:
+- DO NOT call reboot_node in a loop to reboot multiple nodes. Each call
+  serially waits the full wait_seconds for one node, so a loop of N nodes
+  blocks for N * wait_seconds wall-clock time. Use reboot_nodes(nodes=[...])
+  instead — it kicks every node in parallel and waits ONCE for the fleet to
+  recover, so total time is bounded by the slowest single reboot.
+- DO NOT call execute_command in a loop across many nodes when every node
+  runs the same command. Use execute_on_role with a topology so the
+  commands fan out in parallel and finish in roughly the time of the
+  slowest single node, not N * single-node time.
+- DO NOT call ping_nodes inside a loop to check individual nodes — it
+  already pings every registered node in parallel in one call.`),
 	)
 
 	// Register all tools.
