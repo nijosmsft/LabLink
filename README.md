@@ -39,7 +39,7 @@ You'll need:
 Grab `lablink-vX.Y.Z-windows-amd64.zip` from the [Releases page](https://github.com/nijosmsft/LabLink/releases/latest), verify it against `SHA256SUMS.txt`, and extract:
 
 ```powershell
-$ver = 'v0.1.0'  # or whatever the latest tag is
+$ver = 'v0.3.0'  # bump when releasing
 Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/lablink-$ver-windows-amd64.zip" -OutFile lablink.zip
 Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/SHA256SUMS.txt"               -OutFile SHA256SUMS.txt
 $expected = (Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").ToString().Split(' ')[0]
@@ -175,7 +175,7 @@ The portal has two tabs:
 
 Jobs are stored on each node under `%ProgramData%\LabLink\agent\jobs\<job_id>\` (Windows) or `/var/lib/lablink-agent/jobs/<job_id>/` (Linux). Terminal jobs are auto-pruned after 7 days; override with `LABLINK_JOB_RETENTION=Nd` (or any Go duration) on the **agent** side.
 
-This first version is **per-process**: each AI client spawns its own `lablink-server.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
+Each AI client spawns its own `lablink-server.exe`, so each gets its own portal.
 
 To turn it off, set `LABLINK_PORTAL=disabled`. To pin it to a fixed port for bookmarking, set `LABLINK_PORTAL_ADDR=127.0.0.1:9092`.
 
@@ -331,8 +331,6 @@ You can register as many `lablink-*` entries as you want; each gets its own port
 | `LABLINK_PORTAL` | `disabled` to suppress the local web portal. |
 | `LABLINK_PORTAL_ADDR` | Override the portal bind address (loopback only, e.g. `127.0.0.1:9092`). |
 
-Long-form aliases (`LABLINK_TLS_CA_CERT`, `LABLINK_TLS_CLIENT_CERT`, …) and legacy `DEVICE_*` names are still accepted for backwards compatibility.
-
 ## Build from source
 
 If you don't want to use the published release zips:
@@ -345,13 +343,7 @@ make build-all
 
 This produces the same four binaries under `.\bin\`. From that point on, every step in [Get started](#get-started-in-5-minutes) works exactly the same way.
 
-To package your own release zips locally — useful for internal mirrors:
-
-```powershell
-.\scripts\build-release.ps1 -Version v0.1.0
-```
-
-Artifacts land under `.\release\`. The same script is what the GitHub Actions release workflow runs.
+See [RELEASING.md](RELEASING.md) for how to build a release zip locally.
 
 ## License
 
