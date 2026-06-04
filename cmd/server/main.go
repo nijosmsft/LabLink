@@ -18,7 +18,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/security"
 )
 
-var serverVersion = "0.1.0"
+var serverVersion = "0.2.0"
 
 func main() {
 	// Determine config directory.
