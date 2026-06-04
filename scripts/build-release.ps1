@@ -39,18 +39,23 @@ if (Test-Path $OutDir) {
 }
 New-Item -ItemType Directory -Path $OutDir | Out-Null
 
-# Ldflags inject the version into both binaries and trim the local repo path
-# from compiled paths so artifacts are reproducible across machines.
-$ldflags = "-s -w " +
-           "-X main.serverVersion=$Version " +
-           "-X main.agentVersion=$Version"
+# Common ldflags: strip debug info. Per-binary `-X main.<key>=<value>` is
+# appended in Build-Target so each binary only learns about its own
+# version constant (previous form set serverVersion + agentVersion on
+# every binary, which silently no-op'd against probe/ca and made it
+# impossible to bake a stale agent version into the agent alone).
+$baseLdflags = "-s -w"
 
-# (BinaryBaseName, PackageImportPath, IncludeOnPlatforms[])
+# Name      = release binary base name (kebab, ships as <name>[.exe]).
+# Pkg       = Go import path of the cmd dir.
+# LdflagKey = name of the `var <key> = "..."` constant in the binary's
+#             main package whose value should be replaced with $Version.
+# Targets   = list of GOOS values to build this binary for.
 $binaries = @(
-    @{ Name = 'LabLinkServer'; Pkg = './cmd/server';     Targets = @('windows','linux') }
-    @{ Name = 'LabLinkAgent';  Pkg = './cmd/agent';      Targets = @('windows','linux') }
-    @{ Name = 'LabLinkProbe';  Pkg = './cmd/probe';      Targets = @('windows','linux') }
-    @{ Name = 'lablink-ca';    Pkg = './cmd/lablink-ca'; Targets = @('windows','linux') }
+    @{ Name = 'lablink-server'; Pkg = './cmd/lablink-server'; LdflagKey = 'serverVersion'; Targets = @('windows','linux') }
+    @{ Name = 'lablink-agent';  Pkg = './cmd/lablink-agent';  LdflagKey = 'agentVersion';  Targets = @('windows','linux') }
+    @{ Name = 'lablink-probe';  Pkg = './cmd/lablink-probe';  LdflagKey = 'probeVersion';  Targets = @('windows','linux') }
+    @{ Name = 'lablink-ca';     Pkg = './cmd/lablink-ca';     LdflagKey = 'caVersion';     Targets = @('windows','linux') }
 )
 
 # Files copied into every release alongside the binaries.
@@ -77,6 +82,7 @@ function Build-Target {
         if ($b.Targets -notcontains $Os) { continue }
         $ext = if ($Os -eq 'windows') { '.exe' } else { '' }
         $out = Join-Path $binDir ("{0}{1}" -f $b.Name, $ext)
+        $ldflags = "$baseLdflags -X main.$($b.LdflagKey)=$Version"
         Write-Host "  build $($b.Name) [$Os/$Arch]"
         $env:GOOS   = $Os
         $env:GOARCH = $Arch

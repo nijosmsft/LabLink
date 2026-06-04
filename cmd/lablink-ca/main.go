@@ -13,6 +13,8 @@ import (
 	"github.com/nijosmsft/lablink/internal/pki"
 )
 
+var caVersion = "v0.3.0"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -31,6 +33,9 @@ func main() {
 		err = runShowCert(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
+		return
+	case "--version", "-v":
+		fmt.Printf("lablink-ca %s\n", caVersion)
 		return
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])

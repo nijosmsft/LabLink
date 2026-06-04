@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var agentVersion = "0.1.0"
+var agentVersion = "v0.3.0"
 
 var (
 	listenAddr        = flag.String("listen", ":9091", "gRPC listen address")
@@ -40,10 +40,16 @@ var (
 	install           = flag.Bool("install", false, "install as Windows service")
 	uninstall         = flag.Bool("uninstall", false, "uninstall Windows service")
 	setToken          = flag.String("set-token", "", "write auth token to registry and exit")
+	versionFlag       = flag.Bool("version", false, "print version and exit")
 )
 
 func main() {
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("lablink-agent %s\n", agentVersion)
+		return
+	}
 
 	// Service management commands (run and exit).
 	if *setToken != "" {

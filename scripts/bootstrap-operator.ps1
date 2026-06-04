@@ -18,7 +18,7 @@ param(
 
     [string]$McpConfigOut,
 
-    [string]$ServerBinary = "$PSScriptRoot\..\bin\LabLinkServer.exe",
+    [string]$ServerBinary = "$PSScriptRoot\..\bin\lablink-server.exe",
 
     [string]$CaBinary = "$PSScriptRoot\..\bin\lablink-ca.exe",
 

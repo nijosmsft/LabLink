@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Ensures local operator assets exist (PKI, token, MCP snippet), then for
-    each machine: issues a server certificate, deploys LabLinkAgent.exe over
-    WinRM with mTLS, verifies the node with LabLinkProbe.exe when available,
+    each machine: issues a server certificate, deploys lablink-agent.exe over
+    WinRM with mTLS, verifies the node with lablink-probe.exe when available,
     and pre-registers it in ~\.lablink\nodes.json. Runs sequentially. A
     failure on one node is reported but does not stop subsequent nodes.
 
@@ -53,11 +53,11 @@ param(
 
     [string]$NodesFile,
 
-    [string]$AgentBinary = "$PSScriptRoot\..\bin\LabLinkAgent.exe",
+    [string]$AgentBinary = "$PSScriptRoot\..\bin\lablink-agent.exe",
 
     [string]$CaBinary = "$PSScriptRoot\..\bin\lablink-ca.exe",
 
-    [string]$ProbeBinary = "$PSScriptRoot\..\bin\LabLinkProbe.exe",
+    [string]$ProbeBinary = "$PSScriptRoot\..\bin\lablink-probe.exe",
 
     [switch]$RotateServerCert,
 
@@ -279,7 +279,7 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
         $resolvedAddress = if ($ipv4 -match ':\d+$') { $ipv4 } else { "${ipv4}:$Port" }
 
         if (Test-Path $ProbeBinary) {
-            Write-Host "Verifying $resolvedAddress with LabLinkProbe.exe..." -ForegroundColor Cyan
+            Write-Host "Verifying $resolvedAddress with lablink-probe.exe..." -ForegroundColor Cyan
             $oldTokenFile  = $env:LABLINK_AGENT_TOKEN_FILE
             $oldTransport  = $env:LABLINK_TRANSPORT
             $oldCA         = $env:LABLINK_TLS_CA
