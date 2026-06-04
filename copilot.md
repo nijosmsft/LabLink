@@ -179,10 +179,10 @@ Quickest dev loop on Windows:
 make build
 .\scripts\bootstrap-operator.ps1                                          # one time, creates ~/.lablink + PKI
 .\scripts\bootstrap-windows-node.ps1 -Machine <node> -Role server         # onboard a node
-.\bin\LabLinkProbe.exe <node-ip>:9091                                     # sanity check
+.\bin\lablink-probe.exe <node-ip>:9091                                     # sanity check
 ```
 
-To debug the MCP server outside an AI client, run `.\bin\LabLinkServer.exe`
+To debug the MCP server outside an AI client, run `.\bin\lablink-server.exe`
 directly — it logs the portal URL on startup and speaks MCP over stdio
 (you can pipe a hand-crafted JSON-RPC frame in if needed).
 

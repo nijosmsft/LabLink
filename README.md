@@ -53,9 +53,9 @@ The archive contains:
 
 | Path | Where it runs | Purpose |
 |------|---------------|---------|
-| `bin\LabLinkServer.exe` | Operator | The MCP server your AI client launches over stdio. |
-| `bin\LabLinkAgent.exe`  | Each node | gRPC agent that executes the work. |
-| `bin\LabLinkProbe.exe`  | Operator | Smoke-test a node from the command line. |
+| `bin\lablink-server.exe` | Operator | The MCP server your AI client launches over stdio. |
+| `bin\lablink-agent.exe`  | Each node | gRPC agent that executes the work. |
+| `bin\lablink-probe.exe`  | Operator | Smoke-test a node from the command line. |
 | `bin\lablink-ca.exe`    | Operator | Local certificate authority used by the bootstrap scripts. |
 | `scripts\*.ps1`         | Operator | Bootstrap and deployment scripts. |
 | `configs\mcp.example.json` | Operator | Template for your AI client's `.mcp.json`. |
@@ -84,7 +84,7 @@ You can also pass several machines at once. They share the same WinRM credential
 
 If a machine name resolves over DNS the IPv4 address is auto-detected; otherwise pass them positionally with `-IPv4Address 10.0.0.23,10.0.0.24,10.0.0.25`.
 
-The script issues a node-specific server certificate, deploys `LabLinkAgent.exe` over WinRM, installs the **LabLink Agent** Windows service, opens the firewall port, verifies the node with `LabLinkProbe.exe`, and registers it in `~\.lablink\nodes.json`.
+The script issues a node-specific server certificate, deploys `lablink-agent.exe` over WinRM, installs the **LabLink Agent** Windows service, opens the firewall port, verifies the node with `lablink-probe.exe`, and registers it in `~\.lablink\nodes.json`.
 
 You'll be prompted for the node's WinRM credentials if you don't pass `-Credential`.
 
@@ -99,7 +99,7 @@ If WinRM is disabled, blocked, or you'd rather not give the operator a credentia
 This delegates to `scripts\build-manual-package.ps1`, which (per machine):
 
 - issues a server certificate signed by your local LabLink CA,
-- assembles `~\.lablink\manual\<node>\` with `LabLinkAgent.exe`, `install.ps1`, the CA bundle, the server cert + key, the auth token, and a `metadata.json` describing the node,
+- assembles `~\.lablink\manual\<node>\` with `lablink-agent.exe`, `install.ps1`, the CA bundle, the server cert + key, the auth token, and a `metadata.json` describing the node,
 - zips it to `~\.lablink\manual\lablink-<node>.zip`, and
 - pre-registers the node in `~\.lablink\nodes.json` so the MCP server recognizes it as soon as the agent comes up.
 
@@ -127,7 +127,7 @@ $env:LABLINK_TLS_CERT         = "$HOME\.lablink\pki\clients\default\client.crt"
 $env:LABLINK_TLS_KEY          = "$HOME\.lablink\pki\clients\default\client.key"
 $env:LABLINK_TLS_SERVER_NAME  = 'lab-node-3'
 
-.\bin\LabLinkProbe.exe 10.0.0.23:9091
+.\bin\lablink-probe.exe 10.0.0.23:9091
 ```
 
 A successful probe ends with `Probe OK`. The `nodes.json` entry is already in place; your AI client will see the node the next time the LabLink MCP server starts.
@@ -140,7 +140,7 @@ Open `~\.lablink\mcp.example.json` (generated in step 2) and merge it into your 
 {
   "mcpServers": {
     "lablink": {
-      "command": "C:\\path\\to\\LabLinkServer.exe",
+      "command": "C:\\path\\to\\lablink-server.exe",
       "args": [],
       "env": {
         "LABLINK_TRANSPORT": "mtls",
@@ -158,13 +158,13 @@ That's it. Restart your AI client and ask it to `list_nodes`.
 
 ## The local operations portal
 
-When `LabLinkServer.exe` starts it also serves a tiny web UI on a random `127.0.0.1` port that lists every long-running operation (`execute_command`, `execute_script`, `push_file`, `pull_file`) and lets you cancel any of them. The bookmarkable URL — including a per-process access key — looks like:
+When `lablink-server.exe` starts it also serves a tiny web UI on a random `127.0.0.1` port that lists every long-running operation (`execute_command`, `execute_script`, `push_file`, `pull_file`) and lets you cancel any of them. The bookmarkable URL — including a per-process access key — looks like:
 
 ```
 http://127.0.0.1:49869/?k=3c76da1b807c58bd390d7cf028307d06
 ```
 
-When the server runs as an MCP child of an AI client, its stderr is usually swallowed, so just ask the AI client — e.g. *"what is the portal url?"* — and it will call the `get_portal_url` tool to hand it back. (When you launch `LabLinkServer.exe` directly, the same URL is logged on startup.)
+When the server runs as an MCP child of an AI client, its stderr is usually swallowed, so just ask the AI client — e.g. *"what is the portal url?"* — and it will call the `get_portal_url` tool to hand it back. (When you launch `lablink-server.exe` directly, the same URL is logged on startup.)
 
 Open it in any browser on the operator machine. Updates stream live over Server-Sent Events. The portal binds **only** to loopback and rejects requests without the access key.
 
@@ -175,7 +175,7 @@ The portal has two tabs:
 
 Jobs are stored on each node under `%ProgramData%\LabLink\agent\jobs\<job_id>\` (Windows) or `/var/lib/lablink-agent/jobs/<job_id>/` (Linux). Terminal jobs are auto-pruned after 7 days; override with `LABLINK_JOB_RETENTION=Nd` (or any Go duration) on the **agent** side.
 
-This first version is **per-process**: each AI client spawns its own `LabLinkServer.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
+This first version is **per-process**: each AI client spawns its own `lablink-server.exe` so each gets its own portal. A future release will introduce shared coordination across instances.
 
 To turn it off, set `LABLINK_PORTAL=disabled`. To pin it to a fixed port for bookmarking, set `LABLINK_PORTAL_ADDR=127.0.0.1:9092`.
 
@@ -269,7 +269,7 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 
 ## Running multiple LabLink instances
 
-Everything `LabLinkServer.exe` reads or writes — `nodes.json`, `history.jsonl`, `credentials.json`, `cache/`, `pki/` — lives under a single config directory. By default that's `~/.lablink`, but you can point any installation at a different one with `LABLINK_HOME`. This lets one operator machine run several isolated LabLink "worlds" side by side: separate PKI roots, separate node inventories, separate audit logs, separate AI-client sessions.
+Everything `lablink-server.exe` reads or writes — `nodes.json`, `history.jsonl`, `credentials.json`, `cache/`, `pki/` — lives under a single config directory. By default that's `~/.lablink`, but you can point any installation at a different one with `LABLINK_HOME`. This lets one operator machine run several isolated LabLink "worlds" side by side: separate PKI roots, separate node inventories, separate audit logs, separate AI-client sessions.
 
 Two common reasons to do this:
 
@@ -299,7 +299,7 @@ Then add a matching MCP server entry that points `LABLINK_HOME` at the same dire
 
 ```jsonc
 "lablink-prod": {
-  "command": "C:\\Users\\nijos\\MCP\\lablink\\bin\\LabLinkServer.exe",
+  "command": "C:\\Users\\nijos\\MCP\\lablink\\bin\\lablink-server.exe",
   "env": {
     "LABLINK_HOME":            "C:\\Users\\nijos\\.lablink-prod",
     "LABLINK_TRANSPORT":       "mtls",
@@ -313,7 +313,7 @@ Then add a matching MCP server entry that points `LABLINK_HOME` at the same dire
 
 You can register as many `lablink-*` entries as you want; each gets its own portal, its own audit log, and its own slice of the agent fleet.
 
-**Sharing one home across processes.** If two AI clients both use the *same* `LABLINK_HOME` (the default setup), that's fine too — `nodes.json` and `history.jsonl` are protected by an OS-level advisory lock and atomic rename, so concurrent `register_node` / context updates / audit writes from sibling `LabLinkServer.exe` instances stay consistent.
+**Sharing one home across processes.** If two AI clients both use the *same* `LABLINK_HOME` (the default setup), that's fine too — `nodes.json` and `history.jsonl` are protected by an OS-level advisory lock and atomic rename, so concurrent `register_node` / context updates / audit writes from sibling `lablink-server.exe` instances stay consistent.
 
 ## Configuration reference
 

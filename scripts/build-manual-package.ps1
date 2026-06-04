@@ -84,7 +84,7 @@ param(
 
     [string]$OutDir,
 
-    [string]$AgentBinary = "$PSScriptRoot\..\bin\LabLinkAgent.exe",
+    [string]$AgentBinary = "$PSScriptRoot\..\bin\lablink-agent.exe",
 
     [string]$CaBinary = "$PSScriptRoot\..\bin\lablink-ca.exe",
 
@@ -212,7 +212,7 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
         if (-not (Test-Path $serverCsr) -or -not (Test-Path $serverKey)) {
             Write-Host "Generating server CSR for $node..." -ForegroundColor Cyan
             & $AgentBinary --generate-server-csr --tls-server-name $tls --csr-out $serverCsr --key-out $serverKey
-            if ($LASTEXITCODE -ne 0) { throw "LabLinkAgent --generate-server-csr failed (exit $LASTEXITCODE)" }
+            if ($LASTEXITCODE -ne 0) { throw "lablink-agent --generate-server-csr failed (exit $LASTEXITCODE)" }
         }
 
         if (-not (Test-Path $serverCert)) {
@@ -230,7 +230,7 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
         $tlsDir = Join-Path $packageDir 'tls'
         New-Item -ItemType Directory -Path $tlsDir -Force | Out-Null
 
-        Copy-Item $AgentBinary  (Join-Path $packageDir 'LabLinkAgent.exe') -Force
+        Copy-Item $AgentBinary  (Join-Path $packageDir 'lablink-agent.exe') -Force
         Copy-Item $InstallScript (Join-Path $packageDir 'install-agent.ps1') -Force
         Copy-Item $caBundle     (Join-Path $tlsDir 'ca.crt')    -Force
         Copy-Item $serverCert   (Join-Path $tlsDir 'server.crt') -Force
@@ -259,7 +259,7 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
 LabLink manual install wrapper.
 
 Run this as Administrator on the node. It expects the package layout that
-build-manual-package.ps1 produced (LabLinkAgent.exe, install-agent.ps1,
+build-manual-package.ps1 produced (lablink-agent.exe, install-agent.ps1,
 agent.token, tls\ca.crt, tls\server.crt, tls\server.key, metadata.json all
 sitting next to this script).
 #>
@@ -285,7 +285,7 @@ if (-not (Test-Path $AgentDir)) { New-Item -ItemType Directory -Path $AgentDir -
 $tlsDest = Join-Path $AgentDir 'tls'
 if (-not (Test-Path $tlsDest)) { New-Item -ItemType Directory -Path $tlsDest -Force | Out-Null }
 
-Copy-Item (Join-Path $pkgRoot 'LabLinkAgent.exe') (Join-Path $AgentDir 'LabLinkAgent.exe') -Force
+Copy-Item (Join-Path $pkgRoot 'lablink-agent.exe') (Join-Path $AgentDir 'lablink-agent.exe') -Force
 Copy-Item (Join-Path $pkgRoot 'tls\ca.crt')      (Join-Path $tlsDest 'ca.crt')    -Force
 Copy-Item (Join-Path $pkgRoot 'tls\server.crt')  (Join-Path $tlsDest 'server.crt') -Force
 Copy-Item (Join-Path $pkgRoot 'tls\server.key')  (Join-Path $tlsDest 'server.key') -Force
@@ -320,7 +320,7 @@ Write-Host "  Node:    $($meta.node)"
 Write-Host "  Listen:  :$Port (mTLS)"
 Write-Host "  AgentDir: $AgentDir"
 Write-Host ""
-Write-Host "Tell the operator the node is ready. They can verify with LabLinkProbe.exe."
+Write-Host "Tell the operator the node is ready. They can verify with lablink-probe.exe."
 '@
         Set-Content -Path (Join-Path $packageDir 'install.ps1') -Value $installWrapper -Encoding utf8
 
@@ -342,14 +342,14 @@ How to install (run on the remote machine, as Administrator):
      - Use -AgentDir <path> to install somewhere other than C:\LabLink.
      - Use -Port <n>           to override the bundled port ($Port).
 
-The script copies LabLinkAgent.exe + the TLS material into AgentDir, writes
+The script copies lablink-agent.exe + the TLS material into AgentDir, writes
 the auth token with restricted ACLs, installs the Windows service, opens the
 firewall, and starts it. After it succeeds, tell the operator; they can
-verify with LabLinkProbe.exe and the node will already be registered in
+verify with lablink-probe.exe and the node will already be registered in
 their nodes.json.
 
 Files in this package:
-  LabLinkAgent.exe        Agent binary (Windows amd64)
+  lablink-agent.exe       Agent binary (Windows amd64)
   install.ps1             One-shot installer (run this)
   install-agent.ps1       Underlying installer (called by install.ps1)
   agent.token             Pre-shared bearer token (deleted after install)

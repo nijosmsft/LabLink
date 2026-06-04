@@ -78,9 +78,9 @@ If a name resolves over DNS the IPv4 address is auto-detected. Otherwise pass th
 1. Ensures the operator assets exist.
 2. Generates a server key + CSR for the node.
 3. Signs the server certificate locally.
-4. Deploys `LabLinkAgent.exe` over WinRM.
+4. Deploys `lablink-agent.exe` over WinRM.
 5. Installs the **LabLink Agent** Windows service on port `9091`.
-6. Verifies the node with `LabLinkProbe.exe` when available.
+6. Verifies the node with `lablink-probe.exe` when available.
 7. Writes the node entry to `~\.lablink\nodes.json`.
 
 ### Useful options
@@ -133,7 +133,7 @@ make build-all
 ### 3. Generate and sign a server certificate
 
 ```powershell
-.\bin\LabLinkAgent.exe --generate-server-csr `
+.\bin\lablink-agent.exe --generate-server-csr `
   --tls-server-name WIN-NODE-01 `
   --csr-out C:\lablink-pki\WIN-NODE-01\server.csr `
   --key-out C:\lablink-pki\WIN-NODE-01\server.key
@@ -172,7 +172,7 @@ $token = [Convert]::ToBase64String($tokenBytes)
   "mcpServers": {
     "lablink": {
       "type": "stdio",
-      "command": "C:\\git\\LabLink\\bin\\LabLinkServer.exe",
+      "command": "C:\\git\\LabLink\\bin\\lablink-server.exe",
       "args": [],
       "env": {
         "LABLINK_AGENT_TOKEN_FILE": "C:\\Users\\you\\.lablink\\agent.token",
@@ -194,6 +194,6 @@ register_node name=WIN-NODE-01 address=10.0.0.10:9091 role=server transport_mode
 
 ## Operational notes
 
-- `LabLinkProbe.exe` is the easiest binary for validating agent connectivity outside MCP.
+- `lablink-probe.exe` is the easiest binary for validating agent connectivity outside MCP.
 - `save_credential` is still available inside MCP, but the public bootstrap scripts are the recommended flow when you do not want to persist WinRM credentials as a reusable profile.
-- `LabLinkAgent.exe --set-token ...` remains for legacy migration, but the public setup flow prefers `LABLINK_AGENT_TOKEN_FILE`.
+- `lablink-agent.exe --set-token ...` remains for legacy migration, but the public setup flow prefers `LABLINK_AGENT_TOKEN_FILE`.

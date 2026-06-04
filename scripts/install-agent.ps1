@@ -3,7 +3,7 @@
     Install the LabLink agent as a Windows service on the local machine.
 
 .DESCRIPTION
-    Run this script on the target machine after copying LabLinkAgent.exe to C:\LabLink.
+    Run this script on the target machine after copying lablink-agent.exe to C:\LabLink.
     It writes the auth token to an ACL-protected file, installs the service, creates a firewall rule,
     and starts the agent.
 
@@ -14,7 +14,7 @@
     gRPC listen port (default 9091).
 
 .PARAMETER AgentDir
-    Directory containing LabLinkAgent.exe (default C:\LabLink).
+    Directory containing lablink-agent.exe (default C:\LabLink).
 
 .PARAMETER TokenFile
     Path to the token file used by the LabLink Agent service.
@@ -63,7 +63,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$exe = Join-Path $AgentDir 'LabLinkAgent.exe'
+$exe = Join-Path $AgentDir 'lablink-agent.exe'
 $svcName = 'LabLink Agent'
 $previousSvcName = 'lablink-agent'
 $fwRuleName = 'LabLink Agent'
@@ -77,7 +77,7 @@ function Protect-LabLinkSecretFile {
 }
 
 if (-not (Test-Path $exe)) {
-    Write-Error "Agent binary not found at $exe. Copy LabLinkAgent.exe to $AgentDir first."
+    Write-Error "Agent binary not found at $exe. Copy lablink-agent.exe to $AgentDir first."
     exit 1
 }
 

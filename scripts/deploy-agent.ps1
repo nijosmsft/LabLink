@@ -10,7 +10,7 @@
     Comma-separated list of machine IPs or hostnames.
 
 .PARAMETER AgentBinary
-    Path to the agent binary. Defaults to bin/LabLinkAgent.exe.
+    Path to the agent binary. Defaults to bin/lablink-agent.exe.
 
 .PARAMETER Token
     Pre-shared key for authentication. Written to a protected token file on each node.
@@ -46,7 +46,7 @@ param(
     [Parameter(Mandatory)]
     [string[]]$Machines,
 
-    [string]$AgentBinary = "$PSScriptRoot\..\bin\LabLinkAgent.exe",
+    [string]$AgentBinary = "$PSScriptRoot\..\bin\lablink-agent.exe",
 
     [Parameter(Mandatory)]
     [string]$Token,
@@ -77,7 +77,7 @@ $RemoteTlsDir = Join-Path $RemoteDir 'tls'
 $RemoteCA = Join-Path $RemoteTlsDir 'ca.crt'
 $RemoteCert = Join-Path $RemoteTlsDir 'server.crt'
 $RemoteKey = Join-Path $RemoteTlsDir 'server.key'
-$RemoteAgentExe = Join-Path $RemoteDir 'LabLinkAgent.exe'
+$RemoteAgentExe = Join-Path $RemoteDir 'lablink-agent.exe'
 $LegacyRemoteDir = 'C:\device-interaction'
 $ServiceName = 'LabLink Agent'
 $PreviousServiceName = 'lablink-agent'
@@ -116,8 +116,8 @@ foreach ($machine in $Machines) {
                 }
             }
 
-            Get-Process -Name 'LabLinkAgent', 'agent' -ErrorAction SilentlyContinue |
-                Where-Object { $_.Path -in @((Join-Path $dir 'LabLinkAgent.exe'), (Join-Path $dir 'agent.exe'), (Join-Path $legacyDir 'agent.exe')) } |
+            Get-Process -Name 'lablink-agent', 'LabLinkAgent', 'agent' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -in @((Join-Path $dir 'lablink-agent.exe'), (Join-Path $dir 'LabLinkAgent.exe'), (Join-Path $dir 'agent.exe'), (Join-Path $legacyDir 'agent.exe')) } |
                 Stop-Process -Force
         } -ArgumentList $RemoteDir, $RemoteTlsDir, $LegacyRemoteDir, $ServiceName, $PreviousServiceName
 
@@ -136,7 +136,7 @@ foreach ($machine in $Machines) {
         if ($NoService) {
             Invoke-Command -Session $session -ScriptBlock {
                 param($dir, $port, $token, $tokenFile, $transport, $allowInsecure, $tlsCA, $tlsCert, $tlsKey, $fwRuleName, $legacyFwRuleName)
-                $exe = Join-Path $dir 'LabLinkAgent.exe'
+                $exe = Join-Path $dir 'lablink-agent.exe'
                 $tokenDir = Split-Path -Parent $tokenFile
                 if ($tokenDir -and -not (Test-Path $tokenDir)) {
                     New-Item -ItemType Directory -Path $tokenDir -Force | Out-Null

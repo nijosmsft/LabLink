@@ -2,7 +2,7 @@
   "mcpServers": {
     "lablink": {
       "type": "stdio",
-      "command": "C:\\path\\to\\LabLinkServer.exe",
+      "command": "C:\\path\\to\\lablink-server.exe",
       "args": [],
       "env": {
         "LABLINK_AGENT_TOKEN_FILE": "C:\\Users\\you\\.lablink\\agent.token",

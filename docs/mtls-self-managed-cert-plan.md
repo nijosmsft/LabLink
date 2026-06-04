@@ -195,7 +195,7 @@ Recommended helper and admin commands in `cmd\lablink-ca`:
 Future optional commands:
 
 - `lablink-ca serve`
-- `LabLinkAgent.exe --renew-cert`
+- `lablink-agent.exe --renew-cert`
 
 ## File layout
 
@@ -275,8 +275,8 @@ This model avoids shipping the server private key from the operator to the node.
 
 For nodes not bootstrapped by WinRM:
 
-1. Install `LabLinkAgent.exe` or the Linux agent binary manually.
-2. Run `LabLinkAgent --generate-server-csr`.
+1. Install `lablink-agent.exe` or the Linux agent binary manually.
+2. Run `lablink-agent --generate-server-csr`.
 3. Move the CSR to the operator machine.
 4. Run `lablink-ca sign-server-csr`.
 5. Copy `ca.crt` and `server.crt` back to the node.

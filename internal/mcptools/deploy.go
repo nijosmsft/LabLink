@@ -93,7 +93,7 @@ func deployAgentHandler(reg *registry.Registry, pool *agentclient.Pool, creds *c
 		// Find the agent binary relative to the MCP server binary.
 		agentBin := findAgentBinary()
 		if agentBin == "" {
-			return mcp.NewToolResultError("cannot find LabLinkAgent.exe in bin/ directory"), nil
+			return mcp.NewToolResultError("cannot find lablink-agent.exe in bin/ directory"), nil
 		}
 
 		// Build the deploy script command.
@@ -213,7 +213,7 @@ func findAgentBinary() string {
 		return ""
 	}
 	binDir := filepath.Dir(exe)
-	for _, name := range []string{"LabLinkAgent.exe", "lablink-agent-windows-amd64.exe"} {
+	for _, name := range []string{"lablink-agent.exe", "lablink-agent-windows-amd64.exe"} {
 		candidate := filepath.Join(binDir, name)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
