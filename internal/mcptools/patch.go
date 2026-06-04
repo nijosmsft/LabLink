@@ -91,7 +91,12 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 
 	addTool(s,
 		mcp.NewTool("reboot_node",
-			mcp.WithDescription("Reboot a remote node. Waits for the agent to come back online."),
+			mcp.WithDescription("Reboot ONE remote node and wait for its agent to come back online. "+
+				"WARNING: do NOT call this in a loop to reboot multiple nodes — each call serially "+
+				"waits the full wait_seconds for a single node, so a loop of N nodes blocks for "+
+				"N * wait_seconds wall-clock time. For two or more nodes, use reboot_nodes instead: "+
+				"it kicks every node in parallel and waits ONCE for the fleet to recover, so total "+
+				"time is bounded by the slowest single reboot, not the node count."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait for the node to come back (default 120)")),
 		),
