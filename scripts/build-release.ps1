@@ -47,10 +47,10 @@ $ldflags = "-s -w " +
 
 # (BinaryBaseName, PackageImportPath, IncludeOnPlatforms[])
 $binaries = @(
-    @{ Name = 'LabLinkServer'; Pkg = './cmd/server';     Targets = @('windows','linux') }
-    @{ Name = 'LabLinkAgent';  Pkg = './cmd/agent';      Targets = @('windows','linux') }
-    @{ Name = 'LabLinkProbe';  Pkg = './cmd/probe';      Targets = @('windows','linux') }
-    @{ Name = 'lablink-ca';    Pkg = './cmd/lablink-ca'; Targets = @('windows','linux') }
+    @{ Name = 'LabLinkServer'; Pkg = './cmd/lablink-server'; Targets = @('windows','linux') }
+    @{ Name = 'LabLinkAgent';  Pkg = './cmd/lablink-agent';  Targets = @('windows','linux') }
+    @{ Name = 'LabLinkProbe';  Pkg = './cmd/lablink-probe';  Targets = @('windows','linux') }
+    @{ Name = 'lablink-ca';    Pkg = './cmd/lablink-ca';     Targets = @('windows','linux') }
 )
 
 # Files copied into every release alongside the binaries.

@@ -71,11 +71,11 @@ By default, local state lives under `~/.lablink`.
 
 ## Main components in the repository
 
-### `cmd/server`
+### `cmd/lablink-server`
 
 The local MCP server entrypoint. This is the part configured in `.mcp.json` and launched by the AI client.
 
-### `cmd/agent`
+### `cmd/lablink-agent`
 
 The remote gRPC agent. This is the binary that runs as a background service or standalone process on managed machines.
 

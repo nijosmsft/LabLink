@@ -11,7 +11,7 @@ threat model).
 
 ## TL;DR
 
-LabLink = local MCP server (`cmd/server`) + remote gRPC node agent (`cmd/agent`)
+LabLink = local MCP server (`cmd/lablink-server`) + remote gRPC node agent (`cmd/lablink-agent`)
 that lets AI clients drive a fleet of Windows (and Linux) lab machines over
 mTLS-authenticated gRPC with a shared bearer token.
 
@@ -30,11 +30,11 @@ Everything stateful lives under `LABLINK_HOME` (default `~/.lablink`).
 
 | Path | What lives here |
 |------|-----------------|
-| `cmd/server/`        | MCP server entrypoint (`LabLinkServer.exe`). Wires registry, auth, transport, audit, portal, and every `mcptools.Register*` call. |
-| `cmd/agent/`         | gRPC node agent (`LabLinkAgent.exe`). Executor, file transfer, jobs, processes, Windows service plumbing. |
-| `cmd/probe/`         | `LabLinkProbe.exe` — CLI smoke test against a single node. |
-| `cmd/lablink-ca/`    | Local CA used by the bootstrap scripts. |
-| `cmd/pulltest/`      | Internal harness, not shipped. |
+| `cmd/lablink-server/`   | MCP server entrypoint (`lablink-server.exe`). Wires registry, auth, transport, audit, portal, and every `mcptools.Register*` call. |
+| `cmd/lablink-agent/`    | gRPC node agent (`lablink-agent.exe`). Executor, file transfer, jobs, processes, Windows service plumbing. |
+| `cmd/lablink-probe/`    | `lablink-probe.exe` — CLI smoke test against a single node. |
+| `cmd/lablink-ca/`       | Local CA used by the bootstrap scripts. |
+| `cmd/lablink-pulltest/` | Internal harness, not shipped. |
 | `proto/agent/`       | gRPC contract (`agent.proto`) + generated `*.pb.go` / `*_grpc.pb.go`. Single source of truth for the wire protocol. |
 | `internal/agentclient/` | Cached gRPC client pool the server uses to talk to agents. |
 | `internal/mcptools/` | One file per tool family (`execute.go`, `transfer.go`, `topology.go`, …). All MCP tools are defined and registered here. |
@@ -99,8 +99,8 @@ uploads the resulting `lablink-<ver>-{windows,linux}-amd64.zip` + `SHA256SUMS.tx
 Windows is the primary target; Linux agent is supported. Split OS-specific code
 with build-tag filename suffixes already used in this repo:
 
-- `_windows.go` / `_other.go` (see `cmd/server/shutdown_errors_*.go`)
-- `_windows.go` / `_unix.go` (see `cmd/agent/executor_*.go`, `cmd/agent/jobs_*.go`)
+- `_windows.go` / `_other.go` (see `cmd/lablink-server/shutdown_errors_*.go`)
+- `_windows.go` / `_unix.go` (see `cmd/lablink-agent/executor_*.go`, `cmd/lablink-agent/jobs_*.go`)
 
 Do not put `//go:build windows` inside a file without the matching `_windows.go`
 suffix — keep the discoverability consistent with the rest of the tree.
@@ -117,7 +117,7 @@ aliases.
 ## Adding or changing an MCP tool
 
 All tools live in `internal/mcptools` and are wired in
-`cmd/server/main.go` via a `mcptools.RegisterX(s, ...)` call.
+`cmd/lablink-server/main.go` via a `mcptools.RegisterX(s, ...)` call.
 
 To add a new tool:
 
@@ -135,7 +135,7 @@ To add a new tool:
    `push_file`, `pull_file`, `execute_script`.
 5. Write to the audit log (`auditLog.Append(...)`) for anything that mutates
    remote state.
-6. Add a `mcptools.RegisterYourTool(s, …)` call in `cmd/server/main.go` next to
+6. Add a `mcptools.RegisterYourTool(s, …)` call in `cmd/lablink-server/main.go` next to
    the other registrations. Also extend the `WithInstructions(...)` blurb if the
    tool is meant for AI-client discovery.
 7. Add tests under `internal/mcptools/*_test.go`. Don't talk to real nodes —
@@ -149,7 +149,7 @@ To add a new tool:
 2. Run `make proto` (needs `protoc` + `protoc-gen-go` + `protoc-gen-go-grpc`).
 3. Commit the regenerated `agent.pb.go` and `agent_grpc.pb.go` alongside
    the `.proto` change — CI does not regenerate them.
-4. Update both `cmd/agent` (server side of the RPC) and the caller in
+4. Update both `cmd/lablink-agent` (server side of the RPC) and the caller in
    `internal/mcptools` / `internal/agentclient` in the same change. The agent
    and server are versioned together; mismatched fleets will fail RPCs.
 

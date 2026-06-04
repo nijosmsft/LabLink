@@ -9,7 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// portalURL is set once at startup by cmd/server when the local portal binds.
+// portalURL is set once at startup by cmd/lablink-server when the local portal binds.
 // Stored as an atomic so the tool handler can read it without a lock and so
 // future code can swap it (e.g., portal restart) without races. An empty value
 // means the portal is disabled or failed to start.
