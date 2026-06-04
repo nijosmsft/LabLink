@@ -19,7 +19,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/security"
 )
 
-var serverVersion = "0.2.0"
+var serverVersion = "0.3.0"
 
 func main() {
 	// Handle --version before any other startup work so the call is cheap and
