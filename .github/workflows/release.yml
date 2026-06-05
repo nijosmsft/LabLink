@@ -1,15 +1,7 @@
 name: release
 
 on:
-  push:
-    tags: ['v*.*.*']
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g. v0.1.0). Required for manual runs.'
-        required: true
-        type: string
-
 permissions:
   contents: write
 
