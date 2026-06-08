@@ -12,8 +12,8 @@ import (
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
-func RegisterProcess(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
-	addTool(s, 
+func RegisterProcess(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
+	addTool(s,
 		mcp.NewTool("list_processes",
 			mcp.WithDescription("List running processes on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -22,14 +22,14 @@ func RegisterProcess(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 		listProcessesHandler(reg, pool),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("kill_process",
 			mcp.WithDescription("Kill a process on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithNumber("pid", mcp.Required(), mcp.Description("Process ID")),
 			mcp.WithBoolean("force", mcp.Description("Force kill (TerminateProcess/SIGKILL)")),
 		),
-		killProcessHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), killProcessHandler(reg, pool)),
 	)
 }
 

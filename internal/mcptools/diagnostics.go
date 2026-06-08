@@ -15,8 +15,8 @@ import (
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
-func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	addTool(s, 
+func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+	addTool(s,
 		mcp.NewTool("collect_etw_trace",
 			mcp.WithDescription("Collect an ETW/WPR trace on a remote node. Starts WPR, waits for the specified duration, stops, and pulls the .etl file back to the local machine."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -24,27 +24,27 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 			mcp.WithNumber("duration", mcp.Required(), mcp.Description("Trace duration in seconds")),
 			mcp.WithString("local_output", mcp.Required(), mcp.Description("Local path to save the .etl file")),
 		),
-		collectEtwTraceHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), collectEtwTraceHandler(reg, pool, auditLog)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("get_crash_dumps",
 			mcp.WithDescription("List and optionally pull crash dumps from a remote node (C:\\Windows\\Minidump and C:\\Windows\\MEMORY.DMP)."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("local_dir", mcp.Description("If specified, pull all dumps to this local directory")),
 		),
-		getCrashDumpsHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), getCrashDumpsHandler(reg, pool)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("sync_time",
 			mcp.WithDescription("Synchronize system clocks across all nodes or a specific topology by forcing a time resync (w32tm /resync)."),
 			mcp.WithString("topology", mcp.Description("Topology name (if omitted, syncs all nodes)")),
 		),
-		syncTimeHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSyncTimeNodes, syncTimeHandler(reg, pool)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("enable_kd",
 			mcp.WithDescription("Enable kernel debugging on a remote VM. Configures bcdedit for network KD (kdnet). Requires a reboot to take effect."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -53,19 +53,19 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 			mcp.WithString("key", mcp.Description("Encryption key (auto-generated if omitted). Format: w.x.y.z")),
 			mcp.WithBoolean("reboot", mcp.Description("Reboot after enabling (default false)")),
 		),
-		enableKdHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), enableKdHandler(reg, pool)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("disable_kd",
 			mcp.WithDescription("Disable kernel debugging on a remote VM. Requires a reboot to take effect."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithBoolean("reboot", mcp.Description("Reboot after disabling (default false)")),
 		),
-		disableKdHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), disableKdHandler(reg, pool)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("get_kd_status",
 			mcp.WithDescription("Check kernel debugging status and settings on a remote VM."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),

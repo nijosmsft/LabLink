@@ -13,8 +13,8 @@ import (
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
-func RegisterSchedule(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	addTool(s, 
+func RegisterSchedule(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+	addTool(s,
 		mcp.NewTool("schedule_command",
 			mcp.WithDescription("Schedule a command to run after a delay on a remote node. The command runs detached. Useful for synchronized starts across multiple nodes (schedule all to start at the same wall-clock time)."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
@@ -22,7 +22,7 @@ func RegisterSchedule(s *server.MCPServer, reg *registry.Registry, pool *agentcl
 			mcp.WithNumber("delay_seconds", mcp.Required(), mcp.Description("Seconds to wait before executing")),
 			mcp.WithString("shell", mcp.Description("Shell: powershell, cmd, bash")),
 		),
-		scheduleCommandHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), scheduleCommandHandler(reg, pool, auditLog)),
 	)
 }
 

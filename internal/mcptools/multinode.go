@@ -15,8 +15,8 @@ import (
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
-func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
-	addTool(s, 
+func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+	addTool(s,
 		mcp.NewTool("run_script_on_role",
 			mcp.WithDescription("Execute the same inline script on all nodes with a given role, in parallel. Optionally scope to a topology."),
 			mcp.WithString("role", mcp.Required(), mcp.Description("Node role to target (e.g., client)")),
@@ -25,10 +25,10 @@ func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentc
 			mcp.WithString("shell", mcp.Description("Shell: powershell, bash")),
 			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds per node")),
 		),
-		runScriptOnRoleHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractRoleNodes, runScriptOnRoleHandler(reg, pool, auditLog)),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("execute_on_role",
 			mcp.WithDescription("Execute the same command on all nodes with a given role, in parallel. Optionally scope to a topology."),
 			mcp.WithString("role", mcp.Required(), mcp.Description("Node role to target (e.g., client)")),
@@ -37,7 +37,7 @@ func RegisterMultiNode(s *server.MCPServer, reg *registry.Registry, pool *agentc
 			mcp.WithString("shell", mcp.Description("Shell: powershell, cmd, bash")),
 			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds per node")),
 		),
-		executeOnRoleHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractRoleNodes, executeOnRoleHandler(reg, pool, auditLog)),
 	)
 }
 

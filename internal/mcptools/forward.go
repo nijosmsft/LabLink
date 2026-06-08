@@ -73,7 +73,7 @@ func newForwardID() string {
 }
 
 // RegisterForward wires the forward_port / stop_forward / list_forwards tools.
-func RegisterForward(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
+func RegisterForward(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("forward_port",
 			mcp.WithDescription("Open a local TCP listener that tunnels bytes to a target address on a remote node via the node agent's existing mTLS channel. Use to reach a service that is bound to localhost on the node (for example a debugger MCP server). Returns the bound local address and a forward_id."),
@@ -81,7 +81,7 @@ func RegisterForward(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithString("remote_addr", mcp.Required(), mcp.Description("Target host:port on the node, e.g. 127.0.0.1:8765")),
 			mcp.WithNumber("local_port", mcp.Description("Local TCP port to bind, 0 = ephemeral")),
 		),
-		forwardPortHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), forwardPortHandler(reg, pool)),
 	)
 
 	addTool(s,

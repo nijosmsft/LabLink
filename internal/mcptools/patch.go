@@ -77,7 +77,7 @@ func (pc *PatchConfig) localSfpCopyPath() (string, error) {
 	return cached, nil
 }
 
-func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, patchCfg *PatchConfig) {
+func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, patchCfg *PatchConfig, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("patch_binary",
 			mcp.WithDescription("Patch a protected Windows system binary on a remote node. Pushes the local binary, backs up the original, and replaces it via a Windows engineering replace-utility (path supplied by the operator via SFPCOPY_SOURCE). Ensures test signing is enabled. A reboot may be required for kernel binaries."),
@@ -86,7 +86,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 			mcp.WithString("dest_path", mcp.Required(), mcp.Description("System path to replace (e.g., C:\\Windows\\System32\\drivers\\mydriver.sys)")),
 			mcp.WithBoolean("reboot", mcp.Description("Reboot the machine after patching (default false)")),
 		),
-		patchBinaryHandler(reg, pool, auditLog, patchCfg),
+		LeaseGate(leaseCfg, extractSingleNode("node"), patchBinaryHandler(reg, pool, auditLog, patchCfg)),
 	)
 
 	addTool(s,
@@ -100,7 +100,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait for the node to come back (default 120)")),
 		),
-		rebootNodeHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), rebootNodeHandler(reg, pool, auditLog)),
 	)
 
 	addTool(s,
@@ -126,7 +126,7 @@ this tool — calling reboot_node in a loop blocks for wait_seconds per node.`),
 			),
 			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait for ALL nodes to come back (default 300)")),
 		),
-		rebootNodesHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractMultiNodes("nodes"), rebootNodesHandler(reg, pool, auditLog)),
 	)
 
 	addTool(s,
@@ -137,7 +137,7 @@ this tool — calling reboot_node in a loop blocks for wait_seconds per node.`),
 			mcp.WithString("backup_file", mcp.Description("Specific backup filename to restore. If omitted, lists available backups.")),
 			mcp.WithBoolean("reboot", mcp.Description("Reboot after restoring (default false)")),
 		),
-		restoreBinaryHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), restoreBinaryHandler(reg, pool, auditLog)),
 	)
 
 	addTool(s,
@@ -145,7 +145,7 @@ this tool — calling reboot_node in a loop blocks for wait_seconds per node.`),
 			mcp.WithDescription("Check and enable test signing (bcdedit /set testsigning on) on a remote node. Returns whether a reboot is needed."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 		),
-		ensureTestSigningHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), ensureTestSigningHandler(reg, pool)),
 	)
 }
 
