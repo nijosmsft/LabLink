@@ -525,24 +525,26 @@ func (s *SQLiteStore) nodesFor(ctx context.Context, leaseID string) ([]string, e
 
 // --- Sweep ----------------------------------------------------------------
 
-// Sweep is the startup crash-recovery pass. Returns the count of leases
-// transitioned to expired.
-func (s *SQLiteStore) Sweep(ctx context.Context, hostname string, liveProcess func(pid int, startUnix int64) bool) (int, error) {
+// Sweep is the startup crash-recovery pass. Returns a per-category
+// breakdown of leases transitioned (see SweepResult).
+func (s *SQLiteStore) Sweep(ctx context.Context, hostname string, liveProcess func(pid int, startUnix int64) bool) (SweepResult, error) {
 	now := s.now()
+	var result SweepResult
 
 	// First pass: TTL expiry — any host's lease.
 	tCount, err := s.expireOverdueAndCount(ctx, now)
 	if err != nil {
-		return 0, err
+		return result, err
 	}
+	result.TTL = tCount
 
 	// Second pass: dead-process detection — only leases on this host.
 	if liveProcess == nil || strings.TrimSpace(hostname) == "" {
-		return tCount, nil
+		return result, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return tCount, err
+		return result, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
@@ -551,7 +553,7 @@ func (s *SQLiteStore) Sweep(ctx context.Context, hostname string, liveProcess fu
 		FROM leases
 		WHERE state = ? AND hostname = ?`, string(LeaseAcquired), hostname)
 	if err != nil {
-		return tCount, err
+		return result, err
 	}
 	type victim struct {
 		id        string
@@ -563,7 +565,7 @@ func (s *SQLiteStore) Sweep(ctx context.Context, hostname string, liveProcess fu
 		var v victim
 		if err := rows.Scan(&v.id, &v.pid, &v.startUnix); err != nil {
 			rows.Close()
-			return tCount, err
+			return result, err
 		}
 		if !liveProcess(v.pid, v.startUnix) {
 			victims = append(victims, v)
@@ -571,30 +573,29 @@ func (s *SQLiteStore) Sweep(ctx context.Context, hostname string, liveProcess fu
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return tCount, err
+		return result, err
 	}
 	rows.Close()
 
-	dCount := 0
 	for _, v := range victims {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE leases SET state=?, released_at_unix=? WHERE id=? AND state=?`,
 			string(LeaseExpired), now.Unix(), v.id, string(LeaseAcquired)); err != nil {
-			return tCount + dCount, err
+			return result, err
 		}
 		if err := s.writeAuditLocked(ctx, tx, v.id, "sweep", "", now, map[string]any{
 			"reason":     "process_gone",
 			"pid":        v.pid,
 			"start_unix": v.startUnix,
 		}); err != nil {
-			return tCount + dCount, err
+			return result, err
 		}
-		dCount++
+		result.DeadProcess++
 	}
 	if err := tx.Commit(); err != nil {
-		return tCount + dCount, err
+		return result, err
 	}
-	return tCount + dCount, nil
+	return result, nil
 }
 
 // expireOverdue lazily transitions any past-deadline active lease to

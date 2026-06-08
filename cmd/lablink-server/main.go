@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/nijosmsft/lablink/internal/agentclient"
@@ -18,9 +20,10 @@ import (
 	"github.com/nijosmsft/lablink/internal/portal"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/security"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
-var serverVersion = "v0.3.0"
+var serverVersion = "v0.4.0"
 
 func main() {
 	// Handle --version before any other startup work so the call is cheap and
@@ -106,6 +109,23 @@ func main() {
 	}
 	defer leaseStore.Close()
 	log.Printf("LabLink lease store: %s", leaseDBPath)
+
+	// Boot-time sweeper (v0.4.0 M4). Runs ONCE before tool registration so
+	// the lease table reflects current reality before any agent can call
+	// lease(). The breakdown distinguishes "TTL elapsed" (any host) from
+	// "owning process is gone" (this host's leases only). Errors are
+	// logged but do NOT fail startup — a degraded sweeper is preferable
+	// to a server that won't boot.
+	sweepHostname, _ := os.Hostname()
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	swept, err := leaseStore.Sweep(sweepCtx, sweepHostname, isProcessAlive)
+	sweepCancel()
+	if err != nil {
+		log.Printf("WARNING: lease sweeper failed (continuing): %v", err)
+	} else {
+		log.Printf("lease sweeper: marked %d leases expired (%d dead-process + %d TTL)",
+			swept.Total(), swept.DeadProcess, swept.TTL)
+	}
 
 	// Lease enforcement gate (v0.4.0 M3). Controls whether the 24 mutating
 	// tools enforce lease ownership before dispatching to their handlers.
@@ -219,4 +239,42 @@ func leaseRequiredDisabled(v string) bool {
 		return true
 	}
 	return false
+}
+
+// isProcessAlive is the live-process probe passed to leaseStore.Sweep. It
+// returns true when a process with the given pid exists AND (when the
+// stored process_start_unix is non-zero) the live process's create time
+// matches within +/- 2 seconds — guards against PID reuse where a brand-
+// new process happens to take the recycled pid of a crashed lease owner.
+//
+// On gopsutil errors (permission denied, etc.) the probe returns true to
+// stay conservative: never expire a lease we can't actually confirm dead.
+func isProcessAlive(pid int, startUnix int64) bool {
+	if pid <= 0 {
+		return false
+	}
+	exists, err := process.PidExists(int32(pid))
+	if err != nil {
+		return true // unknown -> assume alive
+	}
+	if !exists {
+		return false
+	}
+	if startUnix == 0 {
+		return true
+	}
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return true
+	}
+	createMs, err := p.CreateTime()
+	if err != nil {
+		return true
+	}
+	createUnix := createMs / 1000
+	delta := createUnix - startUnix
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 2
 }
