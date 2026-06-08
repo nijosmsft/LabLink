@@ -13,7 +13,7 @@ import (
 )
 
 // RegisterJobs exposes the background-job tools (detached executions).
-func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
+func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("list_jobs",
 			mcp.WithDescription("List background jobs (detached executions) on a node. Newest first."),
@@ -52,7 +52,7 @@ func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
 			mcp.WithBoolean("force", mcp.Description("Force-terminate (taskkill /F on Windows, SIGKILL on Unix)")),
 		),
-		cancelJobHandler(reg, pool),
+		LeaseGate(leaseCfg, extractJobNode(), cancelJobHandler(reg, pool)),
 	)
 
 	s.AddTool(
@@ -61,7 +61,7 @@ func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
 		),
-		deleteJobHandler(reg, pool),
+		LeaseGate(leaseCfg, extractJobNode(), deleteJobHandler(reg, pool)),
 	)
 }
 

@@ -34,7 +34,7 @@ func outputLimit() int {
 	return defaultOutputLimit
 }
 
-func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) {
+func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("execute_command",
 			mcp.WithDescription("Execute a shell command on a remote node. Returns stdout/stderr and exit code."),
@@ -45,7 +45,7 @@ func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds (0=none)")),
 			mcp.WithBoolean("detach", mcp.Description("Start detached (survives agent restart)")),
 		),
-		executeCommandHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), executeCommandHandler(reg, pool, auditLog)),
 	)
 
 	s.AddTool(
@@ -57,7 +57,7 @@ func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithString("working_dir", mcp.Description("Working directory on the node")),
 			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds (0=none)")),
 		),
-		executeScriptHandler(reg, pool, auditLog),
+		LeaseGate(leaseCfg, extractSingleNode("node"), executeScriptHandler(reg, pool, auditLog)),
 	)
 }
 

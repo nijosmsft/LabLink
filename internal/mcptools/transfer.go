@@ -15,7 +15,7 @@ import (
 
 const transferChunkSize = 1024 * 1024 // 1MB
 
-func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
+func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("push_file",
 			mcp.WithDescription("Upload a local file to a remote node."),
@@ -23,7 +23,7 @@ func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentcl
 			mcp.WithString("local_path", mcp.Required(), mcp.Description("Local file path")),
 			mcp.WithString("remote_path", mcp.Required(), mcp.Description("Destination path on the node")),
 		),
-		pushFileHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), pushFileHandler(reg, pool)),
 	)
 
 	s.AddTool(
@@ -33,7 +33,7 @@ func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentcl
 			mcp.WithString("remote_path", mcp.Required(), mcp.Description("File path on the node")),
 			mcp.WithString("local_path", mcp.Required(), mcp.Description("Local destination path")),
 		),
-		pullFileHandler(reg, pool),
+		LeaseGate(leaseCfg, extractSingleNode("node"), pullFileHandler(reg, pool)),
 	)
 }
 

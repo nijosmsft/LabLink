@@ -107,6 +107,17 @@ func main() {
 	defer leaseStore.Close()
 	log.Printf("LabLink lease store: %s", leaseDBPath)
 
+	// Lease enforcement gate (v0.4.0 M3). Controls whether the 24 mutating
+	// tools enforce lease ownership before dispatching to their handlers.
+	// Set LABLINK_LEASE_REQUIRED=0 (or false/no/off/disabled) to disable —
+	// useful for first-run bootstrap, unit tests, and emergency bypass.
+	leaseEnabled := !leaseRequiredDisabled(security.FirstPresentEnv("LABLINK_LEASE_REQUIRED"))
+	if leaseEnabled {
+		log.Printf("LabLink lease enforcement: ENABLED (mutating tools require an active lease)")
+	} else {
+		log.Printf("WARNING: LabLink lease enforcement DISABLED via LABLINK_LEASE_REQUIRED; mutating tools will not check leases")
+	}
+
 	// Credential store.
 	credsFile := filepath.Join(configDir, "credentials.json")
 	creds := credentials.LoadStore(credsFile)
@@ -164,30 +175,48 @@ ANTI-PATTERNS — DO NOT do these things:
   already pings every registered node in parallel in one call.`),
 	)
 
+	// Lease-gate config — passed to every Register* that wraps mutating tools.
+	leaseCfg := mcptools.LeaseGateConfig{
+		Store:    leaseStore,
+		Registry: reg,
+		Enabled:  leaseEnabled,
+	}
+
 	// Register all tools.
 	mcptools.RegisterInventory(s, reg, pool)
-	mcptools.RegisterExecute(s, reg, pool, auditLog)
-	mcptools.RegisterTransfer(s, reg, pool)
-	mcptools.RegisterProcess(s, reg, pool)
+	mcptools.RegisterExecute(s, reg, pool, auditLog, leaseCfg)
+	mcptools.RegisterTransfer(s, reg, pool, leaseCfg)
+	mcptools.RegisterProcess(s, reg, pool, leaseCfg)
 	mcptools.RegisterTopology(s, reg)
-	mcptools.RegisterContext(s, reg)
-	mcptools.RegisterMultiNode(s, reg, pool, auditLog)
+	mcptools.RegisterContext(s, reg, leaseCfg)
+	mcptools.RegisterMultiNode(s, reg, pool, auditLog, leaseCfg)
 	mcptools.RegisterHistory(s, auditLog)
 	mcptools.RegisterDeploy(s, reg, pool, creds, token)
 	mcptools.RegisterImportExport(s, reg)
-	mcptools.RegisterNodeOps(s, reg, pool)
-	mcptools.RegisterSchedule(s, reg, pool, auditLog)
-	mcptools.RegisterDiagnostics(s, reg, pool, auditLog)
-	mcptools.RegisterPackage(s, reg, pool)
+	mcptools.RegisterNodeOps(s, reg, pool, leaseCfg)
+	mcptools.RegisterSchedule(s, reg, pool, auditLog, leaseCfg)
+	mcptools.RegisterDiagnostics(s, reg, pool, auditLog, leaseCfg)
+	mcptools.RegisterPackage(s, reg, pool, leaseCfg)
 	patchCfg := mcptools.NewPatchConfig(configDir)
-	mcptools.RegisterPatch(s, reg, pool, auditLog, patchCfg)
-	mcptools.RegisterJobs(s, reg, pool)
+	mcptools.RegisterPatch(s, reg, pool, auditLog, patchCfg, leaseCfg)
+	mcptools.RegisterJobs(s, reg, pool, leaseCfg)
 	mcptools.RegisterPortal(s)
-	mcptools.RegisterForward(s, reg, pool)
+	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {
 		log.Fatalf("MCP server failed: %v", err)
 	}
+}
+
+// leaseRequiredDisabled reports whether the LABLINK_LEASE_REQUIRED env var
+// is set to a value that disables lease enforcement. Accepts the obvious
+// negative forms; any other value (including empty) means "enforce".
+func leaseRequiredDisabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off", "disabled":
+		return true
+	}
+	return false
 }
