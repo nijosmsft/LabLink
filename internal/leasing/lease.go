@@ -66,6 +66,23 @@ type AcquireRequest struct {
 	Identity Identity
 }
 
+// SweepResult is the per-category count of leases transitioned by a single
+// Store.Sweep invocation. M4 added the breakdown so the boot-time log can
+// distinguish "your sibling crashed" (DeadProcess) from "someone left a
+// lease running past its TTL" (TTL) without re-querying the audit log.
+type SweepResult struct {
+	// TTL counts leases whose expires_at deadline had already passed at
+	// sweep time, on any host.
+	TTL int
+	// DeadProcess counts leases owned by the sweeping host whose recorded
+	// (pid, process_start_unix) no longer corresponds to a live process.
+	DeadProcess int
+}
+
+// Total is TTL + DeadProcess — the same value the v0.4.0-pre Sweep
+// returned as a single int.
+func (r SweepResult) Total() int { return r.TTL + r.DeadProcess }
+
 // ListFilter narrows a Store.List query.
 type ListFilter struct {
 	AgentID        string

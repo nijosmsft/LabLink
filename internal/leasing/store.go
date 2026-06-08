@@ -40,12 +40,13 @@ type Store interface {
 	// For every active lease whose (pid, process_start_time) no longer
 	// corresponds to a live process per the supplied probe, mark expired
 	// with audit reason process_gone. Also lazily expires leases past
-	// their TTL deadline. Returns the count of leases transitioned.
+	// their TTL deadline. Returns a per-category breakdown of leases
+	// transitioned (see SweepResult).
 	//
 	// liveProcess(pid, startUnix) -> true if a process with that identity
 	// is still running on the local host. Pass nil to skip the dead-
 	// process check (useful in tests).
-	Sweep(ctx context.Context, hostname string, liveProcess func(pid int, startUnix int64) bool) (int, error)
+	Sweep(ctx context.Context, hostname string, liveProcess func(pid int, startUnix int64) bool) (SweepResult, error)
 
 	// Close releases resources (db handle, etc).
 	Close() error

@@ -324,8 +324,14 @@ func TestSweep_ExpiredLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if swept < 1 {
-		t.Errorf("Sweep returned %d want >=1", swept)
+	if swept.Total() < 1 {
+		t.Errorf("Sweep total = %d want >=1", swept.Total())
+	}
+	if swept.TTL < 1 {
+		t.Errorf("Sweep TTL = %d want >=1", swept.TTL)
+	}
+	if swept.DeadProcess != 0 {
+		t.Errorf("Sweep DeadProcess = %d want 0 (probe was nil)", swept.DeadProcess)
 	}
 
 	got, err := s.getLease(ctx, l.ID)
@@ -373,8 +379,14 @@ func TestSweep_DeadProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if swept < 1 {
-		t.Errorf("Sweep returned %d want >=1", swept)
+	if swept.Total() < 1 {
+		t.Errorf("Sweep total = %d want >=1", swept.Total())
+	}
+	if swept.DeadProcess < 1 {
+		t.Errorf("Sweep DeadProcess = %d want >=1", swept.DeadProcess)
+	}
+	if swept.TTL != 0 {
+		t.Errorf("Sweep TTL = %d want 0 (lease was not past deadline)", swept.TTL)
 	}
 
 	got, err := s.getLease(ctx, l.ID)
@@ -428,6 +440,73 @@ func TestSweep_OtherHostUntouched(t *testing.T) {
 	}
 	if len(leases) != 1 || leases[0].Hostname != "other-host" || leases[0].State != LeaseAcquired {
 		t.Errorf("other-host lease should be untouched, got %v", leases)
+	}
+}
+
+// --- Sweep_CountBreakdown (M4) ---------------------------------------------
+
+// Sweep must report TTL-expired and dead-process counts independently so the
+// boot-time sweeper log can attribute "what crashed" vs "what was abandoned".
+func TestSweep_CountBreakdown(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	frozen := time.Now()
+
+	// Acquire the ghost lease FIRST at the real clock, so its 1h deadline
+	// sits in the future regardless of subsequent clock rewinds. Doing
+	// this first prevents the *next* Acquire() from inline-expiring the
+	// TTL leases via expireOverdueLocked when it observes their past
+	// deadlines from the rewound clock.
+	id := ident("ghost-1")
+	id.PID = 99998
+	id.StartTime = time.Unix(43, 0)
+	if _, err := s.Acquire(ctx, AcquireRequest{
+		Nodes:    []string{"ghost-node"},
+		Duration: 1 * time.Hour,
+		AgentID:  "ghost-1",
+		Identity: id,
+	}); err != nil {
+		t.Fatalf("acquire ghost: %v", err)
+	}
+
+	// Now drive "now" backwards so the next two leases land with
+	// deadlines that look like the past once we restore the clock.
+	s.now = func() time.Time { return frozen.Add(-2 * time.Hour) }
+
+	for i, node := range []string{"ttl-node-A", "ttl-node-B"} {
+		agentID := "ttl-agent-" + string(rune('A'+i))
+		if _, err := s.Acquire(ctx, AcquireRequest{
+			Nodes:    []string{node},
+			Duration: 10 * time.Minute,
+			AgentID:  agentID,
+			Identity: ident(agentID),
+		}); err != nil {
+			t.Fatalf("acquire %s: %v", node, err)
+		}
+	}
+
+	// Restore real clock so Sweep observes the TTL leases as expired.
+	s.now = func() time.Time { return frozen }
+
+	probe := func(pid int, _ int64) bool {
+		// Pretend only the testhost's own pid is alive — anything else,
+		// including pid=99998, is dead.
+		return pid != id.PID && pid != 99999
+	}
+
+	swept, err := s.Sweep(ctx, "testhost", probe)
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if swept.TTL != 2 {
+		t.Errorf("swept.TTL = %d want 2", swept.TTL)
+	}
+	if swept.DeadProcess != 1 {
+		t.Errorf("swept.DeadProcess = %d want 1", swept.DeadProcess)
+	}
+	if swept.Total() != 3 {
+		t.Errorf("swept.Total() = %d want 3", swept.Total())
 	}
 }
 

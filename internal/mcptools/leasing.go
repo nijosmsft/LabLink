@@ -75,6 +75,7 @@ func RegisterLeasing(s *server.MCPServer, reg *registry.Registry, store leasing.
 	addTool(s,
 		mcp.NewTool("force_release",
 			mcp.WithDescription("USER INVOCATION ONLY — only call when the human user explicitly asks to break a stuck lease. Always paired with an explanation. Marks the lease state=forced and records reason in audit. Owner-bypass; the previous holder will get NotOwner errors on subsequent release/extend calls."),
+			mcp.WithDestructiveHintAnnotation(true),
 			mcp.WithString("lease_id", mcp.Description("Specific lease to force-release. Mutually exclusive with nodes.")),
 			mcp.WithArray("nodes", mcp.Description("Force-release every active lease touching ANY of these nodes. Mutually exclusive with lease_id."), mcp.WithStringItems()),
 			mcp.WithString("reason", mcp.Required(), mcp.Description("Required. Recorded in audit (e.g. 'holder crashed, recovering lab').")),
