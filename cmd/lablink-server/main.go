@@ -12,6 +12,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/healthmon"
+	"github.com/nijosmsft/lablink/internal/leasing"
 	"github.com/nijosmsft/lablink/internal/mcptools"
 	"github.com/nijosmsft/lablink/internal/ops"
 	"github.com/nijosmsft/lablink/internal/portal"
@@ -95,6 +96,17 @@ func main() {
 	// Audit log.
 	auditLog := audit.NewLog(configDir)
 
+	// Lease store (v0.4.0 M2). One SQLite file shared across every
+	// lablink-server.exe on this dev box. Path honors LABLINK_HOME via
+	// configDir resolution above.
+	leaseDBPath := filepath.Join(configDir, "leases.db")
+	leaseStore, err := leasing.OpenSQLiteStore(leaseDBPath)
+	if err != nil {
+		log.Fatalf("open lease store at %s: %v", leaseDBPath, err)
+	}
+	defer leaseStore.Close()
+	log.Printf("LabLink lease store: %s", leaseDBPath)
+
 	// Credential store.
 	credsFile := filepath.Join(configDir, "credentials.json")
 	creds := credentials.LoadStore(credsFile)
@@ -172,6 +184,7 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterJobs(s, reg, pool)
 	mcptools.RegisterPortal(s)
 	mcptools.RegisterForward(s, reg, pool)
+	mcptools.RegisterLeasing(s, reg, leaseStore)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {
