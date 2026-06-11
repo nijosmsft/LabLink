@@ -4,13 +4,9 @@
 
 LabLink provides two tools for moving files between the operator machine and a node:
 
-- `push_file`: transfers a local file to the node. The file body is buffered in memory on both
-  sides and sent as a single gRPC RPC.
-- `pull_file`: transfers a file from the node to the local machine. Same in-memory, single-RPC
-  model as push_file.
-
-Both tools are suitable for small-to-medium files. For files larger than roughly 10 GiB, see the
-workaround section below.
+- push_file: local -> node, streamed over a client-streaming gRPC RPC at 1 MiB chunks. The receiver writes a temporary file (`.di-upload-*`) and atomically renames on success.
+- pull_file: node -> local, streamed over a server-streaming gRPC RPC at 1 MiB chunks. The receiver writes a temporary file (`.di-tempfile-*`) and atomically renames on success.
+- Each call is one transactional stream. If the connection drops at byte N, the partial temp file is discarded and the retry starts from byte 0. Suitable for small-to-medium files; see the envelope below for large transfers and the "Future work" section for the planned resumable path.
 
 ---
 
@@ -77,8 +73,7 @@ Example: pulling a 3 GiB ETL trace over a 10 GbE link
 
 ## Workaround for very large transfers
 
-The current in-memory single-RPC model imposes practical limits. If a file is too large, use one
-of the following approaches.
+For files too large for a single uninterrupted stream, use one of the following approaches.
 
 ### Compress and split on the node, then pull chunks
 
@@ -139,6 +134,8 @@ scp source-node:/path/to/big.bin /dest/path/
 Chunked transfer with resumable progress is being tracked separately. Until that lands, the
 workarounds above are the recommended path for files larger than roughly 10 GiB.
 
+The design memo lives at `manager-log/lablink-chunked-transfer-design.md` (in the wpr-mcp-poc-staging workspace) and proposes a switchover-by-size design with per-chunk CRC32C + end-of-file SHA-256 integrity, a SQLite-backed resume token store on both server and agent, and Option C wire protocol (`StartTransfer` / `(Put|Get)Chunks` / `CompleteTransfer`).
+
 ---
 
 ## Troubleshooting
@@ -146,6 +143,6 @@ workarounds above are the recommended path for files larger than roughly 10 GiB.
 | Error | Likely cause | Fix |
 |-------|--------------|-----|
 | `MCP error -32001 Request timed out` | `timeout_seconds` exceeded, or the default 600 s is too short for the file size | Pass an explicit `timeout_seconds` value sized to the transfer (see table above). |
-| gRPC `ResourceExhausted: trying to send message larger than max` | File body exceeds the gRPC max message size configured on the agent or server | Use the workaround above: split the file or copy node-to-node. |
+| Transfer fails partway through a multi-GiB file | Network blip, MCP-server restart, or agent restart between byte 0 and byte N discards the partial temp file. | Pass `timeout_seconds` sized for the full transfer; transfer over a stable link; or use the very-large-transfer workaround above. Resumable transfer is in design -- see Future work. |
 | Slow throughput | CPU saturation on either side, or competing traffic on the link | Measure with `iperf3`. If the link is busy, schedule the transfer during an idle window. |
 | Transfer hangs and never times out | MCP transport keepalive misconfigured, or running a LabLink version without the heartbeat | Confirm you are on a LabLink version that includes `timeout_seconds` and the ~5 s heartbeat. |
