@@ -258,6 +258,7 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 - [`docs/quickstart.md`](docs/quickstart.md) — manual mTLS setup without the bootstrap scripts.
 - [`docs/Project.md`](docs/Project.md) — architecture and design notes.
 - [`docs/mtls-self-managed-cert-plan.md`](docs/mtls-self-managed-cert-plan.md) — PKI design and rationale.
+- [File transfers](docs/file-transfers.md) — throughput envelope and timeout tuning for push_file / pull_file.
 
 `lablink-ca.exe` exposes the underlying CA primitives if you'd rather drive PKI by hand:
 
