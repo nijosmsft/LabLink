@@ -30,6 +30,12 @@ type progressReporter interface {
 	Progress(bytesDone, bytesTotal int64)
 }
 
+// progressNotifier is called from the heartbeat goroutine to send an MCP
+// notifications/progress message to the MCP client during a long-running
+// transfer. done and total are byte counts. The function must be safe to call
+// from any goroutine. A nil value is treated as a no-op.
+type progressNotifier func(done, total int64)
+
 // nopProgressReporter is used when callers don't supply a handle (e.g. the
 // pulltest CLI). It avoids nil-check noise in the streaming loop.
 type nopProgressReporter struct{}
@@ -40,14 +46,16 @@ var _ progressReporter = (*ops.Handle)(nil)
 var _ progressReporter = nopProgressReporter{}
 
 func pullRemoteFileToPath(stream pullFileClient, localPath string) (int64, error) {
-	return pullRemoteFileToPathWithProgress(context.Background(), stream, localPath, nopProgressReporter{})
+	return pullRemoteFileToPathWithProgress(context.Background(), stream, localPath, nopProgressReporter{}, nil)
 }
 
 // pullRemoteFileToPathWithProgress is the heartbeat-aware variant used by the
 // MCP handler. A ticker goroutine reads an atomic byte counter the streaming
 // loop updates and forwards (bytesDone, bytesTotal) to the progress reporter
-// every ~5s. The ticker is stopped on function return.
-func pullRemoteFileToPathWithProgress(ctx context.Context, stream pullFileClient, localPath string, reporter progressReporter) (int64, error) {
+// every ~5s. If notifier is non-nil it also sends a notifications/progress
+// message to the MCP client on each tick and once more on success. The ticker
+// is stopped on function return.
+func pullRemoteFileToPathWithProgress(ctx context.Context, stream pullFileClient, localPath string, reporter progressReporter, notifier progressNotifier) (int64, error) {
 	if reporter == nil {
 		reporter = nopProgressReporter{}
 	}
@@ -87,7 +95,11 @@ func pullRemoteFileToPathWithProgress(ctx context.Context, stream pullFileClient
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				reporter.Progress(bytesDone.Load(), totalSize.Load())
+				d, t := bytesDone.Load(), totalSize.Load()
+				reporter.Progress(d, t)
+				if notifier != nil {
+					notifier(d, t)
+				}
 			}
 		}
 	}()
@@ -149,6 +161,9 @@ func pullRemoteFileToPathWithProgress(ctx context.Context, stream pullFileClient
 	// Publish one final progress so observers see the terminal byte count
 	// before the op transitions to "finished".
 	reporter.Progress(written, totalSize.Load())
+	if notifier != nil {
+		notifier(written, totalSize.Load())
+	}
 
 	return written, nil
 }

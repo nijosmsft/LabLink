@@ -53,7 +53,8 @@ func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentcl
 // applyTransferTimeout wraps ctx in a context.WithTimeout when timeoutSec > 0.
 // Returns (ctx, cancel) where cancel is always safe to defer (no-op when no
 // deadline was applied). timeoutSec == 0 disables the deadline so very large
-// transfers can proceed unbounded.
+// transfers can proceed unbounded. Negative values are treated as no-op here;
+// the MCP handlers reject them before calling this function.
 func applyTransferTimeout(ctx context.Context, timeoutSec int) (context.Context, context.CancelFunc) {
 	if timeoutSec <= 0 {
 		return ctx, func() {}
@@ -67,6 +68,10 @@ func pushFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 		localPath := request.GetString("local_path", "")
 		remotePath := request.GetString("remote_path", "")
 		timeoutSec := request.GetInt("timeout_seconds", defaultTransferTimeoutSecs)
+
+		if timeoutSec < 0 {
+			return mcp.NewToolResultError("timeout_seconds must be >= 0 (0 disables the deadline)"), nil
+		}
 
 		node, ok := reg.GetNode(nodeName)
 		if !ok {
@@ -107,7 +112,8 @@ func pushFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("push_file: %v", err)), nil
 		}
 
-		resp, err := sendLocalFileWithProgress(ctx, stream, f, info.Size(), remotePath, op)
+		notifier := buildMCPNotifier(ctx, progressTokenFromRequest(request))
+		resp, err := sendLocalFileWithProgress(ctx, stream, f, info.Size(), remotePath, op, notifier)
 		if err != nil {
 			opErr = err
 			return mcp.NewToolResultError(fmt.Sprintf("upload: %v", err)), nil
@@ -125,6 +131,10 @@ func pullFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 		remotePath := request.GetString("remote_path", "")
 		localPath := request.GetString("local_path", "")
 		timeoutSec := request.GetInt("timeout_seconds", defaultTransferTimeoutSecs)
+
+		if timeoutSec < 0 {
+			return mcp.NewToolResultError("timeout_seconds must be >= 0 (0 disables the deadline)"), nil
+		}
 
 		node, ok := reg.GetNode(nodeName)
 		if !ok {
@@ -152,7 +162,8 @@ func pullFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("pull_file: %v", err)), nil
 		}
 
-		written, err := pullRemoteFileToPathWithProgress(ctx, stream, localPath, op)
+		notifier := buildMCPNotifier(ctx, progressTokenFromRequest(request))
+		written, err := pullRemoteFileToPathWithProgress(ctx, stream, localPath, op, notifier)
 		if err != nil {
 			opErr = err
 			return mcp.NewToolResultError(err.Error()), nil
@@ -174,5 +185,36 @@ func formatBytes(b int64) string {
 		return fmt.Sprintf("%.1f KB", float64(b)/float64(1<<10))
 	default:
 		return fmt.Sprintf("%d B", b)
+	}
+}
+
+// progressTokenFromRequest extracts _meta.progressToken from an inbound
+// CallToolRequest. Returns nil if the client did not supply one.
+func progressTokenFromRequest(req mcp.CallToolRequest) mcp.ProgressToken {
+	if meta := req.Params.Meta; meta != nil {
+		return meta.ProgressToken
+	}
+	return nil
+}
+
+// buildMCPNotifier returns a progressNotifier that sends a
+// notifications/progress message to the current MCP client on every call.
+// Returns nil (no-op) if token is nil or if there is no MCPServer in ctx (e.g.
+// in tests that do not run inside a real server).
+func buildMCPNotifier(ctx context.Context, token mcp.ProgressToken) progressNotifier {
+	if token == nil {
+		return nil
+	}
+	srv := server.ServerFromContext(ctx)
+	if srv == nil {
+		return nil
+	}
+	return func(done, total int64) {
+		params := map[string]any{
+			"progressToken": token,
+			"progress":      float64(done),
+			"total":         float64(total),
+		}
+		_ = srv.SendNotificationToClient(ctx, "notifications/progress", params)
 	}
 }

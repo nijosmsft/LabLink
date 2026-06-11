@@ -10,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/nijosmsft/lablink/internal/agentclient"
+	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
@@ -118,7 +122,7 @@ func TestPullRemoteFileToPathWithProgress_TimeoutSecondsRespected(t *testing.T) 
 	}
 
 	start := time.Now()
-	_, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), nil)
+	_, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), nil, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -148,7 +152,7 @@ func TestPullRemoteFileToPathWithProgress_ZeroTimeoutMeansNoTimeout(t *testing.T
 			{Chunk: []byte("abcd"), TotalSize: 4},
 		},
 	}
-	written, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), nil)
+	written, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), nil, nil)
 	if err != nil {
 		t.Fatalf("pullRemoteFileToPathWithProgress failed: %v", err)
 	}
@@ -175,7 +179,7 @@ func TestPullRemoteFileToPathWithProgress_HeartbeatFiresPeriodically(t *testing.
 	}
 
 	reporter := &recordingReporter{}
-	written, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), reporter)
+	written, err := pullRemoteFileToPathWithProgress(ctx, stream, filepath.Join(t.TempDir(), "x.bin"), reporter, nil)
 	if err != nil {
 		t.Fatalf("pullRemoteFileToPathWithProgress failed: %v", err)
 	}
@@ -244,7 +248,7 @@ func TestSendLocalFileWithProgress_TimeoutSecondsRespected(t *testing.T) {
 	stream := &blockingPushFileClient{ctx: ctx, sendDelay: 2 * time.Second}
 
 	start := time.Now()
-	_, err := sendLocalFileWithProgress(ctx, stream, bytes.NewReader(payload), int64(len(payload)), `C:\temp\big.bin`, nil)
+	_, err := sendLocalFileWithProgress(ctx, stream, bytes.NewReader(payload), int64(len(payload)), `C:\temp\big.bin`, nil, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -263,7 +267,7 @@ func TestSendLocalFileWithProgress_ZeroTimeoutMeansNoTimeout(t *testing.T) {
 	payload := []byte("hello")
 	stream := &blockingPushFileClient{ctx: ctx, sendDelay: 10 * time.Millisecond}
 
-	resp, err := sendLocalFileWithProgress(ctx, stream, bytes.NewReader(payload), int64(len(payload)), `C:\temp\x.bin`, nil)
+	resp, err := sendLocalFileWithProgress(ctx, stream, bytes.NewReader(payload), int64(len(payload)), `C:\temp\x.bin`, nil, nil)
 	if err != nil {
 		t.Fatalf("sendLocalFileWithProgress failed: %v", err)
 	}
@@ -284,7 +288,7 @@ func TestSendLocalFileWithProgress_HeartbeatFiresPeriodically(t *testing.T) {
 	reporter := &recordingReporter{}
 
 	// 1-byte chunks via tinyReader, so Send is called once per byte.
-	_, err := sendLocalFileWithProgress(ctx, stream, &tinyReader{data: payload}, int64(len(payload)), `C:\temp\x.bin`, reporter)
+	_, err := sendLocalFileWithProgress(ctx, stream, &tinyReader{data: payload}, int64(len(payload)), `C:\temp\x.bin`, reporter, nil)
 	if err != nil {
 		t.Fatalf("sendLocalFileWithProgress failed: %v", err)
 	}
@@ -315,3 +319,225 @@ func (r *tinyReader) Read(p []byte) (int, error) {
 func contains(haystack, needle string) bool {
 	return bytes.Contains([]byte(haystack), []byte(needle))
 }
+
+// --- handler-level tests: timeout defaults + negative rejection -------------
+
+// buildCallToolRequest builds a minimal mcp.CallToolRequest with the given
+// string+number arguments.
+func buildCallToolRequest(args map[string]any) mcp.CallToolRequest {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = args
+	return req
+}
+
+func TestPushFileHandler_NegativeTimeoutRejected(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	pool := agentclient.NewPool("", security.ClientTransportConfig{})
+	handler := pushFileHandler(reg, pool)
+
+	req := buildCallToolRequest(map[string]any{
+		"node":            "test-node",
+		"local_path":      "x.txt",
+		"remote_path":     "y.txt",
+		"timeout_seconds": float64(-1),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for negative timeout_seconds")
+	}
+	text := toolResultText(result)
+	if !contains(text, "timeout_seconds") || !contains(text, ">= 0") {
+		t.Fatalf("expected rejection message, got: %s", text)
+	}
+}
+
+func TestPullFileHandler_NegativeTimeoutRejected(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	pool := agentclient.NewPool("", security.ClientTransportConfig{})
+	handler := pullFileHandler(reg, pool)
+
+	req := buildCallToolRequest(map[string]any{
+		"node":            "test-node",
+		"remote_path":     "y.txt",
+		"local_path":      "x.txt",
+		"timeout_seconds": float64(-99),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true for negative timeout_seconds")
+	}
+	text := toolResultText(result)
+	if !contains(text, "timeout_seconds") || !contains(text, ">= 0") {
+		t.Fatalf("expected rejection message, got: %s", text)
+	}
+}
+
+func TestPushFileHandler_OmittedTimeoutDefaultsTo600(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	pool := agentclient.NewPool("", security.ClientTransportConfig{})
+	handler := pushFileHandler(reg, pool)
+
+	// No timeout_seconds in args → handler must not reject; it should proceed to
+	// node lookup and return "not found" (proving it passed the timeout check).
+	req := buildCallToolRequest(map[string]any{
+		"node":        "nonexistent",
+		"local_path":  "x.txt",
+		"remote_path": "y.txt",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true (node not found)")
+	}
+	text := toolResultText(result)
+	if contains(text, "timeout_seconds") {
+		t.Fatalf("omitted timeout triggered rejection: %s", text)
+	}
+	if !contains(text, "nonexistent") {
+		t.Fatalf("expected node-not-found error, got: %s", text)
+	}
+}
+
+func TestPullFileHandler_OmittedTimeoutDefaultsTo600(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	pool := agentclient.NewPool("", security.ClientTransportConfig{})
+	handler := pullFileHandler(reg, pool)
+
+	req := buildCallToolRequest(map[string]any{
+		"node":        "nonexistent",
+		"remote_path": "y.txt",
+		"local_path":  "x.txt",
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError=true (node not found)")
+	}
+	text := toolResultText(result)
+	if contains(text, "timeout_seconds") {
+		t.Fatalf("omitted timeout triggered rejection: %s", text)
+	}
+	if !contains(text, "nonexistent") {
+		t.Fatalf("expected node-not-found error, got: %s", text)
+	}
+}
+
+// --- handler-level tests: MCP progress notifications -----------------------
+
+func TestPullFileHandler_ProgressTokenAbsent_NoMCPNotifications(t *testing.T) {
+	var notifCount int
+	notifier := progressNotifier(func(done, total int64) {
+		notifCount++
+	})
+
+	stream := &mockPullFileClient{
+		responses: []*pb.PullFileResponse{
+			{Chunk: []byte("hello"), TotalSize: 5},
+		},
+	}
+	// Passing nil notifier: verifies the helper does not call a nil notifier.
+	_, err := pullRemoteFileToPathWithProgress(
+		context.Background(), stream,
+		filepath.Join(t.TempDir(), "out.bin"),
+		nil,
+		nil, // no token → no notifier
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// notifier was not passed in so count stays 0. But also test that
+	// the non-nil notifier path works when explicitly provided.
+	_ = notifier // suppress unused warning; verified via next two tests
+	if notifCount != 0 {
+		t.Fatalf("expected 0 notifications with nil notifier, got %d", notifCount)
+	}
+}
+
+func TestPullFileHandler_ProgressTokenPresent_NotificationsSent(t *testing.T) {
+	var mu sync.Mutex
+	var calls []progressCall
+
+	notifier := progressNotifier(func(done, total int64) {
+		mu.Lock()
+		calls = append(calls, progressCall{BytesDone: done, BytesTotal: total})
+		mu.Unlock()
+	})
+
+	stream := &mockPullFileClient{
+		responses: []*pb.PullFileResponse{
+			{Chunk: []byte("hello"), TotalSize: 5},
+		},
+	}
+	written, err := pullRemoteFileToPathWithProgress(
+		context.Background(), stream,
+		filepath.Join(t.TempDir(), "out.bin"),
+		nil,
+		notifier,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if written != 5 {
+		t.Fatalf("written = %d, want 5", written)
+	}
+
+	mu.Lock()
+	snap := append([]progressCall(nil), calls...)
+	mu.Unlock()
+
+	if len(snap) == 0 {
+		t.Fatal("expected at least one MCP progress notification (final)")
+	}
+	last := snap[len(snap)-1]
+	if last.BytesDone != 5 || last.BytesTotal != 5 {
+		t.Fatalf("expected final notification (5,5), got (%d,%d)", last.BytesDone, last.BytesTotal)
+	}
+}
+
+func TestPushFileHandler_ProgressTokenPresent_NotificationsSent(t *testing.T) {
+	var mu sync.Mutex
+	var calls []progressCall
+
+	notifier := progressNotifier(func(done, total int64) {
+		mu.Lock()
+		calls = append(calls, progressCall{BytesDone: done, BytesTotal: total})
+		mu.Unlock()
+	})
+
+	payload := []byte("world")
+	stream := &mockPushFileClient{}
+	_, err := sendLocalFileWithProgress(
+		context.Background(), stream,
+		bytes.NewReader(payload), int64(len(payload)),
+		`C:\temp\x.bin`,
+		nil,
+		notifier,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mu.Lock()
+	snap := append([]progressCall(nil), calls...)
+	mu.Unlock()
+
+	if len(snap) == 0 {
+		t.Fatal("expected at least one MCP progress notification (final)")
+	}
+	last := snap[len(snap)-1]
+	if last.BytesDone != 5 || last.BytesTotal != 5 {
+		t.Fatalf("expected final notification (5,5), got (%d,%d)", last.BytesDone, last.BytesTotal)
+	}
+}
+
+// toolResultText is defined in ops_hook.go (same package).

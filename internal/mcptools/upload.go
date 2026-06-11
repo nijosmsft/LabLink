@@ -16,15 +16,16 @@ type pushFileClient interface {
 }
 
 func sendLocalFile(stream pushFileClient, r io.Reader, fileSize int64, remotePath string) (*pb.PushFileResponse, error) {
-	return sendLocalFileWithProgress(context.Background(), stream, r, fileSize, remotePath, nopProgressReporter{})
+	return sendLocalFileWithProgress(context.Background(), stream, r, fileSize, remotePath, nopProgressReporter{}, nil)
 }
 
 // sendLocalFileWithProgress is the heartbeat-aware variant used by the MCP
 // handler. Mirrors pullRemoteFileToPathWithProgress: a ticker goroutine
 // publishes (bytesSent, fileSize) every ~5s while the streaming loop updates
-// an atomic counter, so MCP clients see "tool is alive" liveness signals
-// during multi-GB uploads.
-func sendLocalFileWithProgress(ctx context.Context, stream pushFileClient, r io.Reader, fileSize int64, remotePath string, reporter progressReporter) (*pb.PushFileResponse, error) {
+// an atomic counter. If notifier is non-nil it also sends a
+// notifications/progress message to the MCP client on each tick and once more
+// on success.
+func sendLocalFileWithProgress(ctx context.Context, stream pushFileClient, r io.Reader, fileSize int64, remotePath string, reporter progressReporter, notifier progressNotifier) (*pb.PushFileResponse, error) {
 	if reporter == nil {
 		reporter = nopProgressReporter{}
 	}
@@ -45,7 +46,11 @@ func sendLocalFileWithProgress(ctx context.Context, stream pushFileClient, r io.
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				reporter.Progress(bytesSent.Load(), fileSize)
+				s := bytesSent.Load()
+				reporter.Progress(s, fileSize)
+				if notifier != nil {
+					notifier(s, fileSize)
+				}
 			}
 		}
 	}()
@@ -109,6 +114,9 @@ func sendLocalFileWithProgress(ctx context.Context, stream pushFileClient, r io.
 	stopHeartbeat()
 	if err == nil {
 		reporter.Progress(bytesSent.Load(), fileSize)
+		if notifier != nil {
+			notifier(bytesSent.Load(), fileSize)
+		}
 	}
 	return resp, err
 }
