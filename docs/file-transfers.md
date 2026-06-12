@@ -56,7 +56,7 @@ link before you start the transfer.
 When the MCP client supplies a `progressToken` in the request's `_meta`, the LabLink MCP server
 sends a `notifications/progress` message every ~5 seconds with `progress` and `total` (per MCP spec). This
 keeps the MCP transport's idle-timeout from firing on long transfers. The Copilot CLI client sets
-`progressToken` automatically.
+`progressToken` automatically. The same mechanism extends to all other long-running tools; see the README for the full list.
 
 If no `progressToken` is supplied, the transfer still runs to completion, but the client must be
 willing to wait the full `timeout_seconds` without intermediate signals.

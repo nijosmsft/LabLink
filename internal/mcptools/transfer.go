@@ -112,7 +112,7 @@ func pushFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("push_file: %v", err)), nil
 		}
 
-		notifier := buildMCPNotifier(ctx, progressTokenFromRequest(request))
+		notifier := buildMCPNotifier(ctx, ProgressTokenFromRequest(request))
 		resp, err := sendLocalFileWithProgress(ctx, stream, f, info.Size(), remotePath, op, notifier)
 		if err != nil {
 			opErr = err
@@ -162,7 +162,7 @@ func pullFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("pull_file: %v", err)), nil
 		}
 
-		notifier := buildMCPNotifier(ctx, progressTokenFromRequest(request))
+		notifier := buildMCPNotifier(ctx, ProgressTokenFromRequest(request))
 		written, err := pullRemoteFileToPathWithProgress(ctx, stream, localPath, op, notifier)
 		if err != nil {
 			opErr = err
@@ -188,33 +188,3 @@ func formatBytes(b int64) string {
 	}
 }
 
-// progressTokenFromRequest extracts _meta.progressToken from an inbound
-// CallToolRequest. Returns nil if the client did not supply one.
-func progressTokenFromRequest(req mcp.CallToolRequest) mcp.ProgressToken {
-	if meta := req.Params.Meta; meta != nil {
-		return meta.ProgressToken
-	}
-	return nil
-}
-
-// buildMCPNotifier returns a progressNotifier that sends a
-// notifications/progress message to the current MCP client on every call.
-// Returns nil (no-op) if token is nil or if there is no MCPServer in ctx (e.g.
-// in tests that do not run inside a real server).
-func buildMCPNotifier(ctx context.Context, token mcp.ProgressToken) progressNotifier {
-	if token == nil {
-		return nil
-	}
-	srv := server.ServerFromContext(ctx)
-	if srv == nil {
-		return nil
-	}
-	return func(done, total int64) {
-		params := map[string]any{
-			"progressToken": token,
-			"progress":      float64(done),
-			"total":         float64(total),
-		}
-		_ = srv.SendNotificationToClient(ctx, "notifications/progress", params)
-	}
-}

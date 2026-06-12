@@ -259,6 +259,7 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 - [`docs/Project.md`](docs/Project.md) — architecture and design notes.
 - [`docs/mtls-self-managed-cert-plan.md`](docs/mtls-self-managed-cert-plan.md) — PKI design and rationale.
 - [File transfers](docs/file-transfers.md) — throughput envelope and timeout tuning for push_file / pull_file.
+- All long-running MCP tools (`reboot_nodes`, `reboot_node`, `wait_for_node`, `wait_for_release`, `execute_command`, `execute_script`, `execute_on_role`, `run_script_on_role`, `collect_etw_trace`) emit `notifications/progress` every ~5 s when the client supplies `_meta.progressToken`, preventing MCP transport idle timeouts on slow operations.
 
 `lablink-ca.exe` exposes the underlying CA primitives if you'd rather drive PKI by hand:
 

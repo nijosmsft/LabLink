@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -73,6 +74,12 @@ func executeOnRoleHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 			return mcp.NewToolResultError(msg), nil
 		}
 
+		var doneAtomic atomic.Int64
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return doneAtomic.Load(), int64(len(nodes))
+		})
+		defer stop()
+
 		results := make([]nodeResult, len(nodes))
 		var wg sync.WaitGroup
 		for i, node := range nodes {
@@ -80,6 +87,7 @@ func executeOnRoleHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 			go func(idx int, n *registry.Node) {
 				defer wg.Done()
 				results[idx] = executeOnNode(ctx, n, command, shell, timeout, reg, pool)
+				doneAtomic.Add(1)
 			}(i, node)
 		}
 		wg.Wait()
@@ -140,6 +148,12 @@ func runScriptOnRoleHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 			return mcp.NewToolResultError(msg), nil
 		}
 
+		var doneAtomic atomic.Int64
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return doneAtomic.Load(), int64(len(nodes))
+		})
+		defer stop()
+
 		results := make([]nodeResult, len(nodes))
 		var wg sync.WaitGroup
 		for i, node := range nodes {
@@ -147,6 +161,7 @@ func runScriptOnRoleHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 			go func(idx int, n *registry.Node) {
 				defer wg.Done()
 				results[idx] = executeScriptOnNode(ctx, n, scriptBody, shell, timeout, reg, pool)
+				doneAtomic.Add(1)
 			}(i, node)
 		}
 		wg.Wait()

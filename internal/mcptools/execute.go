@@ -105,6 +105,10 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		defer callCancel()
 
 		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), int64(timeout)
+		})
+		defer stopHB()
 		stream, err := client.Execute(callCtx, &pb.ExecuteRequest{
 			Command:        command,
 			Shell:          shell,
@@ -185,6 +189,10 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		defer callCancel()
 
 		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), int64(timeout)
+		})
+		defer stopHB()
 		stream, err := client.ExecuteScript(callCtx, &pb.ExecuteScriptRequest{
 			ScriptBody:     scriptBody,
 			Shell:          shell,

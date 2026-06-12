@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -102,9 +103,14 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 		}
 		sb.WriteString("WPR started\n")
 
-		// Wait for the specified duration.
+		// Wait for the specified duration; emit heartbeat during capture.
+		captureStart := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(captureStart).Seconds()), int64(duration)
+		})
 		waitCmd := fmt.Sprintf(`Start-Sleep %d; 'Wait done'`, duration)
 		output, _, _, _ = executeAndCollect(ctx, client, waitCmd, "powershell", "", nil, int32(duration+30))
+		stopHB()
 		sb.WriteString(fmt.Sprintf("Traced for %d seconds\n", duration))
 
 		// Stop WPR and save.
@@ -120,7 +126,18 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 			return mcp.NewToolResultError(fmt.Sprintf("pull: %v", err)), nil
 		}
 
-		totalBytes, err := pullRemoteFileToPath(pullStream, localOutput)
+		// Stage 2: wire a byte-based progress notifier so large ETL pulls emit
+		// MCP heartbeats and don't hit the transport idle timeout.
+		stage2Token := ProgressTokenFromRequest(request)
+		var stage2Notifier progressNotifier
+		if stage2Token != nil {
+			stage2Notifier = heartbeatNotifierOverride
+			if stage2Notifier == nil {
+				stage2Notifier = buildMCPNotifier(ctx, stage2Token)
+			}
+		}
+
+		totalBytes, err := pullRemoteFileToPathWithProgress(ctx, pullStream, localOutput, nopProgressReporter{}, stage2Notifier)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -273,6 +274,11 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
 
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return 0, 1
+		})
+		defer stop()
+
 		client, err := pool.GetClient(node.Address, node.TLSServerName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("connect to %s: %v", node.Address, err)), nil
@@ -360,6 +366,12 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 				strings.Join(unknown, ", "))), nil
 		}
 
+		var doneAtomic atomic.Int64
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return doneAtomic.Load(), int64(len(nodes))
+		})
+		defer stop()
+
 		statuses := make([]rebootNodeStatus, len(nodes))
 		starts := make([]time.Time, len(nodes))
 		now := timeNow()
@@ -446,6 +458,7 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 				if results[j] {
 					statuses[idx].BackOnline = true
 					statuses[idx].WallTime = time.Since(starts[idx])
+					doneAtomic.Add(1)
 				} else {
 					stillPending = append(stillPending, idx)
 				}
