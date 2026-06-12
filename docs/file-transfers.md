@@ -5,7 +5,7 @@
 LabLink provides two tools for moving files between the operator machine and a node:
 
 - push_file: local -> node, streamed over a client-streaming gRPC RPC at 1 MiB chunks. The receiver writes a temporary file (`.di-upload-*`) and atomically renames on success.
-- pull_file: node -> local, streamed over a server-streaming gRPC RPC at 1 MiB chunks. The receiver writes a temporary file (`.di-tempfile-*`) and atomically renames on success.
+- pull_file: node -> local, streamed over a server-streaming gRPC RPC at 1 MiB chunks. The receiver writes a temporary file (`.di-download-*`) and atomically renames on success.
 - Each call is one transactional stream. If the connection drops at byte N, the partial temp file is discarded and the retry starts from byte 0. Suitable for small-to-medium files; see the envelope below for large transfers and the "Future work" section for the planned resumable path.
 
 ---
@@ -54,7 +54,7 @@ link before you start the transfer.
 - There is no maximum, but values above ~3600 are rarely useful -- measure with `iperf3` instead.
 
 When the MCP client supplies a `progressToken` in the request's `_meta`, the LabLink MCP server
-sends a `notifications/progress` message every ~5 seconds with bytes_done and bytes_total. This
+sends a `notifications/progress` message every ~5 seconds with `progress` and `total` (per MCP spec). This
 keeps the MCP transport's idle-timeout from firing on long transfers. The Copilot CLI client sets
 `progressToken` automatically.
 
