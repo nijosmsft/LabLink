@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-12
+
+### Added
+- `Update-LabLink.ps1 -Detach`: registers a Windows one-shot scheduled task as SYSTEM running 30 seconds in the future via `schtasks.exe`, then exits 0. Use this when invoking the updater via `lablink execute_script` on a lab node -- without it, the agent's executor (per `cmd/lablink-agent/executor.go:195-196`) kills the child PowerShell when the agent's context is cancelled on `Stop-Service`, leaving the swap incomplete. With `-Detach`, the operator's `execute_script` call returns cleanly and the scheduled task runs detached from the agent's process tree.
+- 2 new test cases in `scripts/tests/Update-LabLink.Tests.ps1` covering the `-Detach` branch (schtasks arg coverage; forwarded args coverage including `-Detach` exclusion).
+
+### Notes
+- On operator workstations where `lablink-server.exe` is not a Windows service, `-Detach` is NOT needed -- the standard `Update-LabLink.ps1` invocation works as before.
+- Companion docs PR is open at #15 (docs/fleet-update.md) and will land alongside v0.4.3.
+
 ## [0.4.2] - 2026-06-12
 
 ### Added
