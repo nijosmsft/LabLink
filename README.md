@@ -39,12 +39,14 @@ You'll need:
 Grab `lablink-vX.Y.Z-windows-amd64.zip` from the [Releases page](https://github.com/nijosmsft/LabLink/releases/latest), verify it against `SHA256SUMS.txt`, and extract:
 
 ```powershell
-$ver = 'v0.3.0'  # bump when releasing
+# Always pull the latest tag from GitHub (no manual bump needed).
+$ver = (Invoke-RestMethod 'https://api.github.com/repos/nijosmsft/LabLink/releases/latest').tag_name
 Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/lablink-$ver-windows-amd64.zip" -OutFile lablink.zip
 Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/SHA256SUMS.txt"               -OutFile SHA256SUMS.txt
-$expected = (Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").ToString().Split(' ')[0]
+# Select-String.ToString() prepends "<path>:<line>:"; use .Line to get just the matched text.
+$expected = ((Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").Line -split '\s+')[0]
 $actual   = (Get-FileHash lablink.zip -Algorithm SHA256).Hash.ToLower()
-if ($expected -ne $actual) { throw 'checksum mismatch' }
+if ($expected -ne $actual) { throw "checksum mismatch: expected=$expected actual=$actual" }
 Expand-Archive lablink.zip -DestinationPath C:\LabLink
 cd C:\LabLink
 ```
