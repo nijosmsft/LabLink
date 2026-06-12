@@ -126,7 +126,18 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 			return mcp.NewToolResultError(fmt.Sprintf("pull: %v", err)), nil
 		}
 
-		totalBytes, err := pullRemoteFileToPath(pullStream, localOutput)
+		// Stage 2: wire a byte-based progress notifier so large ETL pulls emit
+		// MCP heartbeats and don't hit the transport idle timeout.
+		stage2Token := ProgressTokenFromRequest(request)
+		var stage2Notifier progressNotifier
+		if stage2Token != nil {
+			stage2Notifier = heartbeatNotifierOverride
+			if stage2Notifier == nil {
+				stage2Notifier = buildMCPNotifier(ctx, stage2Token)
+			}
+		}
+
+		totalBytes, err := pullRemoteFileToPathWithProgress(ctx, pullStream, localOutput, nopProgressReporter{}, stage2Notifier)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
