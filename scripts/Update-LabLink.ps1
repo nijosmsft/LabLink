@@ -48,6 +48,20 @@
     Skip interactive confirmation when running lablink-* processes need to be
     stopped. Without -Force, the script lists the processes and prompts.
 
+.PARAMETER Detach
+    Instead of running the update inline, register a Windows one-shot scheduled
+    task (LabLinkSelfUpdate) that executes this script as SYSTEM approximately
+    30 seconds in the future, then exit 0 immediately.
+
+    Use this flag when invoking the script via 'lablink execute_script' on a lab
+    node running the LabLink Agent service. Without -Detach, the agent's executor
+    kills the child PowerShell when Stop-Service cancels the agent's context,
+    aborting the binary swap mid-flight. With -Detach, the scheduled task runs
+    completely detached from the agent's process tree so the swap completes.
+
+    The -Detach flag is NOT forwarded to the scheduled task; forwarding it would
+    cause infinite rescheduling.
+
 .EXAMPLE
     .\scripts\Update-LabLink.ps1
 
@@ -60,6 +74,13 @@
     Install v0.3.0 specifically, update ~/.copilot/mcp-config.json to point
     at the new binary, and don't prompt before stopping running lablink-*
     processes.
+
+.EXAMPLE
+    lablink execute_script $node 'C:\LabLink\Update-LabLink.ps1 -Force -Detach'
+
+    Fleet-update pattern: the execute_script call returns cleanly (exit 0), and
+    the Windows scheduled task LabLinkSelfUpdate runs the actual swap ~30 s later
+    as SYSTEM, completely detached from the agent's process tree.
 #>
 [CmdletBinding()]
 param(
@@ -71,7 +92,9 @@ param(
 
     [switch]$Force,
 
-    [switch]$SkipServiceStop
+    [switch]$SkipServiceStop,
+
+    [switch]$Detach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,6 +129,36 @@ function Write-Ok {
 function Write-Warn {
     param([string]$Message)
     Write-Host "    $Message" -ForegroundColor Yellow
+}
+
+function Invoke-DetachedUpdate {
+    param(
+        [string]$ScriptPath,
+        [string[]]$ForwardedArgs   # original args minus -Detach
+    )
+    $taskName = 'LabLinkSelfUpdate'
+    $runAt    = (Get-Date).AddSeconds(30)
+    $dateStr  = $runAt.ToString('yyyy/MM/dd')
+    $timeStr  = $runAt.ToString('HH:mm:ss')
+
+    # Build the powershell command for /Tr. Each forwarded arg is double-quoted
+    # with internal double-quotes escaped, then joined into a single string.
+    $argString = ($ForwardedArgs | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' }) -join ' '
+    $trCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $argString"
+
+    Write-Info "scheduling detached update task '$taskName' for $runAt"
+    $stArgs = @(
+        '/Create', '/Sc', 'Once', '/Sn', $taskName,
+        '/Tr', $trCommand,
+        '/St', $timeStr, '/Sd', $dateStr,
+        '/Ru', 'SYSTEM', '/F', '/Z'
+    )
+    $output = & schtasks @stArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "schtasks failed (exit $LASTEXITCODE):`n$output"
+        throw "schtasks /Create returned $LASTEXITCODE"
+    }
+    Write-Ok "task '$taskName' scheduled for $runAt; this process exiting"
 }
 
 function Assert-GhCli {
@@ -531,6 +584,19 @@ try {
         Write-Host ""
         Write-Host "Already at $Version. Nothing to do." -ForegroundColor Green
         exit 0
+    }
+
+    if ($Detach) {
+        # Build forwarded args without -Detach to avoid infinite rescheduling.
+        $forwarded = @()
+        if ($Version -ne 'latest') { $forwarded += '-Version'; $forwarded += $Version }
+        if ($PSBoundParameters.ContainsKey('DestinationDir')) { $forwarded += '-DestinationDir'; $forwarded += $DestinationDir }
+        if ($UpdateMcpConfig) { $forwarded += '-UpdateMcpConfig' }
+        if ($Force) { $forwarded += '-Force' }
+        if ($SkipServiceStop) { $forwarded += '-SkipServiceStop' }
+        $scriptPath = $MyInvocation.MyCommand.Path
+        Invoke-DetachedUpdate -ScriptPath $scriptPath -ForwardedArgs $forwarded
+        return
     }
 
     $stamp   = (Get-Date).ToString('yyyyMMddHHmmss')
