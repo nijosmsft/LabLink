@@ -128,7 +128,10 @@ foreach ($machine in $Machines) {
         }
         $updateScript = Join-Path $PSScriptRoot 'Update-LabLink.ps1'
         if (Test-Path $updateScript) {
-            Copy-Item -Path $updateScript -Destination "$RemoteDir\Update-LabLink.ps1" -ToSession $session -Force
+            $dst = "$RemoteDir\Update-LabLink.ps1"
+            Copy-Item -Path $updateScript -Destination $dst -ToSession $session -Force
+            $ok = Invoke-Command -Session $session -ScriptBlock { param($p) Test-Path $p } -ArgumentList $dst
+            if (-not $ok) { throw "post-copy verify failed: $dst" }
         }
 
         if ($Transport -eq 'mtls') {

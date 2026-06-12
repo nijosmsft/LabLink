@@ -234,7 +234,9 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
         Copy-Item $InstallScript (Join-Path $packageDir 'install-agent.ps1') -Force
         $updateScriptPath = Join-Path $PSScriptRoot 'Update-LabLink.ps1'
         if (Test-Path $updateScriptPath) {
-            Copy-Item $updateScriptPath (Join-Path $packageDir 'Update-LabLink.ps1') -Force
+            $dst = Join-Path $packageDir 'Update-LabLink.ps1'
+            Copy-Item $updateScriptPath $dst -Force
+            if (-not (Test-Path $dst)) { throw "post-copy verify failed: $dst" }
         }
         Copy-Item $caBundle     (Join-Path $tlsDir 'ca.crt')    -Force
         Copy-Item $serverCert   (Join-Path $tlsDir 'server.crt') -Force

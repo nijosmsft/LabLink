@@ -179,6 +179,38 @@ function Resolve-DestinationDir {
         Write-Info "destination from -DestinationDir: $DestinationDir"
         return $DestinationDir
     }
+
+    # (a) Script co-located with binaries: handles the lab-node case where the
+    #     script is deployed at C:\LabLink\ alongside the agent binary.
+    $colocated = Join-Path $PSScriptRoot 'lablink-agent.exe'
+    if (Test-Path $colocated) {
+        Write-Info "Using script-co-located install dir: $PSScriptRoot"
+        return $PSScriptRoot
+    }
+    $siblingBin = Join-Path (Split-Path $PSScriptRoot -Parent) 'bin'
+    if (Test-Path (Join-Path $siblingBin 'lablink-agent.exe')) {
+        Write-Info "Using sibling bin/ from script root: $siblingBin"
+        return $siblingBin
+    }
+
+    # (b) lablink-agent service is installed: derive the install dir from its
+    #     ImagePath. Uses Get-CimInstance (Get-WmiObject is deprecated on PS 7+).
+    try {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='lablink-agent'" -ErrorAction Stop
+        if ($svc -and $svc.PathName) {
+            # PathName may be quoted: '"C:\LabLink\lablink-agent.exe" -arg1'; strip quotes + trailing args.
+            $exe = ($svc.PathName -replace '^"', '' -replace '".*$', '').Trim()
+            if (-not $exe) { $exe = ($svc.PathName -split ' ')[0] }
+            if ($exe -and (Test-Path $exe)) {
+                $svcDir = Split-Path $exe -Parent
+                Write-Info "Using lablink-agent service ImagePath dir: $svcDir"
+                return $svcDir
+            }
+        }
+    } catch {
+        # service not installed or WMI unavailable — fall through
+    }
+
     $cmd = Get-McpConfigServerPath
     if ($cmd) {
         $parent = Split-Path -Parent $cmd
@@ -344,12 +376,31 @@ function Install-Binaries {
         throw
     }
 
-    foreach ($entry in $oldFiles.GetEnumerator()) {
+    # .old files are intentionally preserved here. Call Commit-Install only
+    # after Start-Service + Confirm-Install both succeed, or Rollback-Install on failure.
+    return [pscustomobject]@{ Installed = $installed; OldFiles = $oldFiles }
+}
+
+function Commit-Install {
+    param([Parameter(Mandatory)]$InstallResult)
+    foreach ($entry in $InstallResult.OldFiles.GetEnumerator()) {
         $old = $entry.Value
         if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
     }
+}
 
-    return $installed
+function Rollback-Install {
+    param([Parameter(Mandatory)]$InstallResult)
+    Write-Warn "Rolling back binary swap."
+    foreach ($entry in $InstallResult.OldFiles.GetEnumerator()) {
+        $dst = $entry.Key
+        $old = $entry.Value
+        if (Test-Path $dst) { Remove-Item -Force $dst -ErrorAction SilentlyContinue }
+        if (Test-Path $old) {
+            Rename-Item -Path $old -NewName ([System.IO.Path]::GetFileName($dst)) -Force
+            Write-Info "restored $([System.IO.Path]::GetFileName($dst))"
+        }
+    }
 }
 
 function Update-McpConfigPath {
@@ -489,29 +540,85 @@ try {
         }
         Write-Info "release bin: $binDir"
 
-        Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop
+        $script:serviceRestartHandled = $false
+        $installResult = $null
+
         try {
-            $installed = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
-        } catch {
+            Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop
+
+            $installResult = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
+            $installed = $installResult.Installed
+
             if ($script:serviceWasStopped) {
-                Write-Step "Restarting '$AgentServiceName' after failed install"
-                Start-Service -Name $AgentServiceName -ErrorAction SilentlyContinue
-                Write-Ok "service '$AgentServiceName' restarted"
+                Write-Step "Restarting Windows service '$AgentServiceName'"
+                try {
+                    Start-Service -Name $AgentServiceName -ErrorAction Stop
+                    Write-Ok "service '$AgentServiceName' restarted"
+                } catch {
+                    $startWithNewErr = $_.Exception.Message
+                    Write-Warn "Start-Service failed with new binary: $startWithNewErr. Rolling back install."
+                    Rollback-Install -InstallResult $installResult
+                    $installResult = $null
+                    try {
+                        Start-Service -Name $AgentServiceName -ErrorAction Stop
+                        $script:serviceRestartHandled = $true
+                    } catch {
+                        throw ("ACTION REQUIRED: lablink-agent service failed to start with both new and old" +
+                               " binaries. Manual recovery needed. Binaries at: $destination." +
+                               " Start-Service error: $($_.Exception.Message)")
+                    }
+                    Write-Warn "Update rolled back: new binary failed to start. Prior version is running."
+                    throw ("Update rolled back: Start-Service failed for new binary ($startWithNewErr)." +
+                           " Prior version is running at $destination.")
+                }
             }
-            throw
-        }
-        if ($script:serviceWasStopped) {
-            Write-Step "Restarting Windows service '$AgentServiceName'"
-            Start-Service -Name $AgentServiceName -ErrorAction Stop
-            Write-Ok "service '$AgentServiceName' restarted"
-        }
 
-        $mcpUpdated = $false
-        if ($UpdateMcpConfig) {
-            $mcpUpdated = Update-McpConfigPath -DestinationDir $destination -NewServerPath $serverPath
-        }
+            $mcpUpdated = $false
+            if ($UpdateMcpConfig) {
+                $mcpUpdated = Update-McpConfigPath -DestinationDir $destination -NewServerPath $serverPath
+            }
 
-        $confirmedLine = Confirm-Install -BinaryPath $serverPath -ExpectedVersion $Version
+            try {
+                $confirmedLine = Confirm-Install -BinaryPath $serverPath -ExpectedVersion $Version
+            } catch {
+                $confirmErr = $_.Exception.Message
+                Write-Warn "Confirm-Install failed: $confirmErr. Rolling back install."
+                if ($script:serviceWasStopped) {
+                    Stop-Service -Name $AgentServiceName -Force -ErrorAction SilentlyContinue
+                }
+                Rollback-Install -InstallResult $installResult
+                $installResult = $null
+                if ($script:serviceWasStopped) {
+                    try {
+                        Start-Service -Name $AgentServiceName -ErrorAction Stop
+                        $script:serviceRestartHandled = $true
+                    } catch {
+                        throw ("ACTION REQUIRED: lablink-agent service failed to start after rollback." +
+                               " Manual recovery needed. Binaries at: $destination." +
+                               " Start-Service error: $($_.Exception.Message)")
+                    }
+                    Write-Warn "Update rolled back: Confirm-Install failed. Prior version is running."
+                    throw "Update rolled back: Confirm-Install failed ($confirmErr). Prior version is running at $destination."
+                }
+                throw
+            }
+
+            Commit-Install -InstallResult $installResult
+            $script:serviceRestartHandled = $true
+
+        } finally {
+            # Safety net: if any step failed or was aborted after Stop-Service, restart the
+            # service so it is never left stopped. Skip when -SkipServiceStop was passed
+            # (operator machines with no service).
+            if (-not $SkipServiceStop -and $script:serviceWasStopped -and -not $script:serviceRestartHandled) {
+                try {
+                    Start-Service -Name $AgentServiceName -ErrorAction Stop
+                    Write-Info "lablink-agent service restarted"
+                } catch {
+                    Write-Warn "ACTION REQUIRED: failed to restart lablink-agent service after update flow: $($_.Exception.Message)"
+                }
+            }
+        }
 
         Write-Host ""
         Write-Host "Update complete." -ForegroundColor Green

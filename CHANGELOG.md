@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/Update-LabLink.ps1` now ships in the release zip and on every agent install (was previously repo-only).
 
 ### Changed
-- `Update-LabLink.ps1` stops the Windows `LabLink Agent` service before swapping binaries on nodes and restarts it after, preventing a race where SCM could restart the process mid-swap. Pass `-SkipServiceStop` on operator machines where no service is present.
+- `Update-LabLink.ps1` stops the Windows `LabLink Agent` service before swapping binaries on nodes and restarts it after, preventing a race where SCM could restart the process mid-swap. The absence of the service is auto-detected; `-SkipServiceStop` is an optional flag for operator workstations where the service is known not to exist.
 
 ## [0.4.1] - 2026-06-11
 
