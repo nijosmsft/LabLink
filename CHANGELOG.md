@@ -6,11 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
-- `scripts/Update-LabLink.ps1` now ships in the release zip and on every agent install (was previously repo-only).
+## [0.4.2] - 2026-06-12
+
+### Added
+- `scripts/Update-LabLink.ps1` now ships in the release zip (`scripts/` directory). Operators no longer need to git-clone the repo to update -- unzip the release and run the script.
+- `Update-LabLink.ps1` is also deployed to lab nodes during agent install (via `deploy-agent.ps1` and `build-manual-package.ps1`). Operators with access to a node can update the agent in-place by invoking the script there.
+- 6-case standalone PowerShell test suite at `scripts/tests/Update-LabLink.Tests.ps1` covers the destination-resolution branches (co-located, sibling-bin, service-ImagePath quoted + unquoted, default fallback, and CIM service-name filter assertion).
 
 ### Changed
-- `Update-LabLink.ps1` stops the Windows `LabLink Agent` service before swapping binaries on nodes and restarts it after, preventing a race where SCM could restart the process mid-swap. The absence of the service is auto-detected; `-SkipServiceStop` is an optional flag for operator workstations where the service is known not to exist.
+- `Update-LabLink.ps1` now stops the `LabLink Agent` Windows service before swapping binaries on lab nodes, restarts it after, with a try/finally guarantee that the service is never left stopped. The previous version used `Stop-Process` only, which raced with SCM auto-restart on lab nodes.
+- Binary swap split into Install / Commit / Rollback phases: `.old` backups are now only deleted after `Start-Service` and `lablink-server.exe --version` both succeed, so a service-start failure can roll back to the previous binaries. Per-file `HadPrior` tracking ensures rollback also removes any binary that did not exist in the prior install (e.g., new binary added in a target version).
+- `Update-LabLink.ps1` Resolve-DestinationDir now tries (in order): explicit `-DestinationDir`, script-co-located install dir, sibling `bin/`, the `LabLink Agent` service's ImagePath, the lablink entry in `~/.copilot/mcp-config.json`, and finally `%LOCALAPPDATA%\lablink\bin\`. This fixes a regression where running the script on a lab node defaulted to `%LOCALAPPDATA%\lablink\bin\` instead of the actual `C:\LabLink` install location.
+- `-SkipServiceStop` flag added for operator workstations where the service is known not to exist. (Optional -- the script auto-detects an absent service and treats it as a no-op.)
+
+### Acknowledgments
+- Thank you to the network-design-reviewer agent for catching multiple load-bearing issues across two review rounds (wrong default destination on nodes, deferred-commit on Start-Service failure, try/finally service restart, service-name match, ImagePath unquoted parsing, rollback completeness).
 
 ## [0.4.1] - 2026-06-11
 
