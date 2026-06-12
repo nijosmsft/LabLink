@@ -50,7 +50,7 @@ func RegisterDiagnostics(s *server.MCPServer, reg *registry.Registry, pool *agen
 			mcp.WithDescription("Configure kdnet kernel debugging on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("host_ip", mcp.Required(), mcp.Description("Debugger host IP")),
-			mcp.WithNumber("port", mcp.Description("KD network port, default 50000")),
+			mcp.WithNumber("port", mcp.Description("KD network port, default 50000 (unique per VM)")),
 			mcp.WithString("key", mcp.Description("Encryption key; auto-generated if omitted")),
 			mcp.WithBoolean("reboot", mcp.Description("Reboot after enabling, default false")),
 		),

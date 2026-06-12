@@ -40,7 +40,7 @@ func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
 			mcp.WithString("stream", mcp.Description("stdout, stderr, or both (default)")),
 			mcp.WithNumber("tail_lines", mcp.Description("Last N lines, default 200; 0 = whole file")),
-			mcp.WithNumber("max_bytes", mcp.Description("Byte cap, default 1048576")),
+			mcp.WithNumber("max_bytes", mcp.Description("Byte cap, default 1048576, max 8388608")),
 		),
 		getJobOutputHandler(reg, pool),
 	)
