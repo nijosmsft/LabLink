@@ -69,7 +69,9 @@ param(
 
     [switch]$UpdateMcpConfig,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$SkipServiceStop
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +81,11 @@ $McpConfigPath   = Join-Path $env:USERPROFILE '.copilot\mcp-config.json'
 $DefaultInstall  = Join-Path $env:LOCALAPPDATA 'lablink\bin'
 $ServerBinary    = 'lablink-server.exe'
 $ManagedBinaries = @('lablink-server.exe', 'lablink-agent.exe', 'lablink-probe.exe', 'lablink-ca.exe')
+$AgentServiceName = 'LabLink Agent'
+
+# Tracks whether Stop-LabLinkProcesses shut down the Windows service so the
+# restart step at the end knows whether to bring it back up.
+$script:serviceWasStopped = $false
 
 function Write-Step {
     param([string]$Message)
@@ -247,7 +254,21 @@ function Verify-Sha256 {
 }
 
 function Stop-LabLinkProcesses {
-    param([switch]$Force)
+    param([switch]$Force, [switch]$SkipServiceStop)
+
+    # Stop the Windows service first so SCM cannot restart the process between
+    # the kill and the binary swap.  On operator machines (no service) pass
+    # -SkipServiceStop to bypass this step.
+    if (-not $SkipServiceStop) {
+        $svc = Get-Service -Name $AgentServiceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -in @('Running', 'StartPending', 'ContinuePending', 'Paused', 'PausePending')) {
+            Write-Step "Stopping Windows service '$AgentServiceName'"
+            Stop-Service -Name $AgentServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 1
+            $script:serviceWasStopped = $true
+            Write-Ok "service '$AgentServiceName' stopped"
+        }
+    }
 
     $names = $ManagedBinaries | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) }
     $running = Get-Process -Name $names -ErrorAction SilentlyContinue
@@ -468,8 +489,22 @@ try {
         }
         Write-Info "release bin: $binDir"
 
-        Stop-LabLinkProcesses -Force:$Force
-        $installed = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
+        Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop
+        try {
+            $installed = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
+        } catch {
+            if ($script:serviceWasStopped) {
+                Write-Step "Restarting '$AgentServiceName' after failed install"
+                Start-Service -Name $AgentServiceName -ErrorAction SilentlyContinue
+                Write-Ok "service '$AgentServiceName' restarted"
+            }
+            throw
+        }
+        if ($script:serviceWasStopped) {
+            Write-Step "Restarting Windows service '$AgentServiceName'"
+            Start-Service -Name $AgentServiceName -ErrorAction Stop
+            Write-Ok "service '$AgentServiceName' restarted"
+        }
 
         $mcpUpdated = $false
         if ($UpdateMcpConfig) {
