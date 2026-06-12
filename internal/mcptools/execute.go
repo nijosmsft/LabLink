@@ -105,6 +105,9 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		defer callCancel()
 
 		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), int64(timeout)
+		})
 		stream, err := client.Execute(callCtx, &pb.ExecuteRequest{
 			Command:        command,
 			Shell:          shell,
@@ -119,6 +122,7 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		}
 
 		output, exitCode, pid, jobID, err := collectStreamOutput(stream)
+		stopHB()
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err
@@ -185,6 +189,9 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		defer callCancel()
 
 		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), int64(timeout)
+		})
 		stream, err := client.ExecuteScript(callCtx, &pb.ExecuteScriptRequest{
 			ScriptBody:     scriptBody,
 			Shell:          shell,
@@ -198,6 +205,7 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		}
 
 		output, exitCode, pid, _, err := collectStreamOutput(stream)
+		stopHB()
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err

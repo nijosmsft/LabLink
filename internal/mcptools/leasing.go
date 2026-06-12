@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -314,6 +315,12 @@ func waitForReleaseHandler(store leasing.Store) server.ToolHandlerFunc {
 		deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
 		sleep := pollInterval(time.Duration(timeoutSec) * time.Second)
 
+		var freedAtomic atomic.Int64
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return freedAtomic.Load(), int64(len(nodes))
+		})
+		defer stop()
+
 		var lastHolders []*leasing.Lease
 		for {
 			leases, err := store.List(ctx, leasing.ListFilter{})
@@ -321,6 +328,22 @@ func waitForReleaseHandler(store leasing.Store) server.ToolHandlerFunc {
 				return mcp.NewToolResultError(fmt.Sprintf("list leases: %v", err)), nil
 			}
 			holders := pickLeasesTouchingNodes(leases, nodes)
+
+			// Update freed count for heartbeat.
+			held := make(map[string]struct{}, len(holders)*2)
+			for _, l := range holders {
+				for _, n := range l.Nodes {
+					held[n] = struct{}{}
+				}
+			}
+			freed := int64(0)
+			for _, n := range nodes {
+				if _, isHeld := held[n]; !isHeld {
+					freed++
+				}
+			}
+			freedAtomic.Store(freed)
+
 			if len(holders) == 0 {
 				return mcp.NewToolResultText(fmt.Sprintf(
 					"## Nodes free\n\nAll requested nodes are unleased as of %s.\n\n- nodes: %s\n\nNext step: call `lease(nodes=[%s], duration_minutes=...)` to claim them.\n",

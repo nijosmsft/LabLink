@@ -71,6 +71,12 @@ func waitForNodeHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
 
+		hbStart := time.Now()
+		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(hbStart).Seconds()), int64(timeout)
+		})
+		defer stop()
+
 		// If health monitor is active, use it but don't trust stale "online" status.
 		// First do a fresh probe to verify current state. If the node is actually down,
 		// wait for the monitor to detect it coming back. Require 2 consecutive "online"
