@@ -1,5 +1,7 @@
 # LabLink
 
+[![Latest release](https://img.shields.io/github/v/release/nijosmsft/LabLink)](https://github.com/nijosmsft/LabLink/releases/latest)
+
 **Give your AI assistant secure remote-hands on a fleet of Windows lab machines.**
 
 LabLink is an [MCP](https://modelcontextprotocol.io) server plus a lightweight node agent. Once installed, an MCP-aware AI client (Claude Desktop, Copilot CLI, Cursor, etc.) can run commands, move files, inspect processes, and orchestrate work across many lab machines — over mutually-authenticated TLS, with a shared auth token.
