@@ -2,11 +2,12 @@
 
 ## Background
 
-After v0.4.2, every LabLink install -- operator workstation AND every lab node --
+After v0.4.3, every LabLink install -- operator workstation AND every lab node --
 ships with `scripts/Update-LabLink.ps1` (or `C:\LabLink\Update-LabLink.ps1` on a
-node). For a single machine the operator just runs the script directly. For a fleet
-of nodes there is no built-in `update_nodes` MCP tool yet (tracked separately), but
-you can compose the existing primitives to achieve the same result.
+node) and the script supports a `-Detach` flag (v0.4.3+). For a single machine the
+operator just runs the script directly. For a fleet of nodes there is no built-in
+`update_nodes` MCP tool yet (tracked separately), but you can compose the existing
+primitives to achieve the same result.
 
 ## The pattern
 
