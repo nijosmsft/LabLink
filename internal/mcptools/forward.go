@@ -76,10 +76,10 @@ func newForwardID() string {
 func RegisterForward(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("forward_port",
-			mcp.WithDescription("Open a local TCP listener that tunnels bytes to a target address on a remote node via the node agent's existing mTLS channel. Use to reach a service that is bound to localhost on the node (for example a debugger MCP server). Returns the bound local address and a forward_id."),
+			mcp.WithDescription("Tunnel a local TCP port to a remote node address."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from the registry")),
-			mcp.WithString("remote_addr", mcp.Required(), mcp.Description("Target host:port on the node, e.g. 127.0.0.1:8765")),
-			mcp.WithNumber("local_port", mcp.Description("Local TCP port to bind, 0 = ephemeral")),
+			mcp.WithString("remote_addr", mcp.Required(), mcp.Description("Target host:port on the node")),
+			mcp.WithNumber("local_port", mcp.Description("Local TCP port to bind; 0 = ephemeral")),
 		),
 		LeaseGate(leaseCfg, extractSingleNode("node"), forwardPortHandler(reg, pool)),
 	)
@@ -94,7 +94,7 @@ func RegisterForward(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 
 	addTool(s,
 		mcp.NewTool("list_forwards",
-			mcp.WithDescription("List all active TCP forwards opened by this server process."),
+			mcp.WithDescription("List all active TCP port forwards."),
 		),
 		listForwardsHandler(),
 	)

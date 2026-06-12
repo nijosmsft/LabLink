@@ -24,7 +24,7 @@ const (
 	defaultTransferTimeoutSecs = 600
 )
 
-const timeoutArgDescription = "Maximum seconds for the transfer (default 600). Set higher for multi-GB files. 0 = no timeout."
+const timeoutArgDescription = "Transfer timeout seconds; 0 = none, default 600."
 
 func RegisterTransfer(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	s.AddTool(

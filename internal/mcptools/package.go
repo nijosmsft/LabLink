@@ -18,7 +18,7 @@ import (
 func RegisterPackage(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("install_package",
-			mcp.WithDescription("Push a local directory or zip file to a remote node. Directories are zipped automatically, transferred, and extracted on the node."),
+			mcp.WithDescription("Zip and push a local directory or .zip to a remote node, extracting on arrival."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("local_path", mcp.Required(), mcp.Description("Local directory or .zip file to push")),
 			mcp.WithString("remote_dir", mcp.Required(), mcp.Description("Destination directory on the node")),

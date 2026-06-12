@@ -37,7 +37,7 @@ func currentPortalURL() string {
 func RegisterPortal(s *server.MCPServer) {
 	addTool(s, 
 		mcp.NewTool("get_portal_url",
-			mcp.WithDescription("Return the URL of the local LabLink operations portal (loopback only, includes the per-process access key). Empty if the portal is disabled."),
+			mcp.WithDescription("Return the local LabLink portal URL; empty if portal is disabled."),
 		),
 		func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			u := currentPortalURL()

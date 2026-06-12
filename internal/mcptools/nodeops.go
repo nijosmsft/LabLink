@@ -18,16 +18,16 @@ import (
 func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("wait_for_node",
-			mcp.WithDescription("Wait for a node to come online (e.g., after a reboot). Polls the gRPC agent until it responds."),
+			mcp.WithDescription("Poll a node's agent until it responds."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
-			mcp.WithNumber("timeout", mcp.Description("Max seconds to wait (default 120)")),
+			mcp.WithNumber("timeout", mcp.Description("Max seconds to wait, default 120")),
 		),
 		waitForNodeHandler(reg, pool),
 	)
 
 	addTool(s,
 		mcp.NewTool("get_node_info",
-			mcp.WithDescription("Get live system info from a node: OS build, hostname, uptime, installed drivers (xdp, ebpf), NIC details."),
+			mcp.WithDescription("Get OS, driver, NIC, and uptime info from a live node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 		),
 		getNodeInfoHandler(reg, pool),
@@ -38,25 +38,25 @@ func RegisterNodeOps(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithDescription("Read the last N lines of a file on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("path", mcp.Required(), mcp.Description("File path on the node")),
-			mcp.WithNumber("lines", mcp.Description("Number of lines to read (default 50)")),
+			mcp.WithNumber("lines", mcp.Description("Lines to read, default 50")),
 		),
 		tailFileHandler(reg, pool),
 	)
 
 	addTool(s,
 		mcp.NewTool("ping_nodes",
-			mcp.WithDescription("Quick health check of all registered nodes. Returns online/offline status only."),
+			mcp.WithDescription("Check online/offline status of all registered nodes."),
 		),
 		pingNodesHandler(reg, pool),
 	)
 
 	addTool(s,
 		mcp.NewTool("copy_between_nodes",
-			mcp.WithDescription("Copy a file from one node to another without staging through the dev machine."),
+			mcp.WithDescription("Copy a file directly between two nodes without local staging."),
 			mcp.WithString("source_node", mcp.Required(), mcp.Description("Node to copy from")),
-			mcp.WithString("source_path", mcp.Required(), mcp.Description("File path on the source node")),
+			mcp.WithString("source_path", mcp.Required(), mcp.Description("Source file path")),
 			mcp.WithString("dest_node", mcp.Required(), mcp.Description("Node to copy to")),
-			mcp.WithString("dest_path", mcp.Required(), mcp.Description("File path on the destination node")),
+			mcp.WithString("dest_path", mcp.Required(), mcp.Description("Destination file path")),
 		),
 		LeaseGate(leaseCfg, extractCopyBetweenNodes, copyBetweenNodesHandler(reg, pool)),
 	)

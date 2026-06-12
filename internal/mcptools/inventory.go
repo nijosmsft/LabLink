@@ -17,19 +17,19 @@ import (
 func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
 	addTool(s, 
 		mcp.NewTool("register_node",
-			mcp.WithDescription("Register a test machine in the node inventory. Probes the agent to get OS/CPU/memory info."),
-			mcp.WithString("name", mcp.Required(), mcp.Description("Friendly name (e.g., server-25)")),
-			mcp.WithString("address", mcp.Required(), mcp.Description("Agent address (host:port, e.g., 10.0.0.50:9091)")),
+			mcp.WithDescription("Register a machine in the node inventory by probing its agent."),
+			mcp.WithString("name", mcp.Required(), mcp.Description("Friendly node name")),
+			mcp.WithString("address", mcp.Required(), mcp.Description("Agent address as host:port")),
 			mcp.WithString("role", mcp.Description("Node role: server, client, or custom")),
-			mcp.WithString("transport_mode", mcp.Description("Node transport mode: mtls or insecure (default mtls)")),
-			mcp.WithString("tls_server_name", mcp.Description("Certificate name to verify for this node when using mTLS")),
+			mcp.WithString("transport_mode", mcp.Description("Transport mode: mtls or insecure, default mtls")),
+			mcp.WithString("tls_server_name", mcp.Description("Certificate name to verify when using mTLS")),
 		),
 		registerNodeHandler(reg, pool),
 	)
 
 	addTool(s, 
 		mcp.NewTool("list_nodes",
-			mcp.WithDescription("List all registered nodes with their status and metadata."),
+			mcp.WithDescription("List all registered nodes with status."),
 		),
 		listNodesHandler(reg, pool),
 	)
@@ -44,7 +44,7 @@ func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentc
 
 	addTool(s, 
 		mcp.NewTool("rename_node",
-			mcp.WithDescription("Rename a node in the registry. Preserves all metadata, context, and topology references."),
+			mcp.WithDescription("Rename a node in the registry."),
 			mcp.WithString("old_name", mcp.Required(), mcp.Description("Current node name")),
 			mcp.WithString("new_name", mcp.Required(), mcp.Description("New node name")),
 		),

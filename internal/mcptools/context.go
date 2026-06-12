@@ -13,10 +13,10 @@ import (
 func RegisterContext(s *server.MCPServer, reg *registry.Registry, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("set_node_context",
-			mcp.WithDescription("Set persistent working directory and environment variables for a node. These apply as defaults to all subsequent commands."),
+			mcp.WithDescription("Set default working dir and env vars for a node, applied to all commands."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("working_dir", mcp.Description("Default working directory")),
-			mcp.WithString("env", mcp.Description("JSON object of environment variables (e.g., {\"PATH\": \"/usr/bin\"})")),
+			mcp.WithString("env", mcp.Description("JSON object of env vars")),
 		),
 		LeaseGate(leaseCfg, extractSingleNode("node"), setNodeContextHandler(reg)),
 	)

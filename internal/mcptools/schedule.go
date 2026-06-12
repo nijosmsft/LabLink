@@ -16,7 +16,7 @@ import (
 func RegisterSchedule(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
 	addTool(s,
 		mcp.NewTool("schedule_command",
-			mcp.WithDescription("Schedule a command to run after a delay on a remote node. The command runs detached. Useful for synchronized starts across multiple nodes (schedule all to start at the same wall-clock time)."),
+			mcp.WithDescription("Schedule a command to run after a delay on a remote node, detached."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("command", mcp.Required(), mcp.Description("Command to execute")),
 			mcp.WithNumber("delay_seconds", mcp.Required(), mcp.Description("Seconds to wait before executing")),

@@ -17,7 +17,7 @@ func RegisterProcess(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 		mcp.NewTool("list_processes",
 			mcp.WithDescription("List running processes on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
-			mcp.WithString("filter", mcp.Description("Filter by process name substring")),
+			mcp.WithString("filter", mcp.Description("Process name filter")),
 		),
 		listProcessesHandler(reg, pool),
 	)
@@ -27,7 +27,7 @@ func RegisterProcess(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithDescription("Kill a process on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithNumber("pid", mcp.Required(), mcp.Description("Process ID")),
-			mcp.WithBoolean("force", mcp.Description("Force kill (TerminateProcess/SIGKILL)")),
+			mcp.WithBoolean("force", mcp.Description("Force kill (SIGKILL)")),
 		),
 		LeaseGate(leaseCfg, extractSingleNode("node"), killProcessHandler(reg, pool)),
 	)

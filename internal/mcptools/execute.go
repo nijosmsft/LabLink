@@ -37,12 +37,12 @@ func outputLimit() int {
 func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("execute_command",
-			mcp.WithDescription("Execute a shell command on a remote node. Returns stdout/stderr and exit code."),
+			mcp.WithDescription("Execute a shell command on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("command", mcp.Required(), mcp.Description("Command to execute")),
-			mcp.WithString("shell", mcp.Description("Shell: powershell, cmd, bash (auto-detect if empty)")),
-			mcp.WithString("working_dir", mcp.Description("Working directory on the node")),
-			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds (0=none)")),
+			mcp.WithString("shell", mcp.Description("Shell: powershell/cmd/bash; auto-detect")),
+			mcp.WithString("working_dir", mcp.Description("Working directory")),
+			mcp.WithNumber("timeout", mcp.Description("Timeout seconds; 0 = none")),
 			mcp.WithBoolean("detach", mcp.Description("Start detached (survives agent restart)")),
 		),
 		LeaseGate(leaseCfg, extractSingleNode("node"), executeCommandHandler(reg, pool, auditLog)),
@@ -50,12 +50,12 @@ func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 
 	s.AddTool(
 		mcp.NewTool("execute_script",
-			mcp.WithDescription("Push an inline script to a remote node and execute it atomically."),
+			mcp.WithDescription("Execute an inline script on a remote node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("script_body", mcp.Required(), mcp.Description("Inline script content")),
-			mcp.WithString("shell", mcp.Description("Shell: powershell, bash (auto-detect if empty)")),
-			mcp.WithString("working_dir", mcp.Description("Working directory on the node")),
-			mcp.WithNumber("timeout", mcp.Description("Timeout in seconds (0=none)")),
+			mcp.WithString("shell", mcp.Description("Shell: powershell/bash; auto-detect")),
+			mcp.WithString("working_dir", mcp.Description("Working directory")),
+			mcp.WithNumber("timeout", mcp.Description("Timeout seconds; 0 = none")),
 		),
 		LeaseGate(leaseCfg, extractSingleNode("node"), executeScriptHandler(reg, pool, auditLog)),
 	)
