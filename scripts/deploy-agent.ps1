@@ -126,6 +126,13 @@ foreach ($machine in $Machines) {
         if (Test-Path $installScript) {
             Copy-Item -Path $installScript -Destination "$RemoteDir\install-agent.ps1" -ToSession $session -Force
         }
+        $updateScript = Join-Path $PSScriptRoot 'Update-LabLink.ps1'
+        if (Test-Path $updateScript) {
+            $dst = "$RemoteDir\Update-LabLink.ps1"
+            Copy-Item -Path $updateScript -Destination $dst -ToSession $session -Force
+            $ok = Invoke-Command -Session $session -ScriptBlock { param($p) Test-Path $p } -ArgumentList $dst
+            if (-not $ok) { throw "post-copy verify failed: $dst" }
+        }
 
         if ($Transport -eq 'mtls') {
             Copy-Item -Path $TlsCA -Destination $RemoteCA -ToSession $session -Force

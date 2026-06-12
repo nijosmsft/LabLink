@@ -69,7 +69,8 @@ $bundleFiles = @(
     'scripts/bootstrap-windows-node.ps1',
     'scripts/build-manual-package.ps1',
     'scripts/install-agent.ps1',
-    'scripts/deploy-agent.ps1'
+    'scripts/deploy-agent.ps1',
+    'scripts/Update-LabLink.ps1'
 )
 
 function Build-Target {

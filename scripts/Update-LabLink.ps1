@@ -69,7 +69,9 @@ param(
 
     [switch]$UpdateMcpConfig,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$SkipServiceStop
 )
 
 $ErrorActionPreference = 'Stop'
@@ -79,6 +81,12 @@ $McpConfigPath   = Join-Path $env:USERPROFILE '.copilot\mcp-config.json'
 $DefaultInstall  = Join-Path $env:LOCALAPPDATA 'lablink\bin'
 $ServerBinary    = 'lablink-server.exe'
 $ManagedBinaries = @('lablink-server.exe', 'lablink-agent.exe', 'lablink-probe.exe', 'lablink-ca.exe')
+$ServiceName = 'LabLink Agent'
+
+# Tracks whether Stop-LabLinkProcesses shut down the Windows service so the
+# restart step at the end knows whether to bring it back up.
+$script:serviceWasStopped = $false
+$script:installRecord     = @()
 
 function Write-Step {
     param([string]$Message)
@@ -168,10 +176,51 @@ function Get-McpConfigServerPath {
 }
 
 function Resolve-DestinationDir {
+    param([string]$ScriptRoot = $PSScriptRoot)
+
     if (-not [string]::IsNullOrWhiteSpace($DestinationDir)) {
         Write-Info "destination from -DestinationDir: $DestinationDir"
         return $DestinationDir
     }
+
+    # (a) Script co-located with binaries: handles the lab-node case where the
+    #     script is deployed at C:\LabLink\ alongside the agent binary.
+    $colocated = Join-Path $ScriptRoot 'lablink-agent.exe'
+    if (Test-Path $colocated) {
+        Write-Info "Using script-co-located install dir: $ScriptRoot"
+        return $ScriptRoot
+    }
+    $siblingBin = Join-Path (Split-Path $ScriptRoot -Parent) 'bin'
+    if (Test-Path (Join-Path $siblingBin 'lablink-agent.exe')) {
+        Write-Info "Using sibling bin/ from script root: $siblingBin"
+        return $siblingBin
+    }
+
+    # (b) lablink-agent service is installed: derive the install dir from its
+    #     ImagePath. Uses Get-CimInstance (Get-WmiObject is deprecated on PS 7+).
+    try {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        if ($svc -and $svc.PathName) {
+            $rawPath = $svc.PathName
+            if ($rawPath -match '^"([^"]+)"') {
+                # Quoted form: '"C:\LabLink\lablink-agent.exe" -args' -- take the first quoted segment.
+                $exe = $Matches[1]
+            } else {
+                # Unquoted form: 'C:\LabLink\lablink-agent.exe -args' -- split on first space.
+                # NOTE: an unquoted path containing a space (e.g. 'C:\Program Files\...\foo.exe -args')
+                # would parse incorrectly. Conventionally sc.exe / New-Service always quote such paths.
+                $exe = ($rawPath -split ' ', 2)[0]
+            }
+            if ($exe -and (Test-Path $exe)) {
+                $svcDir = Split-Path $exe -Parent
+                Write-Info "Using lablink-agent service ImagePath dir: $svcDir"
+                return $svcDir
+            }
+        }
+    } catch {
+        # service not installed or WMI unavailable — fall through
+    }
+
     $cmd = Get-McpConfigServerPath
     if ($cmd) {
         $parent = Split-Path -Parent $cmd
@@ -247,7 +296,21 @@ function Verify-Sha256 {
 }
 
 function Stop-LabLinkProcesses {
-    param([switch]$Force)
+    param([switch]$Force, [switch]$SkipServiceStop)
+
+    # Stop the Windows service first so SCM cannot restart the process between
+    # the kill and the binary swap.  On operator machines (no service) pass
+    # -SkipServiceStop to bypass this step.
+    if (-not $SkipServiceStop) {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -in @('Running', 'StartPending', 'ContinuePending', 'Paused', 'PausePending')) {
+            Write-Step "Stopping Windows service '$ServiceName'"
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            Start-Sleep -Seconds 1
+            $script:serviceWasStopped = $true
+            Write-Ok "service '$ServiceName' stopped"
+        }
+    }
 
     $names = $ManagedBinaries | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) }
     $running = Get-Process -Name $names -ErrorAction SilentlyContinue
@@ -290,7 +353,7 @@ function Install-Binaries {
         New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
     }
 
-    $oldFiles = @{}
+    $script:installRecord = @()
     $installed = @()
     try {
         foreach ($name in $ManagedBinaries) {
@@ -303,10 +366,13 @@ function Install-Binaries {
             $old = "$dst.old"
             if (Test-Path $old) { Remove-Item -Force $old }
 
-            if (Test-Path $dst) {
+            $hadPrior = [bool](Test-Path $dst)
+            if ($hadPrior) {
                 Rename-Item -Path $dst -NewName ([System.IO.Path]::GetFileName($old)) -Force
-                $oldFiles[$dst] = $old
             }
+
+            # Record before copying so rollback is accurate even if Copy-Item fails.
+            $script:installRecord += @{ Path = $dst; HadPrior = $hadPrior }
 
             Copy-Item -Path $src -Destination $dst -Force
             $installed += $dst
@@ -314,21 +380,49 @@ function Install-Binaries {
         }
     } catch {
         Write-Warn "install failed: $($_.Exception.Message). Rolling back."
-        foreach ($entry in $oldFiles.GetEnumerator()) {
-            $dst = $entry.Key
-            $old = $entry.Value
+        foreach ($entry in $script:installRecord) {
+            $dst = $entry.Path
             if (Test-Path $dst) { Remove-Item -Force $dst -ErrorAction SilentlyContinue }
-            if (Test-Path $old) { Rename-Item -Path $old -NewName ([System.IO.Path]::GetFileName($dst)) -Force }
+            if ($entry.HadPrior) {
+                $old = "$dst.old"
+                if (Test-Path $old) { Rename-Item -Path $old -NewName ([System.IO.Path]::GetFileName($dst)) -Force }
+            }
         }
         throw
     }
 
-    foreach ($entry in $oldFiles.GetEnumerator()) {
-        $old = $entry.Value
-        if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
-    }
+    # .old files are intentionally preserved here. Call Commit-Install only
+    # after Start-Service + Confirm-Install both succeed, or Rollback-Install on failure.
+    return [pscustomobject]@{ Installed = $installed }
+}
 
-    return $installed
+function Commit-Install {
+    param([Parameter(Mandatory)]$InstallResult)
+    foreach ($entry in $script:installRecord) {
+        if ($entry.HadPrior) {
+            $old = "$($entry.Path).old"
+            if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
+        }
+    }
+    $script:installRecord = @()
+}
+
+function Rollback-Install {
+    param([Parameter(Mandatory)]$InstallResult)
+    Write-Warn "Rolling back binary swap."
+    foreach ($entry in $script:installRecord) {
+        $dst = $entry.Path
+        if (Test-Path $dst) { Remove-Item -Force $dst -ErrorAction SilentlyContinue }
+        if ($entry.HadPrior) {
+            $old = "$dst.old"
+            if (Test-Path $old) {
+                Rename-Item -Path $old -NewName ([System.IO.Path]::GetFileName($dst)) -Force
+                Write-Info "restored $([System.IO.Path]::GetFileName($dst))"
+            }
+        } else {
+            Write-Info "removed new-only install $([System.IO.Path]::GetFileName($dst))"
+        }
+    }
 }
 
 function Update-McpConfigPath {
@@ -411,6 +505,7 @@ function Confirm-Install {
 # Main
 # ---------------------------------------------------------------------------
 
+if ($MyInvocation.InvocationName -ne '.') {
 try {
     Assert-GhCli
 
@@ -468,15 +563,85 @@ try {
         }
         Write-Info "release bin: $binDir"
 
-        Stop-LabLinkProcesses -Force:$Force
-        $installed = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
+        $script:serviceRestartHandled = $false
+        $installResult = $null
 
-        $mcpUpdated = $false
-        if ($UpdateMcpConfig) {
-            $mcpUpdated = Update-McpConfigPath -DestinationDir $destination -NewServerPath $serverPath
+        try {
+            Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop
+
+            $installResult = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
+            $installed = $installResult.Installed
+
+            if ($script:serviceWasStopped) {
+                Write-Step "Restarting Windows service '$ServiceName'"
+                try {
+                    Start-Service -Name $ServiceName -ErrorAction Stop
+                    Write-Ok "service '$ServiceName' restarted"
+                } catch {
+                    $startWithNewErr = $_.Exception.Message
+                    Write-Warn "Start-Service failed with new binary: $startWithNewErr. Rolling back install."
+                    Rollback-Install -InstallResult $installResult
+                    $installResult = $null
+                    try {
+                        Start-Service -Name $ServiceName -ErrorAction Stop
+                        $script:serviceRestartHandled = $true
+                    } catch {
+                        throw ("ACTION REQUIRED: lablink-agent service failed to start with both new and old" +
+                               " binaries. Manual recovery needed. Binaries at: $destination." +
+                               " Start-Service error: $($_.Exception.Message)")
+                    }
+                    Write-Warn "Update rolled back: new binary failed to start. Prior version is running."
+                    throw ("Update rolled back: Start-Service failed for new binary ($startWithNewErr)." +
+                           " Prior version is running at $destination.")
+                }
+            }
+
+            $mcpUpdated = $false
+            if ($UpdateMcpConfig) {
+                $mcpUpdated = Update-McpConfigPath -DestinationDir $destination -NewServerPath $serverPath
+            }
+
+            try {
+                $confirmedLine = Confirm-Install -BinaryPath $serverPath -ExpectedVersion $Version
+            } catch {
+                $confirmErr = $_.Exception.Message
+                Write-Warn "Confirm-Install failed: $confirmErr. Rolling back install."
+                if ($script:serviceWasStopped) {
+                    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                }
+                Rollback-Install -InstallResult $installResult
+                $installResult = $null
+                if ($script:serviceWasStopped) {
+                    try {
+                        Start-Service -Name $ServiceName -ErrorAction Stop
+                        $script:serviceRestartHandled = $true
+                    } catch {
+                        throw ("ACTION REQUIRED: lablink-agent service failed to start after rollback." +
+                               " Manual recovery needed. Binaries at: $destination." +
+                               " Start-Service error: $($_.Exception.Message)")
+                    }
+                    Write-Warn "Update rolled back: Confirm-Install failed. Prior version is running."
+                    throw "Update rolled back: Confirm-Install failed ($confirmErr). Prior version is running at $destination."
+                }
+                throw
+            }
+
+            Commit-Install -InstallResult $installResult
+            $script:serviceRestartHandled = $true
+
+        } finally {
+            # Safety net: if any step failed or was aborted after Stop-Service, restart the
+            # service so it is never left stopped. Skip when -SkipServiceStop was passed
+            # (operator machines with no service).
+            if (-not $SkipServiceStop -and $script:serviceWasStopped -and -not $script:serviceRestartHandled) {
+                try {
+                    Start-Service -Name $ServiceName -ErrorAction Stop
+                    Write-Info "lablink-agent service restarted"
+                } catch {
+                    Write-Warn "ACTION REQUIRED: failed to restart lablink-agent service after update flow: $($_.Exception.Message)"
+                }
+            }
         }
-
-        $confirmedLine = Confirm-Install -BinaryPath $serverPath -ExpectedVersion $Version
 
         Write-Host ""
         Write-Host "Update complete." -ForegroundColor Green
@@ -503,3 +668,4 @@ try {
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
+} # end if ($MyInvocation.InvocationName -ne '.')
