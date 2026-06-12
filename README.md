@@ -255,6 +255,14 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 
 ## Going further
 
+To update LabLink binaries on the operator machine or on a lab node, run:
+
+```powershell
+.\scripts\Update-LabLink.ps1
+```
+
+The script resolves the current install directory from your MCP config (or the per-user default), downloads the latest release zip, verifies the SHA256, stops any running `lablink-*` processes (prompting unless `-Force`), swaps the binaries atomically with rollback on failure, and confirms the new version. On lab nodes where the agent runs as a Windows service, the service is stopped before the swap and restarted after. Pass `-SkipServiceStop` when running on the operator machine where no service is present. `Update-LabLink.ps1` ships in both the release zip (`scripts\Update-LabLink.ps1`) and at `C:\LabLink\Update-LabLink.ps1` on every agent install.
+
 - [`docs/quickstart.md`](docs/quickstart.md) — manual mTLS setup without the bootstrap scripts.
 - [`docs/Project.md`](docs/Project.md) — architecture and design notes.
 - [`docs/mtls-self-managed-cert-plan.md`](docs/mtls-self-managed-cert-plan.md) — PKI design and rationale.

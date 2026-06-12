@@ -126,6 +126,10 @@ foreach ($machine in $Machines) {
         if (Test-Path $installScript) {
             Copy-Item -Path $installScript -Destination "$RemoteDir\install-agent.ps1" -ToSession $session -Force
         }
+        $updateScript = Join-Path $PSScriptRoot 'Update-LabLink.ps1'
+        if (Test-Path $updateScript) {
+            Copy-Item -Path $updateScript -Destination "$RemoteDir\Update-LabLink.ps1" -ToSession $session -Force
+        }
 
         if ($Transport -eq 'mtls') {
             Copy-Item -Path $TlsCA -Destination $RemoteCA -ToSession $session -Force

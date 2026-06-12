@@ -232,6 +232,10 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
 
         Copy-Item $AgentBinary  (Join-Path $packageDir 'lablink-agent.exe') -Force
         Copy-Item $InstallScript (Join-Path $packageDir 'install-agent.ps1') -Force
+        $updateScriptPath = Join-Path $PSScriptRoot 'Update-LabLink.ps1'
+        if (Test-Path $updateScriptPath) {
+            Copy-Item $updateScriptPath (Join-Path $packageDir 'Update-LabLink.ps1') -Force
+        }
         Copy-Item $caBundle     (Join-Path $tlsDir 'ca.crt')    -Force
         Copy-Item $serverCert   (Join-Path $tlsDir 'server.crt') -Force
         Copy-Item $serverKey    (Join-Path $tlsDir 'server.key') -Force
@@ -286,6 +290,10 @@ $tlsDest = Join-Path $AgentDir 'tls'
 if (-not (Test-Path $tlsDest)) { New-Item -ItemType Directory -Path $tlsDest -Force | Out-Null }
 
 Copy-Item (Join-Path $pkgRoot 'lablink-agent.exe') (Join-Path $AgentDir 'lablink-agent.exe') -Force
+$updateSrc = Join-Path $pkgRoot 'Update-LabLink.ps1'
+if (Test-Path $updateSrc) {
+    Copy-Item $updateSrc (Join-Path $AgentDir 'Update-LabLink.ps1') -Force
+}
 Copy-Item (Join-Path $pkgRoot 'tls\ca.crt')      (Join-Path $tlsDest 'ca.crt')    -Force
 Copy-Item (Join-Path $pkgRoot 'tls\server.crt')  (Join-Path $tlsDest 'server.crt') -Force
 Copy-Item (Join-Path $pkgRoot 'tls\server.key')  (Join-Path $tlsDest 'server.key') -Force
@@ -352,6 +360,7 @@ Files in this package:
   lablink-agent.exe       Agent binary (Windows amd64)
   install.ps1             One-shot installer (run this)
   install-agent.ps1       Underlying installer (called by install.ps1)
+  Update-LabLink.ps1      Upgrade helper; run on the node to update the agent
   agent.token             Pre-shared bearer token (deleted after install)
   tls\ca.crt              Operator CA bundle
   tls\server.crt          Server certificate signed by the operator CA
