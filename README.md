@@ -49,9 +49,24 @@ Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/S
 $expected = ((Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").Line -split '\s+')[0]
 $actual   = (Get-FileHash lablink.zip -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) { throw "checksum mismatch: expected=$expected actual=$actual" }
-Expand-Archive lablink.zip -DestinationPath C:\LabLink
-cd C:\LabLink
+# Per-version directory keeps old installs around (cheap rollback) and avoids
+# Expand-Archive collisions on upgrade. Re-running the same version is idempotent
+# via -Force.
+$dest = "C:\LabLink\$ver"
+Expand-Archive lablink.zip -DestinationPath $dest -Force
+Remove-Item lablink.zip, SHA256SUMS.txt
+cd $dest
 ```
+
+After this you have `C:\LabLink\$ver\bin\lablink-server.exe` (and friends). To always run the latest, point a junction at it:
+
+```powershell
+$current = 'C:\LabLink\current'
+if (Test-Path $current) { (Get-Item $current).Delete() }  # delete the junction, not the target
+New-Item -ItemType Junction -Path $current -Target $dest | Out-Null
+```
+
+Then anything referencing `C:\LabLink\current\bin\lablink-server.exe` stays valid across upgrades.
 
 The archive contains:
 
