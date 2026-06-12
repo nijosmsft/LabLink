@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-12
+
+### Performance
+- Trimmed MCP tool descriptions and per-arg descriptions across all 19 files in `internal/mcptools/`. The Copilot CLI's per-session token cost for the LabLink `tools/list` payload drops by approximately 1500 tokens (from ~7700 to ~6200). No tool was renamed, no arg was renamed, no arg was removed, no handler behavior changed -- pure metadata edits. Per-file char savings range from -23% (execute.go) to -61% (patch.go); total 12694 -> 7055 chars (-44%).
+
+### Acknowledgments
+- Thank you to the network-design-reviewer agent for spotting that the trim had dropped two load-bearing semantic hints (enable_kd port uniqueness, get_job_output 8 MiB cap) that were restored before merge.
+
 ## [0.4.3] - 2026-06-12
 
 ### Added
