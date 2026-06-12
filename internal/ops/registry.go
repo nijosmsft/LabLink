@@ -34,13 +34,21 @@ type Operation struct {
 	Status     Status            `json:"status"`
 	Error      string            `json:"error,omitempty"`
 
+	// Progress is an optional periodic liveness signal published by
+	// long-running streaming tools (push_file, pull_file, …). BytesTotal
+	// may be 0 when the total is not yet known. ProgressAt is the most
+	// recent update time. Updated via Handle.Progress.
+	BytesDone  int64      `json:"bytes_done,omitempty"`
+	BytesTotal int64      `json:"bytes_total,omitempty"`
+	ProgressAt *time.Time `json:"progress_at,omitempty"`
+
 	cancel            context.CancelFunc
 	cancelledByPortal bool
 }
 
 // Event is a change notification published over the bus.
 type Event struct {
-	Kind string     `json:"kind"` // "started" | "finished"
+	Kind string     `json:"kind"` // "started" | "progress" | "finished"
 	Op   *Operation `json:"op"`
 }
 
@@ -193,6 +201,27 @@ func (r *Registry) finish(id string, err error) {
 	r.publish(Event{Kind: "finished", Op: snap})
 }
 
+// progress records a periodic liveness/progress update for a running op and
+// publishes a "progress" event so subscribers (portal SSE) see it. No-op when
+// the operation is unknown or already finished.
+func (r *Registry) progress(id string, bytesDone, bytesTotal int64) {
+	r.mu.Lock()
+	op, ok := r.ops[id]
+	if !ok || op.Status != StatusRunning {
+		r.mu.Unlock()
+		return
+	}
+	op.BytesDone = bytesDone
+	if bytesTotal > 0 {
+		op.BytesTotal = bytesTotal
+	}
+	t := r.now()
+	op.ProgressAt = &t
+	snap := opSnapshot(op)
+	r.mu.Unlock()
+	r.publish(Event{Kind: "progress", Op: snap})
+}
+
 // Handle is returned by Begin and used by the caller to mark completion.
 type Handle struct {
 	reg    *Registry
@@ -228,6 +257,18 @@ func (h *Handle) Done(err error) {
 	}
 }
 
+// Progress publishes a liveness/progress update for the operation. It is a
+// no-op on a nil or noop handle, and on a finished operation. bytesTotal may
+// be 0 when the total size is unknown. Intended for long-running streaming
+// tools (push_file, pull_file, …) so MCP clients that honor "tool is alive"
+// signals don't kill the call mid-transfer.
+func (h *Handle) Progress(bytesDone, bytesTotal int64) {
+	if h == nil || h.noop || h.reg == nil {
+		return
+	}
+	h.reg.progress(h.id, bytesDone, bytesTotal)
+}
+
 func opSnapshot(op *Operation) *Operation {
 	cp := *op
 	cp.cancel = nil
@@ -241,6 +282,10 @@ func opSnapshot(op *Operation) *Operation {
 	if op.FinishedAt != nil {
 		t := *op.FinishedAt
 		cp.FinishedAt = &t
+	}
+	if op.ProgressAt != nil {
+		t := *op.ProgressAt
+		cp.ProgressAt = &t
 	}
 	return &cp
 }
