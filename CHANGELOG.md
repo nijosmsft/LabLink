@@ -4,6 +4,24 @@ All notable changes to LabLink are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-06-11
+
+### Added
+- MCP progress notifications (`notifications/progress`) on every long-running tool when the client supplies `_meta.progressToken`. Prevents Copilot CLI's MCP transport from firing `-32001 Request timed out` on tool calls that exceed its ~60s idle timeout. Tools covered: `push_file`, `pull_file`, `reboot_node`, `reboot_nodes`, `wait_for_node`, `wait_for_release`, `execute_command`, `execute_script`, `execute_on_role`, `run_script_on_role`, `collect_etw_trace` (both capture and pull stages). Per-tool progress denominators are sensible (bytes for file ops, node-counts for multi-node ops, elapsed-vs-timeout for time-bound ops).
+- `timeout_seconds` MCP argument on `push_file` and `pull_file` (default 600). Negative values are rejected at the handler level. `0` disables the LabLink-side deadline. (#11)
+- `docs/file-transfers.md` operations guide: throughput envelope, `timeout_seconds` tuning per file size and link speed, workaround for very-large transfers (split + push/pull chunks + reassemble + hash-verify), and a forward-looking note about resumable chunked transfer (in design). (#12)
+- Reusable `StartMCPHeartbeat` + `ProgressTokenFromRequest` helpers in `internal/mcptools/heartbeat.go`, designed so future long-running tools can wire MCP progress notifications in one line. (#13)
+
+### Fixed
+- `execute_command` / `execute_script` no longer leak the heartbeat ticker goroutine on early errors. (#13 fix-up)
+- `collect_etw_trace` Stage 2 (ETL pull) now heartbeats; previously it used the no-notifier `pullRemoteFileToPath` and large ETL transfers could still time out the MCP transport. (#13 fix-up)
+
+### Internal
+- `internal/ops/registry.go`: `Handle.Progress(int64, int64)` + `Operation.BytesDone/BytesTotal/ProgressAt` + new `"progress"` event kind. Portal SSE consumers see the progress stream unchanged. (#11)
+
+### Acknowledgments
+- Thank you to the network-design-reviewer agent for surfacing the load-bearing flaw in the original heartbeat implementation (initially only fed the local portal, not the MCP transport) and several smaller corrections in the docs and the broader retrofit.
+
 ## [0.3.0] - 2026-06-04
 
 ### Changed (breaking)
