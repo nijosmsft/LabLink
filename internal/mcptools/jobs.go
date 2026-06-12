@@ -16,48 +16,48 @@ import (
 func RegisterJobs(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("list_jobs",
-			mcp.WithDescription("List background jobs (detached executions) on a node. Newest first."),
+			mcp.WithDescription("List background jobs on a node, newest first."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
-			mcp.WithString("status", mcp.Description("Filter by status: running, exited, canceled, orphaned, all (default)")),
-			mcp.WithNumber("limit", mcp.Description("Max rows to return (default 50, max 500)")),
+			mcp.WithString("status", mcp.Description("Status: running/exited/canceled/orphaned/all")),
+			mcp.WithNumber("limit", mcp.Description("Max rows, default 50")),
 		),
 		listJobsHandler(reg, pool),
 	)
 
 	s.AddTool(
 		mcp.NewTool("get_job_status",
-			mcp.WithDescription("Get metadata for a single background job: status, pid, exit code, timing, output sizes."),
+			mcp.WithDescription("Get job metadata: status, pid, exit code, timing."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
-			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier returned by execute_command / schedule_command")),
+			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
 		),
 		getJobStatusHandler(reg, pool),
 	)
 
 	s.AddTool(
 		mcp.NewTool("get_job_output",
-			mcp.WithDescription("Fetch captured stdout/stderr of a background job. Defaults to the last 200 lines, capped at 1 MiB."),
+			mcp.WithDescription("Fetch stdout/stderr of a background job."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
-			mcp.WithString("stream", mcp.Description("Which stream to fetch: stdout, stderr, both (default)")),
-			mcp.WithNumber("tail_lines", mcp.Description("Return only the last N lines (default 200; 0 = whole file subject to max_bytes)")),
-			mcp.WithNumber("max_bytes", mcp.Description("Hard cap on bytes per stream (default 1048576, max 8388608)")),
+			mcp.WithString("stream", mcp.Description("stdout, stderr, or both (default)")),
+			mcp.WithNumber("tail_lines", mcp.Description("Last N lines, default 200; 0 = whole file")),
+			mcp.WithNumber("max_bytes", mcp.Description("Byte cap, default 1048576, max 8388608")),
 		),
 		getJobOutputHandler(reg, pool),
 	)
 
 	s.AddTool(
 		mcp.NewTool("cancel_job",
-			mcp.WithDescription("Cancel a running background job. Terminates the process tree."),
+			mcp.WithDescription("Cancel a running background job."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
-			mcp.WithBoolean("force", mcp.Description("Force-terminate (taskkill /F on Windows, SIGKILL on Unix)")),
+			mcp.WithBoolean("force", mcp.Description("Force-terminate")),
 		),
 		LeaseGate(leaseCfg, extractJobNode(), cancelJobHandler(reg, pool)),
 	)
 
 	s.AddTool(
 		mcp.NewTool("delete_job",
-			mcp.WithDescription("Delete a terminal background job's records (meta + captured output) from the node."),
+			mcp.WithDescription("Delete a background job's records from the node."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier")),
 		),

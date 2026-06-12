@@ -13,10 +13,10 @@ import (
 func RegisterHistory(s *server.MCPServer, auditLog *audit.Log) {
 	addTool(s, 
 		mcp.NewTool("get_history",
-			mcp.WithDescription("Query the command audit log. Useful to recall what was previously executed."),
+			mcp.WithDescription("Query the command audit log."),
 			mcp.WithString("node", mcp.Description("Filter by node name")),
 			mcp.WithString("command_filter", mcp.Description("Filter by command substring")),
-			mcp.WithNumber("last_n", mcp.Description("Return only the last N entries (default 20)")),
+			mcp.WithNumber("last_n", mcp.Description("Last N entries, default 20")),
 		),
 		getHistoryHandler(auditLog),
 	)

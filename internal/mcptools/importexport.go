@@ -48,7 +48,7 @@ func RegisterImportExport(s *server.MCPServer, reg *registry.Registry) {
 
 	addTool(s, 
 		mcp.NewTool("import_nodes",
-			mcp.WithDescription("Import nodes, topologies, and contexts from a YAML file. Existing entries with the same name are overwritten."),
+			mcp.WithDescription("Import nodes, topologies, and contexts from a YAML file, overwriting existing entries."),
 			mcp.WithString("file", mcp.Required(), mcp.Description("Input YAML file path")),
 		),
 		importNodesHandler(reg),
