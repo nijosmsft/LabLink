@@ -504,12 +504,12 @@ func renderAcquireResult(lease *leasing.Lease, err error, req leasing.AcquireReq
 
 	var ce *leasing.ConflictError
 	if errors.As(err, &ce) {
-		return mcp.NewToolResultError(renderConflict(req, ce, waited)), nil
+		return mcp.NewToolResultError(renderConflict(req, ce, waited, leasing.Default())), nil
 	}
 	return mcp.NewToolResultError(fmt.Sprintf("lease failed: %v", err)), nil
 }
 
-func renderConflict(req leasing.AcquireRequest, ce *leasing.ConflictError, waited time.Duration) string {
+func renderConflict(req leasing.AcquireRequest, ce *leasing.ConflictError, waited time.Duration, self leasing.Identity) string {
 	var sb strings.Builder
 	if waited >= time.Second {
 		fmt.Fprintf(&sb, "ConflictError after waiting %s — nodes still held:\n\n", waited.Round(time.Second))
@@ -517,10 +517,6 @@ func renderConflict(req leasing.AcquireRequest, ce *leasing.ConflictError, waite
 		sb.WriteString("ConflictError — atomic acquire refused:\n\n")
 	}
 	now := time.Now().UTC()
-	reqSet := make(map[string]struct{}, len(req.Nodes))
-	for _, n := range req.Nodes {
-		reqSet[n] = struct{}{}
-	}
 	sortedNodes := append([]string(nil), req.Nodes...)
 	sort.Strings(sortedNodes)
 	for _, n := range sortedNodes {
@@ -534,12 +530,14 @@ func renderConflict(req leasing.AcquireRequest, ce *leasing.ConflictError, waite
 		if remaining < 0 {
 			remaining = 0
 		}
-		fmt.Fprintf(&sb, "- %s: held by `%s` until %s (%s remaining)",
-			n, h.AgentID, exp.Format(time.RFC3339), remaining.Round(time.Second))
+		desc := leasing.DescribeAgentID(h.AgentID, self)
+		fmt.Fprintf(&sb, "- %s: %s until %s (%s remaining)",
+			n, describeHolder(desc), exp.Format(time.RFC3339), remaining.Round(time.Second))
 		if h.Reason != "" {
 			fmt.Fprintf(&sb, " — reason %q", h.Reason)
 		}
 		sb.WriteString("\n")
+		fmt.Fprintf(&sb, "  raw: agent_id=`%s` lease_id=`%s`\n", h.AgentID, h.ID)
 	}
 	heldNodesQuoted := joinNodesQuoted(req.Nodes)
 	sb.WriteString("\nNo lease granted. Options:\n")
@@ -547,6 +545,23 @@ func renderConflict(req leasing.AcquireRequest, ce *leasing.ConflictError, waite
 	fmt.Fprintf(&sb, "- call `wait_for_release(nodes=[%s], timeout_seconds=1800)` to passively watch\n", heldNodesQuoted)
 	fmt.Fprintf(&sb, "- call `force_release(nodes=[%s], reason='...')` if you have coordinated with the holder (USER INVOCATION ONLY)\n", heldNodesQuoted)
 	return sb.String()
+}
+
+// describeHolder returns a human-readable ownership phrase for a lease holder,
+// using the decoded AgentDescription to disambiguate multi-terminal scenarios.
+// When the agent_id could not be decoded (e.g., a LABLINK_AGENT_ID override),
+// the raw id is embedded so callers can still grep for it.
+func describeHolder(d leasing.AgentDescription) string {
+	if !d.Decoded {
+		return "held by agent `" + d.Raw + "`"
+	}
+	if d.SameUser {
+		return fmt.Sprintf("held by you from another terminal (host %s, lablink-server PID %d)", d.Hostname, d.PID)
+	}
+	if d.SameHost {
+		return fmt.Sprintf("held by another user on this host (host %s, PID %d, cookie %s)", d.Hostname, d.PID, d.Cookie)
+	}
+	return fmt.Sprintf("held by another host (%s, PID %d)", d.Hostname, d.PID)
 }
 
 func renderReleased(ids []string) string {
