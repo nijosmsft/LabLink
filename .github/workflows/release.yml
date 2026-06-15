@@ -2,6 +2,12 @@ name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (must match a pushed tag, e.g. v0.4.5). Ignored when triggered by a tag push.'
+        required: false
+        type: string
+
 permissions:
   contents: write
 
