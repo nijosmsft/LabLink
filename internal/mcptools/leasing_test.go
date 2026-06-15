@@ -515,3 +515,188 @@ func TestLeaseRoleHandler_WithinTopology(t *testing.T) {
 		t.Fatalf("server-25 should not be included for role=client: %s", body)
 	}
 }
+
+// --- 13. renderConflict friendly phrases -------------------------------------
+
+// makeHolder builds a minimal *leasing.Lease for conflict rendering tests.
+func makeHolder(agentID, leaseID, reason string, expires time.Time) *leasing.Lease {
+	return &leasing.Lease{
+		ID:        leaseID,
+		AgentID:   agentID,
+		ExpiresAt: expires,
+		Reason:    reason,
+		State:     leasing.LeaseAcquired,
+	}
+}
+
+func TestRenderConflict_SameUser_Phrase(t *testing.T) {
+	// Holder's agent_id matches the calling process's cookie AND hostname.
+	self := leasing.Identity{Cookie: "deadbeef", Hostname: "WORKHOST"}
+	exp := time.Now().UTC().Add(40 * time.Minute)
+	ce := &leasing.ConflictError{
+		Holders: map[string]*leasing.Lease{
+			"RR1N4406-16": makeHolder(
+				"deadbeef-WORKHOST-47628-4446",
+				"lse-aabbccdd",
+				"file-mode WPA capture",
+				exp,
+			),
+		},
+	}
+	req := leasing.AcquireRequest{Nodes: []string{"RR1N4406-16"}}
+	text := renderConflict(req, ce, 0, self)
+
+	if !strings.Contains(text, "another terminal") {
+		t.Fatalf("want 'another terminal' phrase for same-user holder:\n%s", text)
+	}
+	// Raw id must still appear on the raw: line.
+	if !strings.Contains(text, "deadbeef-WORKHOST-47628-4446") {
+		t.Fatalf("raw agent_id must appear on raw: line:\n%s", text)
+	}
+	if !strings.Contains(text, "lse-aabbccdd") {
+		t.Fatalf("raw lease_id must appear on raw: line:\n%s", text)
+	}
+	if !strings.Contains(text, "ConflictError") {
+		t.Fatalf("ConflictError header must be present:\n%s", text)
+	}
+}
+
+func TestRenderConflict_SameHostDiffCookie_Phrase(t *testing.T) {
+	// Holder shares hostname but has a different cookie (different user, same machine).
+	self := leasing.Identity{Cookie: "11223344", Hostname: "WORKHOST"}
+	exp := time.Now().UTC().Add(20 * time.Minute)
+	ce := &leasing.ConflictError{
+		Holders: map[string]*leasing.Lease{
+			"server-25": makeHolder(
+				"deadbeef-WORKHOST-12345-abcd",
+				"lse-00112233",
+				"soak test",
+				exp,
+			),
+		},
+	}
+	req := leasing.AcquireRequest{Nodes: []string{"server-25"}}
+	text := renderConflict(req, ce, 0, self)
+
+	if !strings.Contains(text, "another user on this host") {
+		t.Fatalf("want 'another user on this host' phrase:\n%s", text)
+	}
+	if !strings.Contains(text, "deadbeef-WORKHOST-12345-abcd") {
+		t.Fatalf("raw agent_id must be on raw: line:\n%s", text)
+	}
+}
+
+func TestRenderConflict_DifferentHost_Phrase(t *testing.T) {
+	// Holder is on a completely different machine.
+	self := leasing.Identity{Cookie: "deadbeef", Hostname: "MY-LOCAL-BOX"}
+	exp := time.Now().UTC().Add(10 * time.Minute)
+	ce := &leasing.ConflictError{
+		Holders: map[string]*leasing.Lease{
+			"server-25": makeHolder(
+				"deadbeef-REMOTE-BOX-99999-ef01",
+				"lse-cafebabe",
+				"remote soak",
+				exp,
+			),
+		},
+	}
+	req := leasing.AcquireRequest{Nodes: []string{"server-25"}}
+	text := renderConflict(req, ce, 0, self)
+
+	if !strings.Contains(text, "another host") {
+		t.Fatalf("want 'another host' phrase:\n%s", text)
+	}
+	if !strings.Contains(text, "deadbeef-REMOTE-BOX-99999-ef01") {
+		t.Fatalf("raw agent_id must be on raw: line:\n%s", text)
+	}
+}
+
+func TestRenderConflict_CustomAgentID_RawFallback(t *testing.T) {
+	// Holder has a custom LABLINK_AGENT_ID that doesn't match the standard shape.
+	self := leasing.Identity{Cookie: "deadbeef", Hostname: "WORKHOST"}
+	exp := time.Now().UTC().Add(30 * time.Minute)
+	ce := &leasing.ConflictError{
+		Holders: map[string]*leasing.Lease{
+			"server-25": makeHolder("custom-agent-id", "lse-12341234", "custom op", exp),
+		},
+	}
+	req := leasing.AcquireRequest{Nodes: []string{"server-25"}}
+	text := renderConflict(req, ce, 0, self)
+
+	// Must NOT contain phrasing that implies decoded knowledge.
+	if strings.Contains(text, "another terminal") ||
+		strings.Contains(text, "another user on this host") ||
+		strings.Contains(text, "another host (") {
+		t.Fatalf("decoded phrase must not appear for custom agent_id:\n%s", text)
+	}
+	// Raw id must appear.
+	if !strings.Contains(text, "custom-agent-id") {
+		t.Fatalf("raw agent_id must appear for custom holder:\n%s", text)
+	}
+}
+
+// --- 14. renderLeaseGateError friendly phrases --------------------------------
+
+func TestRenderLeaseGateError_SameUser_Phrase(t *testing.T) {
+	self := leasing.Identity{Cookie: "aabbccdd", Hostname: "LAB-HOST"}
+	holders := map[string]*leasing.Lease{
+		"server-25": makeHolder(
+			"aabbccdd-LAB-HOST-55555-1234",
+			"lse-deadbeef",
+			"perf sweep",
+			time.Now().UTC().Add(60*time.Minute),
+		),
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "execute_command"
+	text := renderLeaseGateError(req, []string{"server-25"}, []string{"server-25"}, holders, "aabbccdd-LAB-HOST-11111-abcd", self)
+
+	if !strings.Contains(text, "another terminal") {
+		t.Fatalf("want 'another terminal' phrase in gate error:\n%s", text)
+	}
+	// Raw agent_id still greppable inside the holder cell.
+	if !strings.Contains(text, "aabbccdd-LAB-HOST-55555-1234") {
+		t.Fatalf("raw holder agent_id must appear:\n%s", text)
+	}
+}
+
+func TestRenderLeaseGateError_DifferentHost_Phrase(t *testing.T) {
+	self := leasing.Identity{Cookie: "aabbccdd", Hostname: "LOCAL-HOST"}
+	holders := map[string]*leasing.Lease{
+		"server-25": makeHolder(
+			"aabbccdd-REMOTE-HOST-55555-1234",
+			"lse-deadbeef",
+			"perf sweep",
+			time.Now().UTC().Add(60*time.Minute),
+		),
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "execute_command"
+	text := renderLeaseGateError(req, []string{"server-25"}, []string{"server-25"}, holders, "aabbccdd-LOCAL-HOST-11111-abcd", self)
+
+	if !strings.Contains(text, "another host") {
+		t.Fatalf("want 'another host' phrase in gate error:\n%s", text)
+	}
+}
+
+func TestRenderLeaseGateError_CustomAgentID_RawFallback(t *testing.T) {
+	self := leasing.Identity{Cookie: "aabbccdd", Hostname: "LOCAL-HOST"}
+	holders := map[string]*leasing.Lease{
+		"server-25": makeHolder(
+			"totally-custom-id",
+			"lse-deadbeef",
+			"custom reason",
+			time.Now().UTC().Add(60*time.Minute),
+		),
+	}
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "execute_command"
+	text := renderLeaseGateError(req, []string{"server-25"}, []string{"server-25"}, holders, "my-caller-id", self)
+
+	if !strings.Contains(text, "totally-custom-id") {
+		t.Fatalf("raw custom agent_id must appear in gate error:\n%s", text)
+	}
+	if strings.Contains(text, "another terminal") || strings.Contains(text, "another host (") {
+		t.Fatalf("decoded phrase must not appear for custom agent_id:\n%s", text)
+	}
+}

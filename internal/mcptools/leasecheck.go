@@ -86,7 +86,7 @@ func LeaseGate(cfg LeaseGateConfig, extract NodeExtractor, inner server.ToolHand
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("lease store error: %v", err)), nil
 		}
-		return mcp.NewToolResultError(renderLeaseGateError(req, nodes, uncovered, holders, agentID)), nil
+		return mcp.NewToolResultError(renderLeaseGateError(req, nodes, uncovered, holders, agentID, identity)), nil
 	}
 }
 
@@ -188,7 +188,7 @@ func maybeHeartbeat(ctx context.Context, store leasing.Store, agentID string, us
 
 // renderLeaseGateError builds the structured markdown surface a lease-gated
 // tool returns when the caller can't proceed. Matches the M2 error style.
-func renderLeaseGateError(req mcp.CallToolRequest, requested, uncovered []string, holders map[string]*leasing.Lease, agentID string) string {
+func renderLeaseGateError(req mcp.CallToolRequest, requested, uncovered []string, holders map[string]*leasing.Lease, agentID string, self leasing.Identity) string {
 	var sb strings.Builder
 	sb.WriteString("**Lease check failed.**\n\n")
 	fmt.Fprintf(&sb, "Tool `%s` requires an active lease on %s.\n",
@@ -198,8 +198,8 @@ func renderLeaseGateError(req mcp.CallToolRequest, requested, uncovered []string
 
 	if len(holders) > 0 {
 		sb.WriteString("## Current holders\n\n")
-		sb.WriteString("| node | lease_id | agent | expires_at | reason |\n")
-		sb.WriteString("|------|----------|-------|------------|--------|\n")
+		sb.WriteString("| node | lease_id | holder | expires_at | reason |\n")
+		sb.WriteString("|------|----------|--------|------------|--------|\n")
 		nodes := make([]string, 0, len(holders))
 		for n := range holders {
 			nodes = append(nodes, n)
@@ -211,8 +211,14 @@ func renderLeaseGateError(req mcp.CallToolRequest, requested, uncovered []string
 			if reason == "" {
 				reason = "—"
 			}
-			fmt.Fprintf(&sb, "| `%s` | `%s` | `%s` | %s | %s |\n",
-				n, h.ID, h.AgentID,
+			desc := leasing.DescribeAgentID(h.AgentID, self)
+			holderCell := describeHolder(desc)
+			if desc.Decoded {
+				// Preserve the raw agent_id in the cell so scripts can still grep it.
+				holderCell += fmt.Sprintf(" — raw: `%s`", h.AgentID)
+			}
+			fmt.Fprintf(&sb, "| `%s` | `%s` | %s | %s | %s |\n",
+				n, h.ID, holderCell,
 				h.ExpiresAt.UTC().Format(time.RFC3339),
 				truncate(reason, 60),
 			)

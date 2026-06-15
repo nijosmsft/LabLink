@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -140,4 +141,97 @@ func isHex(s string) bool {
 // newLeaseID returns a "lse-<8hex>" identifier.
 func newLeaseID() string {
 	return "lse-" + randHex(4)
+}
+
+// AgentDescription holds the decoded components of a stored agent_id string
+// relative to the calling process's own identity.
+//
+// When Decoded is false (e.g., LABLINK_AGENT_ID override was in effect when
+// the lease was acquired), only Raw is meaningful. Callers must fall back to
+// the raw form in that case.
+type AgentDescription struct {
+	Raw      string // always the input, never empty
+	Decoded  bool   // true if the default cookie-host-pid-suffix shape was matched
+	Cookie   string
+	Hostname string
+	PID      int
+	Suffix   string
+	SameHost bool // Hostname == self.Hostname
+	SameUser bool // Cookie == self.Cookie && SameHost
+}
+
+// DescribeAgentID returns a human-readable breakdown of a stored agent_id
+// string relative to the calling process's own identity. The returned struct
+// carries decoded fields plus boolean SameHost / SameUser markers that the
+// conflict-error renderer uses to phrase ownership.
+//
+// If the agent_id does not match the default <cookie>-<hostname>-<pid>-<suffix>
+// shape (e.g., when LABLINK_AGENT_ID was set), all decoded fields are zero/empty
+// and Raw is the input. Callers MUST fall back to the raw form in that case.
+//
+// Parsing strategy: cookie is the first dash-delimited segment (must be 8 hex
+// chars), suffix is the last segment (must be 4 hex chars), pid is the segment
+// immediately before suffix (must be decimal digits), and hostname is everything
+// between cookie and pid. This handles hostnames that themselves contain dashes.
+func DescribeAgentID(agentID string, self Identity) AgentDescription {
+	d := AgentDescription{Raw: agentID}
+
+	// cookie: first segment before first '-', exactly 8 hex chars.
+	firstDash := strings.Index(agentID, "-")
+	if firstDash < 0 {
+		return d
+	}
+	cookie := agentID[:firstDash]
+	if len(cookie) != 8 || !isHex(cookie) {
+		return d
+	}
+
+	// rest = <hostname>-<pid>-<suffix>
+	rest := agentID[firstDash+1:]
+
+	// suffix: last segment after the last '-', exactly 4 hex chars.
+	lastDash := strings.LastIndex(rest, "-")
+	if lastDash < 0 {
+		return d
+	}
+	suffix := rest[lastDash+1:]
+	if len(suffix) != 4 || !isHex(suffix) {
+		return d
+	}
+
+	// middle = <hostname>-<pid>
+	middle := rest[:lastDash]
+
+	// pid: last segment of middle, non-empty decimal digits only.
+	pidDash := strings.LastIndex(middle, "-")
+	if pidDash < 0 {
+		return d
+	}
+	pidStr := middle[pidDash+1:]
+	if len(pidStr) == 0 {
+		return d
+	}
+	for _, r := range pidStr {
+		if r < '0' || r > '9' {
+			return d
+		}
+	}
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return d
+	}
+
+	hostname := middle[:pidDash]
+	if hostname == "" {
+		return d
+	}
+
+	d.Decoded = true
+	d.Cookie = cookie
+	d.Hostname = hostname
+	d.PID = pid
+	d.Suffix = suffix
+	d.SameHost = hostname == self.Hostname
+	d.SameUser = d.SameHost && cookie == self.Cookie
+	return d
 }

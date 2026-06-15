@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-15
+
+### Changed
+- Lease-conflict error messages now show a one-line, human-readable breakdown
+  of who holds a contested node. When the holder is your own lablink-server
+  from another terminal (same cookie + same hostname), the message says so
+  explicitly. When the holder is a different user on the same host, or a
+  process on a different host entirely, that is also called out. The raw
+  agent_id is preserved on a follow-up line (`raw: agent_id=... lease_id=...`)
+  for `lease()`-path errors, and embedded in the table cell for
+  `LeaseGate`-path errors, so scripts that grep the old text still work.
+  No behavior change -- pure error-text upgrade.
+- Adds `leasing.DescribeAgentID` / `leasing.AgentDescription` helper that
+  decodes the default `<cookie>-<hostname>-<pid>-<suffix>` agent_id shape
+  relative to the calling process's own identity, returning `SameHost` /
+  `SameUser` booleans. Falls back to `Decoded=false` for any agent_id that
+  does not match the shape (e.g., a custom `LABLINK_AGENT_ID` override), so
+  the old raw-id display is never broken.
+
 ## [0.4.4] - 2026-06-12
 
 ### Performance
