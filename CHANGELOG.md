@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-16
+
+### Changed
+- **Behavior change:** lease enforcement is now opt-in and disabled by default.
+  Mutating tools no longer require an active lease unless
+  `LABLINK_LEASE_REQUIRED` is set to `1`, `true`, `yes`, `on`, or `enabled`.
+  This differs from <=0.4.x, where enforcement was on by default. The tradeoff
+  is that LabLink no longer provides automatic one-terminal-at-a-time protection
+  unless operators explicitly enable it.
+
 ## [0.4.5] - 2026-06-15
 
 ### Changed

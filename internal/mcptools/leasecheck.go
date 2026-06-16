@@ -18,8 +18,9 @@ import (
 // in a single lablink-server process.
 //
 // Enabled gates the whole middleware: when false, LeaseGate degrades to a
-// pass-through (no lookup, no heartbeat, no allocation). The server toggles
-// this via the LABLINK_LEASE_REQUIRED env var.
+// pass-through (no lookup, no heartbeat, no allocation). Lease enforcement is
+// opt-in: lablink-server leaves this false by default and enables it only when
+// LABLINK_LEASE_REQUIRED=1 (or another affirmative token).
 type LeaseGateConfig struct {
 	Store    leasing.Store
 	Registry *registry.Registry
@@ -236,8 +237,8 @@ func renderLeaseGateError(req mcp.CallToolRequest, requested, uncovered []string
 	fmt.Fprintf(&sb, "- Block and acquire: `lease(nodes=[%s], wait_seconds=120, reason='...')`.\n", joinNodesQuoted(uncovered))
 	sb.WriteString("- If the holder is stuck and you have authority to break it: " +
 		"`force_release(nodes=[...], reason='...')` (use sparingly).\n")
-	sb.WriteString("- To bypass lease checks for this server only, set " +
-		"`LABLINK_LEASE_REQUIRED=0` and restart lablink-server.\n")
+	sb.WriteString("- Lease enforcement is opt-in; to turn it off for this server, remove " +
+		"`LABLINK_LEASE_REQUIRED` (or set it to `0`) and restart lablink-server.\n")
 	return sb.String()
 }
 

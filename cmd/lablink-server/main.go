@@ -23,7 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-var serverVersion = "v0.4.0"
+var serverVersion = "v0.5.0"
 
 func main() {
 	// Handle --version before any other startup work so the call is cheap and
@@ -127,15 +127,15 @@ func main() {
 			swept.Total(), swept.DeadProcess, swept.TTL)
 	}
 
-	// Lease enforcement gate (v0.4.0 M3). Controls whether the 24 mutating
-	// tools enforce lease ownership before dispatching to their handlers.
-	// Set LABLINK_LEASE_REQUIRED=0 (or false/no/off/disabled) to disable —
-	// useful for first-run bootstrap, unit tests, and emergency bypass.
-	leaseEnabled := !leaseRequiredDisabled(security.FirstPresentEnv("LABLINK_LEASE_REQUIRED"))
+	// Lease enforcement gate. Controls whether the 24 mutating tools enforce
+	// lease ownership before dispatching to their handlers. Enforcement is
+	// disabled by default; opt in with LABLINK_LEASE_REQUIRED=1 (or
+	// true/yes/on/enabled) when one-terminal-at-a-time protection is desired.
+	leaseEnabled := leaseEnforcementEnabled(security.FirstPresentEnv("LABLINK_LEASE_REQUIRED"))
 	if leaseEnabled {
-		log.Printf("LabLink lease enforcement: ENABLED (mutating tools require an active lease)")
+		log.Printf("LabLink lease enforcement: ENABLED via LABLINK_LEASE_REQUIRED (mutating tools require an active lease)")
 	} else {
-		log.Printf("WARNING: LabLink lease enforcement DISABLED via LABLINK_LEASE_REQUIRED; mutating tools will not check leases")
+		log.Printf("LabLink lease enforcement: DISABLED (default; set LABLINK_LEASE_REQUIRED=1 to require leases on mutating tools)")
 	}
 
 	// Credential store.
@@ -230,12 +230,12 @@ ANTI-PATTERNS — DO NOT do these things:
 	}
 }
 
-// leaseRequiredDisabled reports whether the LABLINK_LEASE_REQUIRED env var
-// is set to a value that disables lease enforcement. Accepts the obvious
-// negative forms; any other value (including empty) means "enforce".
-func leaseRequiredDisabled(v string) bool {
+// leaseEnforcementEnabled reports whether the LABLINK_LEASE_REQUIRED env var
+// explicitly opts in to lease enforcement. Any other value, including empty or
+// unset, leaves enforcement disabled.
+func leaseEnforcementEnabled(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "0", "false", "no", "off", "disabled":
+	case "1", "true", "yes", "on", "enabled":
 		return true
 	}
 	return false

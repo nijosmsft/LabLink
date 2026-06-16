@@ -263,6 +263,25 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 
 For day-to-day onboarding, the bootstrap scripts are recommended over `deploy_agent` because they don't require persisting WinRM credentials on the operator machine.
 
+## Leasing and mutating tools
+
+LabLink includes lease tools (`lease`, `extend_lease`, `release_lease`,
+`wait_for_release`) for coordinating shared lab nodes. Lease enforcement for
+mutating tools is **disabled by default**: commands such as `execute_command`,
+`push_file`, `reboot_node`, and `patch_binary` run without first requiring an
+active lease.
+
+To re-enable one-terminal-at-a-time protection, set `LABLINK_LEASE_REQUIRED=1`
+on `lablink-server.exe` before startup. The accepted opt-in values are `1`,
+`true`, `yes`, `on`, and `enabled` (case-insensitive, surrounding whitespace
+ignored). Any other value, including an unset or empty variable, leaves
+enforcement disabled.
+
+With enforcement enabled, a caller must hold an active lease for every touched
+node before a mutating tool runs. The safety tradeoff of the new default is that
+LabLink will not automatically prevent concurrent terminals from operating on
+the same node unless this setting is enabled.
+
 ## Security model at a glance
 
 - **Transport:** mTLS by default. The agent only accepts client certificates signed by your local LabLink CA.
@@ -358,6 +377,7 @@ You can register as many `lablink-*` entries as you want; each gets its own port
 | `LABLINK_TLS_SERVER_NAME` | Optional override for TLS SNI / server-name verification. |
 | `LABLINK_NODES` | Path to the node registry JSON file. |
 | `LABLINK_HOME` | Base config directory (default `~/.lablink`). |
+| `LABLINK_LEASE_REQUIRED` | Opt in to mutating-tool lease enforcement with `1`, `true`, `yes`, `on`, or `enabled`; unset/empty/anything else leaves enforcement disabled (default). |
 | `LABLINK_PORTAL` | `disabled` to suppress the local web portal. |
 | `LABLINK_PORTAL_ADDR` | Override the portal bind address (loopback only, e.g. `127.0.0.1:9092`). |
 

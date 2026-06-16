@@ -41,11 +41,12 @@ func callGate(t *testing.T, gated server.ToolHandlerFunc, toolName string, args 
 	return res
 }
 
-// --- 1. Disabled config is a pure pass-through ------------------------------
+// --- 1. Default/off config is a pure pass-through ---------------------------
 
-func TestLeaseGate_DisabledIsPassthrough(t *testing.T) {
+func TestLeaseGate_DefaultDisabledIsPassthrough(t *testing.T) {
 	reg := newLeaseTestRegistry(t, "server-25")
-	// No store at all — confirms LeaseGate never touches it when disabled.
+	// No store at all — confirms LeaseGate never touches it when enforcement
+	// is left at the default/off setting.
 	cfg := LeaseGateConfig{Store: nil, Registry: reg, Enabled: false}
 	inner, calls := passthroughHandler()
 	gated := LeaseGate(cfg, extractSingleNode("node"), inner)
@@ -156,7 +157,8 @@ func TestLeaseGate_ForeignOwnerBlocks(t *testing.T) {
 	body := toolResultText(res)
 	for _, must := range []string{"Lease check failed", "execute_command",
 		"server-25", bobLease.ID, "bob-other",
-		"wait_for_release", "force_release", "LABLINK_LEASE_REQUIRED"} {
+		"wait_for_release", "force_release", "LABLINK_LEASE_REQUIRED",
+		"remove `LABLINK_LEASE_REQUIRED`", "set it to `0`"} {
 		if !strings.Contains(body, must) {
 			t.Fatalf("error body missing %q:\n%s", must, body)
 		}
