@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var probeVersion = "v0.5.0"
+var probeVersion = "v0.5.1"
 
 func main() {
 	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {

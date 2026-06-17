@@ -252,8 +252,8 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 | `patch_binary` | Replace a protected Windows system binary using a Windows engineering replace-utility you supply (path passed via `SFPCOPY_SOURCE`). Backs up the original first. |
 | `restore_binary` | Roll back a previously patched binary. |
 | `ensure_test_signing` | Enable `bcdedit /set testsigning on` and report whether a reboot is needed. |
-| `reboot_node` | Reboot a single node and wait for the agent to come back. For 2+ nodes use `reboot_nodes` instead — calling `reboot_node` in a loop blocks for the full `wait_seconds` per node. |
-| `reboot_nodes` | Reboot a list of nodes in parallel and wait once for everyone to come back. Wall-clock scales with the slowest single reboot, not the node count. |
+| `reboot_node` | Reboot a single node and wait until the agent is first observed offline, then back online. For 2+ nodes use `reboot_nodes` instead — calling `reboot_node` in a loop blocks for the full `wait_seconds` per node. |
+| `reboot_nodes` | Reboot a list of nodes in parallel and wait once for everyone to be observed offline, then back online. Wall-clock scales with the slowest single reboot, not the node count. |
 
 ### Onboarding (operator-side)
 | Tool | What it does |

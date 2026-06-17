@@ -13,7 +13,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/pki"
 )
 
-var caVersion = "v0.5.0"
+var caVersion = "v0.5.1"
 
 func main() {
 	if len(os.Args) < 2 {

@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var agentVersion = "v0.5.0"
+var agentVersion = "v0.5.1"
 
 var (
 	listenAddr        = flag.String("listen", ":9091", "gRPC listen address")
