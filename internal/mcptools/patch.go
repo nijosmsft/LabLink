@@ -21,9 +21,13 @@ import (
 // Tuning knobs for reboot_nodes. Package-level vars so tests can shrink them
 // without injecting a clock interface through every layer.
 var (
-	rebootNodesInitialDownSleep = 10 * time.Second
-	rebootNodesPollInterval     = 5 * time.Second
-	rebootNodesConnectTimeout   = 2 * time.Second
+	rebootNodesInitialDownSleep  = 5 * time.Second
+	rebootNodesPollInterval      = 5 * time.Second
+	rebootNodesConnectTimeout    = 2 * time.Second
+	rebootNodesDownConfirmations = 2
+	rebootNodesDial              = func(addr string, timeout time.Duration) (net.Conn, error) {
+		return net.DialTimeout("tcp", addr, timeout)
+	}
 )
 
 const (
@@ -256,8 +260,9 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
 
+		var doneAtomic atomic.Int64
 		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
-			return 0, 1
+			return doneAtomic.Load(), 1
 		})
 		defer stop()
 
@@ -276,34 +281,18 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 			Command:   "shutdown /r /t 2 /f",
 		})
 
-		// Wait for the node to come back.
-		waitCmd := fmt.Sprintf(`
-$maxWait = %d
-$waited = 0
-Start-Sleep 10
-while ($waited -lt $maxWait) {
-    try {
-        $c = New-Object System.Net.Sockets.TcpClient
-        $c.Connect('%s', %s)
-        $c.Close()
-        "Node back online after $waited seconds"
-        exit 0
-    } catch {
-        Start-Sleep 5
-        $waited += 5
-    }
-}
-"Timeout waiting for node after $maxWait seconds"
-exit 1
-`, waitSec, nodeHost(node.Address), nodePort(node.Address))
-
-		// Run the wait loop locally via PowerShell.
-		output, exitCode, _, _ := executeLocalPowershell(ctx, waitCmd, waitSec+30)
-
-		if exitCode == 0 {
-			return mcp.NewToolResultText(fmt.Sprintf("**%s** rebooted and back online.\n```\n%s```", nodeName, strings.TrimSpace(output))), nil
+		pool.ResetConnection(node.Address)
+		start := time.Now()
+		deadline := start.Add(time.Duration(waitSec) * time.Second)
+		wentDown, backOnline, wall := waitForReboot(ctx, rebootNodesDial, node.Address, start, deadline)
+		if backOnline {
+			doneAtomic.Store(1)
+			return mcp.NewToolResultText(fmt.Sprintf("**%s** rebooted (went offline, back online after %s).", nodeName, wall.Round(time.Second))), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("Reboot initiated but node did not come back within %ds:\n%s", waitSec, output)), nil
+		if !wentDown {
+			return mcp.NewToolResultError(fmt.Sprintf("Reboot initiated but %s never went offline within %ds -- the reboot may not have taken effect.", nodeName, waitSec)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("%s went offline but did not come back within %ds.", nodeName, waitSec)), nil
 	}
 }
 
@@ -312,8 +301,67 @@ type rebootNodeStatus struct {
 	NodeName   string
 	Kicked     bool
 	KickErr    error
+	WentDown   bool
 	BackOnline bool
 	WallTime   time.Duration
+}
+
+type rebootWaitState struct {
+	wentDown            bool
+	backOnline          bool
+	consecutiveFailures int
+}
+
+func (s *rebootWaitState) observe(reachable bool) {
+	if s.backOnline {
+		return
+	}
+	if !s.wentDown {
+		if reachable {
+			s.consecutiveFailures = 0
+			return
+		}
+		s.consecutiveFailures++
+		if s.consecutiveFailures >= rebootNodesDownConfirmations {
+			s.wentDown = true
+			s.consecutiveFailures = 0
+		}
+		return
+	}
+	if reachable {
+		s.backOnline = true
+	}
+}
+
+func waitForReboot(ctx context.Context, dial func(addr string, timeout time.Duration) (net.Conn, error), addr string, start time.Time, deadline time.Time) (wentDown bool, backOnline bool, wall time.Duration) {
+	select {
+	case <-ctx.Done():
+		return false, false, time.Since(start)
+	case <-time.After(rebootNodesInitialDownSleep):
+	}
+
+	state := rebootWaitState{}
+	for time.Now().Before(deadline) {
+		conn, err := dial(addr, rebootNodesConnectTimeout)
+		reachable := err == nil
+		if conn != nil {
+			_ = conn.Close()
+		}
+		state.observe(reachable)
+		if state.wentDown {
+			wentDown = true
+		}
+		if state.backOnline {
+			return true, true, time.Since(start)
+		}
+
+		select {
+		case <-ctx.Done():
+			return wentDown, false, time.Since(start)
+		case <-time.After(rebootNodesPollInterval):
+		}
+	}
+	return wentDown, false, time.Since(start)
 }
 
 func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) server.ToolHandlerFunc {
@@ -396,7 +444,10 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 			auditLog.Append(entry)
 		}
 
-		// Step 2: central sleep so nodes have time to actually go down.
+		deadline := now.Add(time.Duration(waitSec) * time.Second)
+
+		// Step 2: central sleep before polling. Correctness does not depend on
+		// this grace period; each node still must be observed down before up.
 		select {
 		case <-ctx.Done():
 			// Caller cancelled — fall through and render whatever we have.
@@ -409,9 +460,9 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 		}
 
 		// Step 3: poll loop. Every rebootNodesPollInterval, try every still-pending
-		// node in parallel via TCP-connect to its agent port. Mark each as done as
-		// soon as the connect succeeds. Loop until all back or wait_seconds elapses.
-		deadline := time.Now().Add(time.Duration(waitSec) * time.Second)
+		// node in parallel via TCP-connect to its agent port. A node is done only
+		// after failed dials confirm it went down and a later dial succeeds.
+		waitStates := make([]rebootWaitState, len(nodes))
 		pending := make([]int, 0, len(nodes))
 		for i := range nodes {
 			if statuses[i].Kicked {
@@ -426,7 +477,7 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 				pollWg.Add(1)
 				go func(j, idx int) {
 					defer pollWg.Done()
-					conn, err := net.DialTimeout("tcp", nodes[idx].Address, rebootNodesConnectTimeout)
+					conn, err := rebootNodesDial(nodes[idx].Address, rebootNodesConnectTimeout)
 					if err == nil {
 						_ = conn.Close()
 						results[j] = true
@@ -437,7 +488,9 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 
 			stillPending := pending[:0]
 			for j, idx := range pending {
-				if results[j] {
+				waitStates[idx].observe(results[j])
+				statuses[idx].WentDown = waitStates[idx].wentDown
+				if waitStates[idx].backOnline {
 					statuses[idx].BackOnline = true
 					statuses[idx].WallTime = time.Since(starts[idx])
 					doneAtomic.Add(1)
@@ -470,24 +523,27 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 }
 
 func renderRebootNodesTable(statuses []rebootNodeStatus, waitSec int) string {
-	kicked, back := 0, 0
+	kicked, down, back := 0, 0, 0
 	for _, s := range statuses {
 		if s.Kicked {
 			kicked++
+		}
+		if s.WentDown {
+			down++
 		}
 		if s.BackOnline {
 			back++
 		}
 	}
-	headline := "All nodes rebooted and back online"
-	if back != len(statuses) {
-		headline = "Some nodes did not return within the wait window"
+	headline := "Reboot incomplete"
+	if kicked == len(statuses) && down == len(statuses) && back == len(statuses) {
+		headline = "All nodes rebooted and back online"
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**%s** (%d/%d kicked, %d/%d back)\n\n", headline, kicked, len(statuses), back, len(statuses)))
-	sb.WriteString("| Node | Shutdown kicked? | Came back online? | Wall time |\n")
-	sb.WriteString("|---|---|---|---|\n")
+	sb.WriteString(fmt.Sprintf("**%s** (%d/%d kicked, %d/%d went offline, %d/%d back)\n\n", headline, kicked, len(statuses), down, len(statuses), back, len(statuses)))
+	sb.WriteString("| Node | Shutdown kicked? | Went offline? | Came back online? | Wall time |\n")
+	sb.WriteString("|---|---|---|---|---|\n")
 	for _, s := range statuses {
 		kickCol := "yes"
 		if !s.Kicked {
@@ -497,15 +553,27 @@ func renderRebootNodesTable(statuses []rebootNodeStatus, waitSec int) string {
 				kickCol = "NO"
 			}
 		}
+		downCol := "yes"
+		if !s.WentDown {
+			if s.Kicked {
+				downCol = "NO (never observed offline)"
+			} else {
+				downCol = "n/a"
+			}
+		}
 		backCol := "yes"
 		if !s.BackOnline {
 			if s.Kicked {
-				backCol = fmt.Sprintf("NO (timeout %ds)", waitSec)
+				if s.WentDown {
+					backCol = fmt.Sprintf("NO (went offline; timeout %ds)", waitSec)
+				} else {
+					backCol = "NO (never observed offline; reboot may not have taken effect)"
+				}
 			} else {
 				backCol = "n/a"
 			}
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", s.NodeName, kickCol, backCol, s.WallTime.Round(time.Second)))
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", s.NodeName, kickCol, downCol, backCol, s.WallTime.Round(time.Second)))
 	}
 	return sb.String()
 }

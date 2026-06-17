@@ -23,7 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-var serverVersion = "v0.5.0"
+var serverVersion = "v0.5.1"
 
 func main() {
 	// Handle --version before any other startup work so the call is cheap and

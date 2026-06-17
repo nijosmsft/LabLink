@@ -145,6 +145,7 @@ func TestStartMCPHeartbeat_WithToken_Fires(t *testing.T) {
 
 func TestRebootNodesHandler_NoToken_NoNotification(t *testing.T) {
 	shrinkRebootTunings(t)
+	withScriptedRebootDial(t, false, false, true)
 	shrinkHeartbeatInterval(t)
 	rec := withNotifRecorder(t)
 
@@ -175,6 +176,7 @@ func TestRebootNodesHandler_NoToken_NoNotification(t *testing.T) {
 
 func TestRebootNodesHandler_WithToken_Fires(t *testing.T) {
 	shrinkRebootTunings(t)
+	withScriptedRebootDial(t, true, false, false, true)
 	shrinkHeartbeatInterval(t)
 	rec := withNotifRecorder(t)
 

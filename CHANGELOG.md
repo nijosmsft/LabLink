@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-16
+
+### Fixed
+- `reboot_node` / `reboot_nodes` no longer report a node back online until
+  it has actually gone offline and returned. The reboot wait now uses
+  two-phase down->up verification; previously, a node that had not yet shut
+  down could be falsely reported back immediately because its agent port was
+  still reachable.
+- Added `rebootNodesDownConfirmations` debounce so transient TCP dial blips
+  do not count as an observed reboot/down transition.
+
 ## [0.5.0] - 2026-06-16
 
 ### Changed
