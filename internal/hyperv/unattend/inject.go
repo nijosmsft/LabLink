@@ -112,12 +112,6 @@ try {
         Copy-Item $firstBootSrc "$winDrive\Windows\Setup\Scripts\FirstBoot.ps1" -Force
     }
 
-    # Scrub the staged (cleartext-password) copies from the target host now that
-    # they live inside the VHD; the on-VHD copy is consumed+scrubbed by Windows
-    # during specialize/first-logon.
-    Remove-Item $unattendSrc -Force -ErrorAction SilentlyContinue
-    if ($firstBootSrc) { Remove-Item $firstBootSrc -Force -ErrorAction SilentlyContinue }
-
     [pscustomobject]@{
         injected_to    = "$winDrive\Windows\Panther\unattend.xml"
         windows_volume = $winDrive
@@ -128,6 +122,13 @@ try {
     } | ConvertTo-Json -Depth 4
 }
 finally {
+    # Scrub the staged (cleartext-password) copies from the target host on ALL
+    # paths. They must NOT survive a mid-injection failure: whether injection
+    # succeeded or threw (VHD/volume not found, copy error, etc.), the on-host
+    # cleartext answer file is removed here. The on-VHD copy is consumed and
+    # scrubbed by Windows during specialize/first-logon.
+    try { Remove-Item $unattendSrc -Force -ErrorAction SilentlyContinue } catch {}
+    if ($firstBootSrc) { try { Remove-Item $firstBootSrc -Force -ErrorAction SilentlyContinue } catch {} }
     # Remove only drive letters we assigned.
     foreach ($a in $assignedLetters) {
         try { Remove-PartitionAccessPath -DiskNumber $a[0] -PartitionNumber $a[1] -AccessPath ($a[2] + ':\') -ErrorAction SilentlyContinue } catch {}

@@ -76,6 +76,67 @@ func TestBuildCreateVSwitchScript_MgmtNicGating(t *testing.T) {
 	}
 }
 
+// TestBuildCreateVSwitchScript_ReplacePathMgmtNicGating covers the rejection
+// finding #1: the management-NIC severance safeguard must also fire on the
+// if_exists=replace path, because replacing/removing an existing EXTERNAL
+// vSwitch bound to the management NIC can sever the agent connection on a
+// remote target — even when the REQUESTED switch is internal/private.
+func TestBuildCreateVSwitchScript_ReplacePathMgmtNicGating(t *testing.T) {
+	// A replace request for an INTERNAL switch (so the CREATE-path external
+	// guard does NOT apply) on a remote target must still embed a replace-path
+	// guard that inspects the EXISTING switch's binding against the mgmt NIC.
+	internalReplace := CreateVSwitchParams{
+		Name: "LabSw", Type: "internal", IfExists: "replace",
+		IsRemote: true, MgmtIP: "10.0.0.5",
+	}
+	s, err := BuildCreateVSwitchScript(internalReplace)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The mgmt NIC must be resolved up front (not only inside the external
+	// branch) so the replace path can reason about it.
+	if !strings.Contains(s, "$mgmtNicDesc") {
+		t.Errorf("replace path must resolve the management NIC description up front")
+	}
+	// The replace branch must guard against removing an existing external
+	// switch bound to the management NIC, keyed on the existing switch binding.
+	if !strings.Contains(s, "if ($ifExists -eq 'replace')") {
+		t.Fatalf("expected a replace branch in the script")
+	}
+	if !strings.Contains(s, "MGMT_NIC_BLOCKED") {
+		t.Errorf("replace path must embed the MGMT_NIC_BLOCKED severance guard")
+	}
+	if !strings.Contains(s, "$existing.NetAdapterInterfaceDescription -eq $mgmtNicDesc") {
+		t.Errorf("replace guard must compare the EXISTING switch binding to the mgmt NIC")
+	}
+	// Blocked-by-default: the guard predicate must require the override be false.
+	if !strings.Contains(s, "$isRemote -and -not $allowMgmtDisruption") {
+		t.Errorf("replace guard must block by default (remote, override false)")
+	}
+	if !strings.Contains(s, "$allowMgmtDisruption = $false") {
+		t.Errorf("expected disruption override to default false on replace path")
+	}
+
+	// Allowed-with-override: the same params with the override set must flip the
+	// embedded flag to $true so the runtime guard is bypassed.
+	allowed := internalReplace
+	allowed.AllowMgmtDisruption = true
+	s2, err := BuildCreateVSwitchScript(allowed)
+	if err != nil {
+		t.Fatalf("unexpected error with override: %v", err)
+	}
+	if !strings.Contains(s2, "$allowMgmtDisruption = $true") {
+		t.Errorf("override should set $allowMgmtDisruption = $true on the replace path")
+	}
+
+	// Local replace (IsRemote=false) must not be gated by the severance check.
+	localReplace := internalReplace
+	localReplace.IsRemote = false
+	if _, err := BuildCreateVSwitchScript(localReplace); err != nil {
+		t.Errorf("local replace should build without error: %v", err)
+	}
+}
+
 func TestBuildCreateVSwitchScript_Validation(t *testing.T) {
 	if _, err := BuildCreateVSwitchScript(CreateVSwitchParams{Name: "x", Type: "bogus"}); err == nil {
 		t.Errorf("expected error for invalid type")

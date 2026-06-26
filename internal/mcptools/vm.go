@@ -368,6 +368,13 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 			opErr = err
 			return mcp.NewToolResultError(fmt.Sprintf("stage unattend on target: %v", err)), nil
 		}
+		// The staged remote copy holds the cleartext password until Windows
+		// consumes it. Scrub it on ALL paths (success or ANY failure/early-return
+		// below) so a failure can never leave the password on the target host.
+		// The injection script's finally also removes it; this Go-side defer
+		// additionally covers runPS/transport failures and build errors that
+		// abort before (or instead of) running that script.
+		defer scrubRemoteStaged(reg, pool, t, remoteUnattend)
 
 		remoteFirstBoot := ""
 		firstBoot := req.GetString("first_boot_script", "")
@@ -383,6 +390,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("stage first-boot script on target: %v", err)), nil
 			}
+			defer scrubRemoteStaged(reg, pool, t, remoteFirstBoot)
 		}
 
 		script, berr := unattend.BuildMountInjectScript(unattend.MountInjectParams{
@@ -453,6 +461,22 @@ func stageSecretFile(content, pattern string) (string, func(), error) {
 	}
 	cleanup := func() { _ = os.Remove(path) }
 	return path, cleanup, nil
+}
+
+// scrubRemoteStaged removes a staged cleartext file from the TARGET host on ALL
+// paths (success or failure). It is best-effort: errors are ignored because the
+// file may already be gone (the injection script's finally also removes it) and
+// a scrub failure must never mask the original operation error. It runs on a
+// detached, time-bounded context so the scrub still fires even when the
+// operation failed because the parent context was cancelled.
+func scrubRemoteStaged(reg *registry.Registry, pool *agentclient.Pool, t Target, remotePath string) {
+	if strings.TrimSpace(remotePath) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	script := hyperv.WrapTagged(fmt.Sprintf("Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue\n", hyperv.PSLit(remotePath)))
+	_, _, _ = runPS(ctx, reg, pool, t, script, 60)
 }
 
 // jsonExtract returns the JSON payload from a script's combined output. If no

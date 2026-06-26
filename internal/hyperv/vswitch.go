@@ -110,22 +110,33 @@ func BuildCreateVSwitchScript(p CreateVSwitchParams) (string, error) {
 	fmt.Fprintf(&b, "$mgmtIP = %s\n", PSLit(strings.TrimSpace(p.MgmtIP)))
 
 	b.WriteString(`
+# Resolve the management NIC (the one carrying the LabLink agent/host
+# connectivity) UP FRONT so BOTH the create-external guard AND the
+# replace/remove guard can reason about it. Severing this NIC on a REMOTE
+# target is blocked unless allow_management_nic_disruption=true.
+$mgmtIfIndex = $null
+if ($mgmtIP) {
+    $ipcfg = Get-NetIPAddress -IPAddress $mgmtIP -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($ipcfg) { $mgmtIfIndex = $ipcfg.InterfaceIndex }
+}
+if ($null -eq $mgmtIfIndex) {
+    $defRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+        Sort-Object RouteMetric | Select-Object -First 1
+    if ($defRoute) { $mgmtIfIndex = $defRoute.InterfaceIndex }
+}
+$mgmtNicDesc = $null
+if ($null -ne $mgmtIfIndex) {
+    $mgmtAdapter = Get-NetAdapter -InterfaceIndex $mgmtIfIndex -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($mgmtAdapter) { $mgmtNicDesc = $mgmtAdapter.InterfaceDescription }
+}
+
 if ($swType -eq 'external') {
     $adapter = Get-NetAdapter -Name $netAdapter -ErrorAction SilentlyContinue
     if (-not $adapter) { throw "NIC_NOT_FOUND: physical NIC '$netAdapter' not found" }
 
-    # Management-NIC severance safeguard: block binding the NIC that carries the
-    # agent/host connectivity on a REMOTE target unless explicitly overridden.
-    $mgmtIfIndex = $null
-    if ($mgmtIP) {
-        $ipcfg = Get-NetIPAddress -IPAddress $mgmtIP -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($ipcfg) { $mgmtIfIndex = $ipcfg.InterfaceIndex }
-    }
-    if ($null -eq $mgmtIfIndex) {
-        $defRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-            Sort-Object RouteMetric | Select-Object -First 1
-        if ($defRoute) { $mgmtIfIndex = $defRoute.InterfaceIndex }
-    }
+    # Management-NIC severance safeguard (CREATE path): block binding the NIC
+    # that carries the agent/host connectivity on a REMOTE target unless
+    # explicitly overridden.
     if ($isRemote -and $null -ne $mgmtIfIndex -and $adapter.ifIndex -eq $mgmtIfIndex -and -not $allowMgmtDisruption) {
         throw "MGMT_NIC_BLOCKED: NIC '$netAdapter' carries the LabLink agent/host connectivity on this remote target. Binding an external vSwitch to it can sever the connection. Re-run with allow_management_nic_disruption=true (prefer an async/detached job + reconnect) to proceed."
     }
@@ -153,6 +164,17 @@ if ($existing) {
         $action = 'reused'
     }
     if ($ifExists -eq 'replace') {
+        # Management-NIC severance safeguard (REPLACE/REMOVE path): replacing an
+        # existing EXTERNAL vSwitch removes its NIC binding (remove-then-recreate).
+        # If that existing switch is bound to the management NIC of a REMOTE
+        # target, the removal alone can sever the agent/host connection — even
+        # when the REQUESTED switch is internal/private or bound to a different
+        # NIC (so the CREATE guard above would not fire). Mirror the CREATE guard
+        # here and block unless explicitly overridden.
+        $existType = "$($existing.SwitchType)"
+        if ($isRemote -and -not $allowMgmtDisruption -and $existType.ToLower() -eq 'external' -and $mgmtNicDesc -and $existing.NetAdapterInterfaceDescription -eq $mgmtNicDesc) {
+            throw "MGMT_NIC_BLOCKED: existing external vSwitch '$name' is bound to the management NIC ('$mgmtNicDesc') that carries the LabLink agent/host connectivity on this remote target. Replacing/removing it can sever the connection. Re-run with allow_management_nic_disruption=true (prefer an async/detached job + reconnect) to proceed."
+        }
         Remove-VMSwitch -Name $name -Force
         $existing = $null
         $action = 'replaced'
