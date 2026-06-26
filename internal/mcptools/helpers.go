@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -122,20 +123,38 @@ func pushFileToNode(ctx context.Context, client pb.NodeAgentClient, localPath, r
 	return resp.BytesWritten, nil
 }
 
-// executeLocalPowershell runs a PowerShell script locally and returns the output.
-func executeLocalPowershell(ctx context.Context, script string, timeoutSec int) (string, int, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
-	defer cancel()
+// localPowershellExe returns the PowerShell executable to use for the
+// localhost target. On Windows we use Windows PowerShell (powershell.exe) for
+// parity with the remote agent and the Hyper-V cmdlet behavior (OQ-3); on
+// other OSes we fall back to pwsh.
+func localPowershellExe() string {
+	if runtime.GOOS == "windows" {
+		return "powershell.exe"
+	}
+	return "pwsh"
+}
 
-	cmd := exec.CommandContext(ctx, "pwsh", "-NoProfile", "-Command", script)
+// executeLocalPowershell runs a PowerShell script locally and returns the
+// output. timeoutSec <= 0 means "no timeout" (parity with the remote agent's
+// TimeoutSeconds=0 semantics). A launch failure returns a non-nil error; a
+// nonzero process exit is reported via the returned exit code (callers/runPS
+// treat a nonzero exit as a tool failure).
+func executeLocalPowershell(ctx context.Context, script string, timeoutSec int) (string, int, int, error) {
+	if timeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(ctx, localPowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script)
 	output, err := cmd.CombinedOutput()
-	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
+			// Process ran and exited nonzero; surface the exit code, not a Go error.
+			return string(output), exitErr.ExitCode(), 0, nil
 		}
+		// Launch/context failure (binary missing, timeout, etc.).
+		return string(output), -1, 0, err
 	}
-	return string(output), exitCode, 0, nil
+	return string(output), 0, 0, nil
 }
