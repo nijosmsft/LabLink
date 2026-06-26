@@ -3,6 +3,7 @@ package mcptools
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -364,17 +365,22 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 
 		stamp := time.Now().UnixNano()
 		remoteUnattend := fmt.Sprintf(`C:\Windows\Temp\lablink-unattend-%d.xml`, stamp)
+		// Register the scrub BEFORE initiating the push, keyed on the known
+		// staged path. The lablink agent COMMITS the uploaded bytes to disk
+		// (os.Rename to remoteUnattend) BEFORE SendAndClose, so a post-commit
+		// push/transport error can return a non-nil error with the cleartext
+		// answer file already on the target. Deferring here — rather than after a
+		// successful push — guarantees the scrub fires on EVERY outcome (success
+		// OR any push/transport error), closing that window. Remove-Item
+		// -ErrorAction SilentlyContinue makes the scrub a no-op if the bytes
+		// never landed. The injection script's finally also removes it; this
+		// Go-side defer additionally covers push/runPS/transport failures and
+		// build errors that abort before (or instead of) running that script.
+		defer scrubRemoteStaged(reg, pool, t, remoteUnattend)
 		if err := pushToTarget(ctx, reg, pool, t, localUnattend, remoteUnattend); err != nil {
 			opErr = err
 			return mcp.NewToolResultError(fmt.Sprintf("stage unattend on target: %v", err)), nil
 		}
-		// The staged remote copy holds the cleartext password until Windows
-		// consumes it. Scrub it on ALL paths (success or ANY failure/early-return
-		// below) so a failure can never leave the password on the target host.
-		// The injection script's finally also removes it; this Go-side defer
-		// additionally covers runPS/transport failures and build errors that
-		// abort before (or instead of) running that script.
-		defer scrubRemoteStaged(reg, pool, t, remoteUnattend)
 
 		remoteFirstBoot := ""
 		firstBoot := req.GetString("first_boot_script", "")
@@ -386,11 +392,14 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 			}
 			defer cleanupFB()
 			remoteFirstBoot = fmt.Sprintf(`C:\Windows\Temp\lablink-firstboot-%d.ps1`, stamp)
+			// Same post-commit window as the unattend push above: defer the
+			// scrub before the push so a post-commit push/transport error still
+			// removes the staged file from the target.
+			defer scrubRemoteStaged(reg, pool, t, remoteFirstBoot)
 			if err := pushToTarget(ctx, reg, pool, t, localFB, remoteFirstBoot); err != nil {
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("stage first-boot script on target: %v", err)), nil
 			}
-			defer scrubRemoteStaged(reg, pool, t, remoteFirstBoot)
 		}
 
 		script, berr := unattend.BuildMountInjectScript(unattend.MountInjectParams{
@@ -464,11 +473,19 @@ func stageSecretFile(content, pattern string) (string, func(), error) {
 }
 
 // scrubRemoteStaged removes a staged cleartext file from the TARGET host on ALL
-// paths (success or failure). It is best-effort: errors are ignored because the
-// file may already be gone (the injection script's finally also removes it) and
-// a scrub failure must never mask the original operation error. It runs on a
-// detached, time-bounded context so the scrub still fires even when the
+// paths (success or failure), including a post-commit push/transport error where
+// the agent already committed (os.Rename) the bytes to disk before SendAndClose
+// failed. Callers MUST defer this BEFORE initiating the push so the scrub fires
+// regardless of the push outcome. It is idempotent: the injection script's
+// finally also removes the file and the path may already be gone, so the
+// Remove-Item uses -ErrorAction SilentlyContinue and a no-op is fine. It runs on
+// a detached, time-bounded context so the scrub still fires even when the
 // operation failed because the parent context was cancelled.
+//
+// A scrub FAILURE (e.g. the node is unreachable) may mean the cleartext file is
+// still on the target, so it is surfaced via a warn log keyed on the path — it
+// is NEVER swallowed silently. The password is never part of this script, its
+// output, or the logged error.
 func scrubRemoteStaged(reg *registry.Registry, pool *agentclient.Pool, t Target, remotePath string) {
 	if strings.TrimSpace(remotePath) == "" {
 		return
@@ -476,7 +493,12 @@ func scrubRemoteStaged(reg *registry.Registry, pool *agentclient.Pool, t Target,
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	script := hyperv.WrapTagged(fmt.Sprintf("Remove-Item -LiteralPath %s -Force -ErrorAction SilentlyContinue\n", hyperv.PSLit(remotePath)))
-	_, _, _ = runPS(ctx, reg, pool, t, script, 60)
+	if _, _, err := runPS(ctx, reg, pool, t, script, 60); err != nil {
+		// The staged cleartext file may still be on the target — make the
+		// failure visible. The path is safe to log; the password is not part of
+		// the scrub script or its error.
+		log.Printf("WARN lablink: failed to scrub staged cleartext file %q on %s: %v", remotePath, t.Name, err)
+	}
 }
 
 // jsonExtract returns the JSON payload from a script's combined output. If no

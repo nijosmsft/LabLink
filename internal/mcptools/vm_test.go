@@ -1,8 +1,11 @@
 package mcptools
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -198,6 +201,13 @@ type provisionMockAgent struct {
 	pushed      map[string]string // remote path -> received content
 	execExit    int32             // exit code returned for ExecuteScript
 	execPayload string            // optional stdout payload for ExecuteScript
+	// pushErrAfterCommit, when true, makes PushFile RECORD (commit) the uploaded
+	// bytes and THEN return a transport error instead of SendAndClose. This
+	// mirrors the real agent's lifecycle: handlePushFileStream does os.Rename
+	// (commit to disk) BEFORE SendAndClose, so a post-commit transport failure
+	// leaves the cleartext file on disk while the client's push call still
+	// returns an error.
+	pushErrAfterCommit bool
 }
 
 func (a *provisionMockAgent) ExecuteScript(req *pb.ExecuteScriptRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
@@ -235,7 +245,15 @@ func (a *provisionMockAgent) PushFile(stream grpc.ClientStreamingServer[pb.PushF
 		a.pushed = map[string]string{}
 	}
 	a.pushed[remote] = string(buf)
+	postCommitErr := a.pushErrAfterCommit
 	a.mu.Unlock()
+	if postCommitErr {
+		// Bytes are already committed (recorded above); simulate the agent's
+		// post-os.Rename / pre-or-during-SendAndClose transport failure by
+		// returning an error WITHOUT SendAndClose. The client's push call sees
+		// an error even though the cleartext file landed on disk.
+		return fmt.Errorf("simulated post-commit transport failure")
+	}
 	return stream.SendAndClose(&pb.PushFileResponse{BytesWritten: int64(len(buf)), RemotePath: remote})
 }
 
@@ -345,6 +363,106 @@ func TestProvisionUnattend_ScrubsCleartextOnFailurePath(t *testing.T) {
 	}
 
 	// The plaintext password must NEVER travel through an executed script.
+	for _, s := range scripts {
+		if strings.Contains(s, secret) {
+			t.Fatalf("plaintext password leaked into an executed script")
+		}
+	}
+}
+
+// TestProvisionUnattend_ScrubsCleartextOnPostCommitPushFailure covers the
+// Heimdall re-review window: the lablink agent COMMITS the uploaded bytes to
+// disk (os.Rename to remotePath) BEFORE SendAndClose, so a push/transport error
+// that occurs AFTER the commit returns a non-nil error to the handler with the
+// cleartext answer file ALREADY on the target. The scrub must still fire on this
+// outcome (it is deferred before the push), and because we also make the scrub's
+// own runPS fail here, the cleanup failure must be SURFACED via a warn log keyed
+// on the path — never swallowed, and never carrying the password.
+func TestProvisionUnattend_ScrubsCleartextOnPostCommitPushFailure(t *testing.T) {
+	const secret = "Sup3r-S3cret-PLAINTEXT!"
+
+	agent := &provisionMockAgent{
+		pushErrAfterCommit: true, // bytes committed, then push returns error
+		execExit:           1,    // force the scrub's runPS to fail so the cleanup error surfaces
+		execPayload:        "LABLINK_ERROR: scrub could not reach the target",
+	}
+	addr := startNodeAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+
+	store := credentials.LoadStore(t.TempDir() + "\\creds.json")
+	if err := store.Set(&credentials.Profile{Name: "vmadmin", Username: "Administrator", Password: secret}); err != nil {
+		t.Fatalf("seed credential: %v", err)
+	}
+	auditLog := audit.NewLog(t.TempDir())
+
+	// Capture the warn log that surfaces the cleanup failure.
+	var logBuf bytes.Buffer
+	prevOut := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logBuf)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
+
+	h := provisionUnattendHandler(reg, pool, store, auditLog)
+	res, err := h(context.Background(), reqNoToken(map[string]any{
+		"target":                    "node1",
+		"vm_name":                   "win01",
+		"admin_password_credential": "vmadmin",
+		"vhd_path":                  `D:\VMs\win01.vhdx`,
+		"injection_method":          "mount-vhd",
+	}))
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	// The provision must have FAILED (the push errored post-commit).
+	if res == nil || !res.IsError {
+		t.Fatalf("expected the provision to fail on the post-commit push error, got res=%#v", res)
+	}
+
+	// Despite the push error, the bytes were committed to the target (the agent
+	// renames into place before SendAndClose) and contained the cleartext.
+	pushed := agent.pushedFiles()
+	var stagedRemotePath, stagedContent string
+	for path, content := range pushed {
+		if strings.Contains(path, "lablink-unattend-") {
+			stagedRemotePath, stagedContent = path, content
+		}
+	}
+	if stagedRemotePath == "" {
+		t.Fatalf("expected the unattend answer file to be committed on the target even on the failed push; pushed=%v", pushed)
+	}
+	if !strings.Contains(stagedContent, secret) {
+		t.Fatalf("committed answer file should contain the cleartext password (the thing we must scrub)")
+	}
+
+	// The core of the re-review finding: the scrub (Remove-Item) for THAT exact
+	// staged path must still have been issued even though the push RETURNED AN
+	// ERROR after the bytes landed. Without deferring the scrub before the push,
+	// the handler returns early and never scrubs.
+	scripts := agent.recordedScripts()
+	scrubbed := false
+	for _, s := range scripts {
+		if strings.Contains(s, "Remove-Item") && strings.Contains(s, stagedRemotePath) {
+			scrubbed = true
+		}
+	}
+	if !scrubbed {
+		t.Errorf("post-commit push failure did NOT scrub the staged cleartext file %q; scripts=%v", stagedRemotePath, scripts)
+	}
+
+	// The cleanup failure must be SURFACED (warn log) keyed on the path...
+	logged := logBuf.String()
+	if !strings.Contains(logged, "failed to scrub staged cleartext file") || !strings.Contains(logged, fmt.Sprintf("%q", stagedRemotePath)) {
+		t.Errorf("cleanup failure was not surfaced with the path; log=%q", logged)
+	}
+	// ...but the password must NEVER appear in the log.
+	if strings.Contains(logged, secret) {
+		t.Fatalf("plaintext password leaked into the cleanup warn log")
+	}
+
+	// The plaintext password must NEVER travel through an executed script either.
 	for _, s := range scripts {
 		if strings.Contains(s, secret) {
 			t.Fatalf("plaintext password leaked into an executed script")
