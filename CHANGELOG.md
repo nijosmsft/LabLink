@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-26
+
+### Added
+- **VM-management primitives - Phase 1 (Windows/Hyper-V)** - five new MCP tools for Hyper-V VM lifecycle management on any lablink-managed node. Closes nijosmsft/mcp-servers#28.
+  - `list_physical_nics` - enumerate physical NICs on the target; flags the management NIC and marks only Up, unbound, non-management NICs as `recommended_for_external`.
+  - `list_vswitches` - read-only discovery of existing Hyper-V virtual switches (name, type, bound adapter, AllowManagementOS, connected VMs).
+  - `create_vswitch` - create an external or internal Hyper-V virtual switch; blocks binding an external switch to the management NIC on a remote target unless `allow_management_nic_disruption=true`; `if_exists=reuse` validates type/adapter before reuse; `if_exists=replace` guarded by the same management-NIC safety check.
+  - `create_vm` - create a Generation 2 Windows VM with SecureBoot (MicrosoftWindows template), deterministic DVD ordering by ISO path, dynamic-memory min/max/startup/buffer, free-space pre-flight, VM-exists and VHD-in-use conflict guards.
+  - `provision_unattend` - generate and inject an `unattend.xml` for first-boot provisioning (hostname, admin credentials, locale, time zone, product key); Method A uses a differencing VHD (never mutates a shared base), scrubs staged cleartext password on every exit path (success, failure, post-commit push error).
+- `internal/hyperv` + `internal/hyperv/unattend` pure Go/PowerShell builders; argument-safe single-quoted literals; unit-tested.
+- `internal/mcptools/target.go` - Target abstraction with resolveTarget/runPS/pushToTarget for transparent local-vs-remote dispatch.
+
+### Notes
+- Method B (clean-install ISO with full windowsPE pass) is a documented stub; deferred to Phase 2.
+- Async/reconnect executor for disruptive remote NIC operations and durable cleartext-scrub retry for unreachable targets are deferred to Phase 2.
+
+
 ## [0.5.1] - 2026-06-16
 
 ### Fixed
