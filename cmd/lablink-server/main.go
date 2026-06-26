@@ -223,6 +223,7 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterPortal(s)
 	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
+	mcptools.RegisterVM(s, reg, pool, creds, auditLog, leaseCfg)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {
