@@ -19,7 +19,9 @@ import (
 	"github.com/nijosmsft/lablink/internal/ops"
 	"github.com/nijosmsft/lablink/internal/portal"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/security"
+	"github.com/nijosmsft/lablink/internal/vmconfig"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -141,6 +143,20 @@ func main() {
 	// Credential store.
 	credsFile := filepath.Join(configDir, "credentials.json")
 	creds := credentials.LoadStore(credsFile)
+	secrets := secretstore.Open(filepath.Join(configDir, "secrets.json"))
+	vmDefaultsFile := security.FirstPresentEnv("LABLINK_VM_DEFAULTS_FILE")
+	if vmDefaultsFile == "" {
+		vmDefaultsFile = filepath.Join(configDir, "vm-defaults.json")
+	}
+	vmDefaults := vmconfig.Load(vmDefaultsFile)
+	serverExecutable, _ := os.Executable()
+	installRoot := filepath.Dir(filepath.Dir(serverExecutable))
+	vmEnrollment := mcptools.VMEnrollmentConfig{
+		ConfigDir:   configDir,
+		PKIDir:      filepath.Join(configDir, "pki"),
+		AgentBinary: filepath.Join(installRoot, "bin", "lablink-agent.exe"),
+		AuthToken:   token,
+	}
 
 	// Health monitor — background keepalive for all nodes.
 	monitor := healthmon.New(reg, pool)
@@ -170,6 +186,7 @@ func main() {
 		"lablink",
 		serverVersion,
 		server.WithToolCapabilities(true),
+		server.WithElicitation(),
 		server.WithInstructions(`Remote device management for test automation.
 
 Use save_credential to store WinRM credentials, then deploy_agent to install agents on new machines.
@@ -204,7 +221,7 @@ ANTI-PATTERNS — DO NOT do these things:
 
 	// Register all tools.
 	mcptools.RegisterInventory(s, reg, pool)
-	mcptools.RegisterExecute(s, reg, pool, auditLog, leaseCfg)
+	mcptools.RegisterExecute(s, reg, pool, secrets, auditLog, leaseCfg)
 	mcptools.RegisterTransfer(s, reg, pool, leaseCfg)
 	mcptools.RegisterProcess(s, reg, pool, leaseCfg)
 	mcptools.RegisterTopology(s, reg)
@@ -223,7 +240,8 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterPortal(s)
 	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
-	mcptools.RegisterVM(s, reg, pool, creds, auditLog, leaseCfg)
+	mcptools.RegisterSecrets(s, secrets)
+	mcptools.RegisterVM(s, reg, pool, creds, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,8 +17,10 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	internalsec "github.com/nijosmsft/lablink/internal/security"
+	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 
+	"github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc"
 )
 
@@ -28,6 +32,18 @@ type vmRoutingMockAgent struct {
 	payload  string
 	gotShell string
 	exitCode int32
+}
+
+type dhcpReleaseMockAgent struct {
+	pb.UnimplementedNodeAgentServer
+	command string
+}
+
+func (a *dhcpReleaseMockAgent) Execute(req *pb.ExecuteRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
+	a.command = req.Command
+	// A real DHCP release can disconnect the stream before completion. Returning
+	// an error verifies the delete path treats that outcome as best effort.
+	return fmt.Errorf("simulated disconnect after DHCP release")
 }
 
 func (a *vmRoutingMockAgent) ExecuteScript(req *pb.ExecuteScriptRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
@@ -133,6 +149,19 @@ func TestRunPS_RemoteNonzeroExitIsFailure(t *testing.T) {
 	}
 }
 
+func TestReleaseGuestDHCPBestEffort(t *testing.T) {
+	agent := &dhcpReleaseMockAgent{}
+	addr := startNodeAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"guest": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+
+	releaseGuestDHCP(context.Background(), "guest", reg, pool)
+	if agent.command != "ipconfig /release" {
+		t.Fatalf("release command = %q", agent.command)
+	}
+}
+
 func TestListVSwitchesHandler_RemoteShapesJSON(t *testing.T) {
 	agent := &vmRoutingMockAgent{payload: `[{"name":"ExternalSwitch","type":"External","net_adapter":"Intel","allow_management_os":true}]`}
 	addr := startVMMockAgent(t, agent)
@@ -185,6 +214,76 @@ func TestVMResultHasFencedJSON(t *testing.T) {
 	text := toolResultText(res)
 	if !strings.Contains(text, "**header**") || !strings.Contains(text, "```json") || !strings.Contains(text, `{"ok":true}`) {
 		t.Errorf("vmResult missing parts:\n%s", text)
+	}
+}
+
+func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile": "lab",
+  "profiles": {
+    "lab": {
+      "target": "node1",
+      "base_vhd": "E:\\base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "labadmin",
+      "memory_mb": 8192,
+      "cpu_count": 4
+    }
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	reg := newRebootTestRegistry(t, map[string]string{"node1": "127.0.0.1:1"})
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(s, reg, nil, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+
+	res, err := h(context.Background(), reqNoToken(map[string]any{
+		"name": "vm-one", "memory_mb": float64(12288), "dry_run": true,
+	}))
+	if err != nil || res == nil || res.IsError {
+		t.Fatalf("dry run failed: %#v, %v", res, err)
+	}
+	text := toolResultText(res)
+	for _, want := range []string{
+		`"target": "node1"`,
+		`"name": "vm-one"`,
+		`"vhd_path": "E:\\VM\\vm-one\\vm-one.vhdx"`,
+		`"vm_location": "E:\\VM\\vm-one"`,
+		`"memory_mb": 12288`,
+		`"cpu_count": 4`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dry-run plan missing %s:\n%s", want, text)
+		}
+	}
+
+	if strings.Contains(text, "secret") {
+		t.Fatal("credential value leaked into VM plan")
+	}
+}
+
+func TestGuestEnrollmentScriptUsesSecretFilesNotArguments(t *testing.T) {
+	script := guestEnrollmentScript(windowsVMPlan{LabLinkPort: 9091})
+	for _, want := range []string{
+		"--auth-token-file",
+		"agent.token",
+		"--tls-key",
+		"server.key",
+		"Start-Service -Name 'LabLink Agent'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("enrollment script missing %q", want)
+		}
+	}
+	if strings.Contains(script, "temporary-secret") {
+		t.Fatal("enrollment script unexpectedly embeds a secret value")
 	}
 }
 

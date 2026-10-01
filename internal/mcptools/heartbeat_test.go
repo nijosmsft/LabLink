@@ -219,7 +219,7 @@ func TestExecuteCommandHandler_NoToken_NoNotification(t *testing.T) {
 	defer pool.Close()
 	log := audit.NewLog(t.TempDir())
 
-	h := executeCommandHandler(reg, pool, log)
+	h := executeCommandHandler(reg, pool, nil, log)
 
 	req := reqNoToken(map[string]any{"node": "node1", "command": "echo hello"})
 	res, err := h(context.Background(), req)
@@ -246,7 +246,7 @@ func TestExecuteCommandHandler_WithToken_Fires(t *testing.T) {
 	defer pool.Close()
 	log := audit.NewLog(t.TempDir())
 
-	h := executeCommandHandler(reg, pool, log)
+	h := executeCommandHandler(reg, pool, nil, log)
 
 	req := reqWithToken(map[string]any{"node": "node1", "command": "echo hello"})
 	res, err := h(context.Background(), req)

@@ -22,6 +22,23 @@ func TestRender_BasicTemplating(t *testing.T) {
 	if !strings.Contains(xml, "<TimeZone>Pacific Standard Time</TimeZone>") {
 		t.Errorf("timezone not rendered")
 	}
+	oobe := xml[strings.Index(xml, `<settings pass="oobeSystem">`):]
+	for _, want := range []string{
+		"<InputLocale>en-US</InputLocale>",
+		"<SkipMachineOOBE>true</SkipMachineOOBE>",
+		"<SkipUserOOBE>true</SkipUserOOBE>",
+	} {
+		if !strings.Contains(oobe, want) {
+			t.Errorf("oobeSystem missing %q", want)
+		}
+	}
+	if got := strings.Count(xml, `settings pass="specialize"`); got != 1 {
+		t.Fatalf("specialize pass count = %d, want 1", got)
+	}
+	specialize := xml[strings.Index(xml, `<settings pass="specialize">`):strings.Index(xml, `<settings pass="oobeSystem">`)]
+	if got := strings.Count(specialize, `name="Microsoft-Windows-Shell-Setup"`); got != 1 {
+		t.Fatalf("Shell-Setup component appears %d times in specialize; Windows rejects duplicates", got)
+	}
 	// XML-special chars in the password must be escaped.
 	if strings.Contains(xml, "P@ss<&>") {
 		t.Errorf("password XML special chars not escaped: %s", xml)
@@ -62,6 +79,20 @@ func TestRender_PlainTextDefaultAndObfuscation(t *testing.T) {
 	if strings.Contains(obf, "<Value>secret</Value>") {
 		t.Errorf("obfuscated value must not be cleartext")
 	}
+	adminEncoded := obfuscatePassword("secret", "AdministratorPassword")
+	autoLogonEncoded := obfuscatePassword("secret", "Password")
+	if !strings.Contains(obf, adminEncoded) || strings.Contains(obf, autoLogonEncoded) {
+		// AutoLogon is disabled in this render, so only the administrator value
+		// should be present.
+		t.Errorf("unexpected obfuscated password values")
+	}
+	withAutoLogon, _ := Render(Params{Hostname: "h", AdminPassword: "secret", Obfuscate: true, AutoLogon: true})
+	if !strings.Contains(withAutoLogon, adminEncoded) || !strings.Contains(withAutoLogon, autoLogonEncoded) {
+		t.Errorf("AutoLogon must use the Windows 'Password' suffix while AdministratorPassword uses its own suffix")
+	}
+	if !strings.Contains(withAutoLogon, "<Domain>.</Domain>") {
+		t.Errorf("AutoLogon for the local Administrator must specify the local-account domain")
+	}
 }
 
 func TestRender_FirstBootScriptToggle(t *testing.T) {
@@ -88,10 +119,12 @@ func TestBuildMountInjectScript_MethodA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildMountInjectScript: %v", err)
 	}
+
 	for _, want := range []string{
 		"New-VHD -Path $vhdPath -ParentPath $baseVhd -Differencing", // never inject into base
 		`Windows\System32\Config\SYSTEM`,                            // content-based volume detection
 		"$mountedByUs",                                              // only dismount what we mounted
+		"Mount-VHD -Path $vhdPath -PassThru",                        // valid Hyper-V parameter spelling
 		"Add-PartitionAccessPath -AssignDriveLetter",                // temp letter assignment
 		"Remove-Item $unattendSrc -Force",                           // scrub staged cleartext copy
 		"finally {",
@@ -99,10 +132,33 @@ func TestBuildMountInjectScript_MethodA(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("Method A script missing %q", want)
 		}
+		if strings.Contains(s, "-Passthrough") {
+			t.Error("Method A script contains invalid Mount-VHD -Passthrough parameter")
+		}
 	}
 
 	if _, err := BuildMountInjectScript(MountInjectParams{UnattendRemote: "x"}); err == nil {
 		t.Errorf("expected error when vhd_path empty")
+	}
+}
+
+func TestBuildMountInjectScript_EnrollmentPayload(t *testing.T) {
+	s, err := BuildMountInjectScript(MountInjectParams{
+		VHDPath:        `D:\VMs\win01.vhdx`,
+		UnattendRemote: `C:\Windows\Temp\u.xml`,
+		PayloadRemote:  `C:\Windows\Temp\lablink-enroll`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`Windows\Setup\Scripts\LabLinkPayload`,
+		`Copy-Item (Join-Path $payloadSrc '*') $payloadDst -Recurse -Force`,
+		`Remove-Item $payloadSrc -Recurse -Force`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("enrollment script missing %q", want)
+		}
 	}
 }
 

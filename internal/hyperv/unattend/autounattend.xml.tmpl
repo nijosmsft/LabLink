@@ -6,6 +6,9 @@
       {{- if .ProductKey}}
       <ProductKey>{{.ProductKey}}</ProductKey>
       {{- end}}
+      {{- if .TimeZone}}
+      <TimeZone>{{.TimeZone}}</TimeZone>
+      {{- end}}
     </component>
     <component name="Microsoft-Windows-International-Core" processorArchitecture="{{.Architecture}}" language="neutral" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS">
       <InputLocale>{{.Locale}}</InputLocale>
@@ -13,21 +16,25 @@
       <UILanguage>{{.Locale}}</UILanguage>
       <UserLocale>{{.Locale}}</UserLocale>
     </component>
-    {{- if .TimeZone}}
-    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="{{.Architecture}}" language="neutral" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS" wcm:action="modify">
-      <TimeZone>{{.TimeZone}}</TimeZone>
-    </component>
-    {{- end}}
   </settings>
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="{{.Architecture}}" language="neutral" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS">
+      <InputLocale>{{.Locale}}</InputLocale>
+      <SystemLocale>{{.Locale}}</SystemLocale>
+      <UILanguage>{{.Locale}}</UILanguage>
+      <UserLocale>{{.Locale}}</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="{{.Architecture}}" language="neutral" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" publicKeyToken="31bf3856ad364e35" versionScope="nonSxS">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
         <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
       <UserAccounts>
         <AdministratorPassword>
@@ -39,9 +46,10 @@
       <AutoLogon>
         <Enabled>true</Enabled>
         <LogonCount>1</LogonCount>
+        <Domain>.</Domain>
         <Username>Administrator</Username>
         <Password>
-          <Value>{{.AdminPasswordValue}}</Value>
+          <Value>{{.AutoLogonPasswordValue}}</Value>
           <PlainText>{{.AdminPasswordPlainText}}</PlainText>
         </Password>
       </AutoLogon>
