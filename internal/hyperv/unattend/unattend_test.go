@@ -92,12 +92,16 @@ func TestBuildMountInjectScript_MethodA(t *testing.T) {
 		"New-VHD -Path $vhdPath -ParentPath $baseVhd -Differencing", // never inject into base
 		`Windows\System32\Config\SYSTEM`,                            // content-based volume detection
 		"$mountedByUs",                                              // only dismount what we mounted
+		"Mount-VHD -Path $vhdPath -PassThru",                        // valid Hyper-V parameter spelling
 		"Add-PartitionAccessPath -AssignDriveLetter",                // temp letter assignment
 		"Remove-Item $unattendSrc -Force",                           // scrub staged cleartext copy
 		"finally {",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Method A script missing %q", want)
+		}
+		if strings.Contains(s, "-Passthrough") {
+			t.Error("Method A script contains invalid Mount-VHD -Passthrough parameter")
 		}
 	}
 

@@ -81,7 +81,7 @@ try {
     # Only mount if not already mounted (so we only dismount what we mounted).
     $disk = Get-VHD -Path $vhdPath | ForEach-Object { if ($_.DiskNumber -ne $null -and $_.DiskNumber -ge 0) { Get-Disk -Number $_.DiskNumber -ErrorAction SilentlyContinue } }
     if (-not $disk) {
-        $disk = Mount-VHD -Path $vhdPath -Passthrough | Get-Disk
+        $disk = Mount-VHD -Path $vhdPath -PassThru | Get-Disk
         $mountedByUs = $true
     }
 

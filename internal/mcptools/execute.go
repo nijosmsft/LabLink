@@ -15,6 +15,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
@@ -34,7 +35,7 @@ func outputLimit() int {
 	return defaultOutputLimit
 }
 
-func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, secrets *secretstore.Store, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
 	s.AddTool(
 		mcp.NewTool("execute_command",
 			mcp.WithDescription("Execute a shell command on a remote node."),
@@ -44,8 +45,11 @@ func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithString("working_dir", mcp.Description("Working directory")),
 			mcp.WithNumber("timeout", mcp.Description("Timeout seconds; 0 = none")),
 			mcp.WithBoolean("detach", mcp.Description("Start detached (survives agent restart)")),
+			mcp.WithObject("secret_env",
+				mcp.Description("Environment variable to saved-secret-name mapping. Values are resolved server-side, redacted from output, and are not supported with detach=true."),
+				mcp.AdditionalProperties(map[string]any{"type": "string"})),
 		),
-		LeaseGate(leaseCfg, extractSingleNode("node"), executeCommandHandler(reg, pool, auditLog)),
+		LeaseGate(leaseCfg, extractSingleNode("node"), executeCommandHandler(reg, pool, secrets, auditLog)),
 	)
 
 	s.AddTool(
@@ -56,12 +60,15 @@ func RegisterExecute(s *server.MCPServer, reg *registry.Registry, pool *agentcli
 			mcp.WithString("shell", mcp.Description("Shell: powershell/bash; auto-detect")),
 			mcp.WithString("working_dir", mcp.Description("Working directory")),
 			mcp.WithNumber("timeout", mcp.Description("Timeout seconds; 0 = none")),
+			mcp.WithObject("secret_env",
+				mcp.Description("Environment variable to saved-secret-name mapping. Values are resolved server-side and redacted from output."),
+				mcp.AdditionalProperties(map[string]any{"type": "string"})),
 		),
-		LeaseGate(leaseCfg, extractSingleNode("node"), executeScriptHandler(reg, pool, auditLog)),
+		LeaseGate(leaseCfg, extractSingleNode("node"), executeScriptHandler(reg, pool, secrets, auditLog)),
 	)
 }
 
-func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) server.ToolHandlerFunc {
+func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, secrets *secretstore.Store, auditLog *audit.Log) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		nodeName := request.GetString("node", "")
 		command := request.GetString("command", "")
@@ -75,6 +82,13 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		workingDir := request.GetString("working_dir", "")
 		timeout := request.GetFloat("timeout", 0)
 		detach := request.GetBool("detach", false)
+		secretEnv, secretValues, err := resolveSecretEnv(request, secrets)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if detach && len(secretEnv) > 0 {
+			return mcp.NewToolResultError("secret_env is not supported with detach=true because detached job metadata/output cannot yet guarantee secret redaction"), nil
+		}
 
 		// Apply node context defaults.
 		if nctx, ok := reg.GetNodeContext(nodeName); ok {
@@ -99,6 +113,7 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		}
 
 		env := nodeContextEnv(reg, nodeName)
+		env = mergeEnv(env, secretEnv)
 
 		// Use health-aware context: cancelled if node dies.
 		callCtx, callCancel := nodeCallContext(ctx, nodeName)
@@ -119,16 +134,17 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 		})
 		if err != nil {
 			opErr = err
-			return mcp.NewToolResultError(fmt.Sprintf("execute: %v", err)), nil
+			return mcp.NewToolResultError(redactSecrets(fmt.Sprintf("execute: %v", err), secretValues)), nil
 		}
 
 		output, exitCode, pid, jobID, err := collectStreamOutput(stream)
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err
-			return mcp.NewToolResultError(fmt.Sprintf("stream: %v", err)), nil
+			return mcp.NewToolResultError(redactSecrets(fmt.Sprintf("stream: %v", err), secretValues)), nil
 		}
 
+		output = redactSecrets(output, secretValues)
 		outputBytes := len(output)
 		truncated, output, spillPath := truncateOutput(output)
 
@@ -149,7 +165,7 @@ func executeCommandHandler(reg *registry.Registry, pool *agentclient.Pool, audit
 	}
 }
 
-func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) server.ToolHandlerFunc {
+func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, secrets *secretstore.Store, auditLog *audit.Log) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		nodeName := request.GetString("node", "")
 		scriptBody := request.GetString("script_body", "")
@@ -162,6 +178,10 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		shell := request.GetString("shell", "")
 		workingDir := request.GetString("working_dir", "")
 		timeout := request.GetFloat("timeout", 0)
+		secretEnv, secretValues, err := resolveSecretEnv(request, secrets)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		if nctx, ok := reg.GetNodeContext(nodeName); ok {
 			if workingDir == "" && nctx.WorkingDir != "" {
@@ -184,6 +204,7 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		}
 
 		env := nodeContextEnv(reg, nodeName)
+		env = mergeEnv(env, secretEnv)
 
 		callCtx, callCancel := nodeCallContext(ctx, nodeName)
 		defer callCancel()
@@ -202,16 +223,17 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		})
 		if err != nil {
 			opErr = err
-			return mcp.NewToolResultError(fmt.Sprintf("execute_script: %v", err)), nil
+			return mcp.NewToolResultError(redactSecrets(fmt.Sprintf("execute_script: %v", err), secretValues)), nil
 		}
 
 		output, exitCode, pid, _, err := collectStreamOutput(stream)
 		duration := time.Since(start)
 		if err != nil {
 			opErr = err
-			return mcp.NewToolResultError(fmt.Sprintf("stream: %v", err)), nil
+			return mcp.NewToolResultError(redactSecrets(fmt.Sprintf("stream: %v", err), secretValues)), nil
 		}
 
+		output = redactSecrets(output, secretValues)
 		outputBytes := len(output)
 		truncated, output, spillPath := truncateOutput(output)
 
@@ -230,6 +252,58 @@ func executeScriptHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		result := formatExecResult(nodeName, "(inline script)", pid, exitCode, "", output, truncated, spillPath, duration)
 		return mcp.NewToolResultText(result), nil
 	}
+}
+
+func resolveSecretEnv(request mcp.CallToolRequest, store *secretstore.Store) (map[string]string, []string, error) {
+	raw, ok := request.GetArguments()["secret_env"]
+	if !ok || raw == nil {
+		return nil, nil, nil
+	}
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("secret_env must be an object mapping environment variables to secret names")
+	}
+	if store == nil {
+		return nil, nil, fmt.Errorf("secret store is not configured")
+	}
+	env := make(map[string]string, len(object))
+	values := make([]string, 0, len(object))
+	for variable, rawName := range object {
+		name, ok := rawName.(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return nil, nil, fmt.Errorf("secret_env[%q] must be a non-empty secret name", variable)
+		}
+		value, err := store.Get(name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve secret_env[%q]: %w", variable, err)
+		}
+		env[variable] = value
+		values = append(values, value)
+	}
+	return env, values, nil
+}
+
+func mergeEnv(base, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(overlay))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
+}
+
+func redactSecrets(text string, values []string) string {
+	for _, value := range values {
+		if value != "" {
+			text = strings.ReplaceAll(text, value, passwordMask)
+		}
+	}
+	return text
 }
 
 func nodeContextEnv(reg *registry.Registry, nodeName string) map[string]string {

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,8 +17,10 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	internalsec "github.com/nijosmsft/lablink/internal/security"
+	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 
+	"github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc"
 )
 
@@ -185,6 +189,57 @@ func TestVMResultHasFencedJSON(t *testing.T) {
 	text := toolResultText(res)
 	if !strings.Contains(text, "**header**") || !strings.Contains(text, "```json") || !strings.Contains(text, `{"ok":true}`) {
 		t.Errorf("vmResult missing parts:\n%s", text)
+	}
+}
+
+func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile": "lab",
+  "profiles": {
+    "lab": {
+      "target": "node1",
+      "base_vhd": "E:\\base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "labadmin",
+      "memory_mb": 8192,
+      "cpu_count": 4
+    }
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	reg := newRebootTestRegistry(t, map[string]string{"node1": "127.0.0.1:1"})
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(s, reg, nil, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), LeaseGateConfig{})
+
+	res, err := h(context.Background(), reqNoToken(map[string]any{
+		"name": "vm-one", "memory_mb": float64(12288), "dry_run": true,
+	}))
+	if err != nil || res == nil || res.IsError {
+		t.Fatalf("dry run failed: %#v, %v", res, err)
+	}
+	text := toolResultText(res)
+	for _, want := range []string{
+		`"target": "node1"`,
+		`"name": "vm-one"`,
+		`"vhd_path": "E:\\VM\\vm-one\\vm-one.vhdx"`,
+		`"vm_location": "E:\\VM\\vm-one"`,
+		`"memory_mb": 12288`,
+		`"cpu_count": 4`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dry-run plan missing %s:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "secret") {
+		t.Fatal("credential value leaked into VM plan")
 	}
 }
 

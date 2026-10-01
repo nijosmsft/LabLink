@@ -16,6 +16,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/hyperv/unattend"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
 
 // vmDefaultTimeoutSec bounds the Hyper-V PowerShell calls. Discovery is quick;
@@ -32,7 +33,7 @@ const passwordMask = "***"
 // tools are ungated; mutating tools are lease-gated on the resolved target
 // (local target => no lease; remote node => lease required). The orchestrator
 // create_windows_vm is deliberately DEFERRED (primitives-first, OQ-5).
-func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
 	// list_physical_nics — discovery, read-only, ungated.
 	s.AddTool(
 		mcp.NewTool("list_physical_nics",
@@ -112,6 +113,36 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithString("base_vhd", mcp.Description("Shared sysprepped base VHDX; a differencing child is created at vhd_path and the base is never mutated")),
 		),
 		LeaseGate(leaseCfg, extractTarget("target"), provisionUnattendHandler(reg, pool, creds, auditLog)),
+	)
+
+	s.AddTool(
+		mcp.NewTool("create_windows_vm",
+			mcp.WithDescription("Create a provisioned Gen2 Windows VM. Explicit arguments override a named/default VM profile; when required values remain missing, request them from the user through MCP elicitation."),
+			mcp.WithString("target", mcp.Description("localhost or a registered node; may come from the VM defaults profile")),
+			mcp.WithString("profile", mcp.Description("VM defaults profile; empty uses default_profile from vm-defaults.json")),
+			mcp.WithString("name", mcp.Description("VM name")),
+			mcp.WithString("hostname", mcp.Description("Guest hostname; defaults to a Windows-safe form of name")),
+			mcp.WithString("base_vhd", mcp.Description("Shared sysprepped Windows base VHDX; never modified")),
+			mcp.WithString("vm_root", mcp.Description("Root folder; VM config and differencing VHD are created under <vm_root>\\<name>")),
+			mcp.WithString("vhd_path", mcp.Description("Explicit differencing-child VHDX path")),
+			mcp.WithString("vm_location", mcp.Description("Explicit VM configuration folder")),
+			mcp.WithString("vswitch", mcp.Description("Existing Hyper-V vSwitch")),
+			mcp.WithString("admin_password_credential", mcp.Description("Saved credential profile name; no password is stored in VM defaults")),
+			mcp.WithNumber("memory_mb", mcp.Description("Startup memory MB")),
+			mcp.WithNumber("cpu_count", mcp.Description("vCPU count")),
+			mcp.WithBoolean("dynamic_memory", mcp.Description("Enable Hyper-V dynamic memory")),
+			mcp.WithNumber("dynamic_min_mb", mcp.Description("Dynamic memory minimum MB")),
+			mcp.WithNumber("dynamic_max_mb", mcp.Description("Dynamic memory maximum MB")),
+			mcp.WithNumber("dynamic_buffer_pct", mcp.Description("Dynamic memory buffer percentage")),
+			mcp.WithBoolean("secure_boot", mcp.Description("Enable MicrosoftWindows secure boot")),
+			mcp.WithString("locale", mcp.Description("Guest locale")),
+			mcp.WithString("timezone", mcp.Description("Guest Windows time zone")),
+			mcp.WithString("first_boot_script", mcp.Description("Inline PowerShell run at first logon")),
+			mcp.WithBoolean("auto_logon", mcp.Description("Enable one-time AutoLogon")),
+			mcp.WithBoolean("obfuscate_password", mcp.Description("Use answer-file base64 obfuscation (not encryption)")),
+			mcp.WithBoolean("dry_run", mcp.Description("Resolve and return configuration without creating anything")),
+		),
+		createWindowsVMHandler(s, reg, pool, creds, vmDefaults, auditLog, leaseCfg),
 	)
 }
 

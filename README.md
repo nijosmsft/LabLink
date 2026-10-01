@@ -216,14 +216,91 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 ### Execution
 | Tool | What it does |
 |------|--------------|
-| `execute_command` | Run a shell command on a node. Set `detach:true` to fire-and-forget — returns a `job_id` you can tail/cancel later. |
-| `execute_script` | Push an inline script and execute it atomically. |
+| `execute_command` | Run a shell command on a node. Set `detach:true` to fire-and-forget — returns a `job_id` you can tail/cancel later. Supports foreground-only `secret_env` references. |
+| `execute_script` | Push an inline script and execute it atomically. Supports `secret_env` references. |
 | `execute_on_role` | Run the same command on every node with a given role, in parallel. |
 | `run_script_on_role` | Run the same inline script on every node with a given role, in parallel. |
 | `schedule_command` | Run a command after a delay (useful for synchronized starts). Returns a `job_id`. |
 | `list_processes` / `kill_process` | Inspect or terminate remote processes. |
 | `list_jobs` / `get_job_status` / `get_job_output` | Inspect background (detached) jobs on a node. |
 | `cancel_job` / `delete_job` | Cancel a running job or delete a terminal job's captured output. |
+
+### Secrets
+
+| Tool | What it does |
+|------|--------------|
+| `save_secret` | Prompt for and encrypt an arbitrary secret locally. The value is never accepted as a normal tool argument or returned. |
+| `list_secrets` | List secret names only. |
+| `delete_secret` | Delete a saved secret. |
+
+Reference saved secrets by environment variable name:
+
+```json
+{
+  "node": "lab-node-3",
+  "script_body": "Expand-ArchiveWithPassword $env:MSRC_ARCHIVE_PASSWORD",
+  "secret_env": {
+    "MSRC_ARCHIVE_PASSWORD": "msrc-archive-password"
+  }
+}
+```
+
+LabLink resolves the value inside the MCP server and sends it through the
+mTLS-protected agent environment map. It never places the value in the command
+line, audit record, operation metadata, or returned output; literal occurrences
+in stdout/stderr are replaced with `***` before returning or spilling output.
+`secret_env` is rejected for detached commands because persistent job output
+cannot yet guarantee equivalent redaction.
+
+On Windows, arbitrary secrets are encrypted at rest with user-scoped DPAPI in
+`~\.lablink\secrets.json`. On non-Windows operator hosts, LabLink uses an
+AES-GCM key stored with restrictive permissions in `~/.lablink/secrets.key`.
+
+### Hyper-V Windows VMs
+
+| Tool | What it does |
+|------|--------------|
+| `list_physical_nics` / `list_vswitches` | Discover Hyper-V networking. |
+| `create_vswitch` | Create or safely reuse an external, internal, or private switch. |
+| `create_vm` | Low-level Gen2 VM primitive. |
+| `provision_unattend` | Create/inject a differencing Windows OS disk using a saved administrator credential profile. |
+| `create_windows_vm` | High-level safe composition of provisioning plus VM creation. |
+
+`create_windows_vm` resolves settings in this order:
+
+1. Explicit tool arguments.
+2. A named profile, or `default_profile`, from
+   `~\.lablink\vm-defaults.json`.
+3. An MCP form prompt for only the unresolved values.
+
+Example autonomous default:
+
+```json
+{
+  "default_profile": "windows-lab",
+  "profiles": {
+    "windows-lab": {
+      "target": "lab-node-3",
+      "base_vhd": "E:\\Images\\server-base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "labadmin",
+      "memory_mb": 8192,
+      "cpu_count": 4,
+      "secure_boot": true,
+      "locale": "en-US",
+      "timezone": "Pacific Standard Time",
+      "obfuscate_password": true
+    }
+  }
+}
+```
+
+The defaults file contains no secret values—only the credential profile name.
+Set `LABLINK_VM_DEFAULTS_FILE` to use a different path. A complete explicit
+request or complete profile runs without prompting; a partial request overrides
+the profile and prompts only for what remains missing. Use `dry_run:true` to
+inspect the resolved plan without modifying the host.
 
 ### Files and packaging
 | Tool | What it does |
