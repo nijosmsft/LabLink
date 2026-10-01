@@ -6,6 +6,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-01
+
+### Added
+
+- `create_windows_vm` high-level orchestration with explicit argument,
+  per-host template, and MCP-elicitation precedence.
+- Persistent VM template management through `save_vm_template`,
+  `list_vm_templates`, and `delete_vm_template`, including target-specific
+  defaults.
+- Optional automatic guest enrollment: unique mTLS identity, offline payload
+  injection, unattended OOBE completion, agent installation, IPv4 discovery,
+  mTLS verification, and node registration.
+- `delete_vm` with dry-run inventory, explicit running-VM/storage controls,
+  managed-root enforcement, differencing-parent protection, best-effort DHCP
+  release, and optional node/identity cleanup.
+- Encrypted arbitrary secrets through `save_secret`, `list_secrets`, and
+  `delete_secret`. Foreground `execute_command` and `execute_script` accept
+  `secret_env` references and redact literal secret values from output.
+
+### Fixed
+
+- Corrected `Mount-VHD` to use the valid `-PassThru` parameter.
+- Generated unattend files now avoid duplicate specialize components, provide
+  locale settings during OOBE, and use the correct Windows AutoLogon password
+  obfuscation suffix.
+- Detached execution rejects `secret_env` until persistent job output can
+  guarantee equivalent redaction.
+
 ## [0.6.0] - 2026-06-26
 
 ### Added
