@@ -33,7 +33,9 @@ const passwordMask = "***"
 // tools are ungated; mutating tools are lease-gated on the resolved target
 // (local target => no lease; remote node => lease required). The orchestrator
 // create_windows_vm is deliberately DEFERRED (primitives-first, OQ-5).
-func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, leaseCfg LeaseGateConfig) {
+func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig, leaseCfg LeaseGateConfig) {
+	registerVMTemplateTools(s, vmDefaults)
+
 	// list_physical_nics — discovery, read-only, ungated.
 	s.AddTool(
 		mcp.NewTool("list_physical_nics",
@@ -93,6 +95,22 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 		LeaseGate(leaseCfg, extractTarget("target"), createVMHandler(reg, pool, auditLog)),
 	)
 
+	s.AddTool(
+		mcp.NewTool("delete_vm",
+			mcp.WithDescription("Dry-run-first Hyper-V VM deletion. Storage removal requires explicit delete_storage=true and is restricted to the VM's own directory under an approved managed root. Differencing parent VHDs are never deleted."),
+			mcp.WithString("target", mcp.Description("localhost or a registered Hyper-V host")),
+			mcp.WithString("name", mcp.Required(), mcp.Description("VM name")),
+			mcp.WithBoolean("dry_run", mcp.Description("Inventory what would be deleted without changing anything (default true)")),
+			mcp.WithBoolean("force_stop", mcp.Description("Turn off a running VM before deletion (default false)")),
+			mcp.WithBoolean("delete_storage", mcp.Description("Delete safe VM-local VHD/config storage (default false)")),
+			mcp.WithString("managed_root", mcp.Description("Approved VM storage root; defaults from the target VM template")),
+			mcp.WithBoolean("unregister_node", mcp.Description("Remove the guest from the LabLink node registry after deletion (default true)")),
+			mcp.WithString("lablink_node_name", mcp.Description("Guest registry name; defaults to Windows-safe VM hostname")),
+			mcp.WithBoolean("delete_identity", mcp.Description("Delete the guest's issued LabLink certificate/key after VM deletion (default false)")),
+		),
+		LeaseGate(leaseCfg, extractTarget("target"), deleteVMHandler(reg, pool, vmDefaults, auditLog, enrollment)),
+	)
+
 	// provision_unattend — mutating, lease-gated.
 	s.AddTool(
 		mcp.NewTool("provision_unattend",
@@ -140,9 +158,13 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithString("first_boot_script", mcp.Description("Inline PowerShell run at first logon")),
 			mcp.WithBoolean("auto_logon", mcp.Description("Enable one-time AutoLogon")),
 			mcp.WithBoolean("obfuscate_password", mcp.Description("Use answer-file base64 obfuscation (not encryption)")),
+			mcp.WithBoolean("register_with_lablink", mcp.Description("Enroll the guest as a LabLink node, start it, discover its IP, and verify mTLS")),
+			mcp.WithString("lablink_node_name", mcp.Description("LabLink registry name; defaults to hostname")),
+			mcp.WithString("lablink_role", mcp.Description("LabLink role for the enrolled guest")),
+			mcp.WithNumber("lablink_port", mcp.Description("Guest LabLink agent port (default 9091)")),
 			mcp.WithBoolean("dry_run", mcp.Description("Resolve and return configuration without creating anything")),
 		),
-		createWindowsVMHandler(s, reg, pool, creds, vmDefaults, auditLog, leaseCfg),
+		createWindowsVMHandler(s, reg, pool, creds, vmDefaults, auditLog, enrollment, leaseCfg),
 	)
 }
 
@@ -438,6 +460,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 			BaseVHD:         baseVhd,
 			UnattendRemote:  remoteUnattend,
 			FirstBootRemote: remoteFirstBoot,
+			PayloadRemote:   req.GetString("payload_remote_dir", ""),
 		})
 		if berr != nil {
 			opErr = berr

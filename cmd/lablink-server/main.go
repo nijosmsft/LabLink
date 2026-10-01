@@ -149,6 +149,14 @@ func main() {
 		vmDefaultsFile = filepath.Join(configDir, "vm-defaults.json")
 	}
 	vmDefaults := vmconfig.Load(vmDefaultsFile)
+	serverExecutable, _ := os.Executable()
+	installRoot := filepath.Dir(filepath.Dir(serverExecutable))
+	vmEnrollment := mcptools.VMEnrollmentConfig{
+		ConfigDir:   configDir,
+		PKIDir:      filepath.Join(configDir, "pki"),
+		AgentBinary: filepath.Join(installRoot, "bin", "lablink-agent.exe"),
+		AuthToken:   token,
+	}
 
 	// Health monitor — background keepalive for all nodes.
 	monitor := healthmon.New(reg, pool)
@@ -233,7 +241,7 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
 	mcptools.RegisterSecrets(s, secrets)
-	mcptools.RegisterVM(s, reg, pool, creds, vmDefaults, auditLog, leaseCfg)
+	mcptools.RegisterVM(s, reg, pool, creds, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

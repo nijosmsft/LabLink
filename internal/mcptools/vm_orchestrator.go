@@ -42,6 +42,12 @@ type windowsVMPlan struct {
 	FirstBootScript         string  `json:"-"`
 	AutoLogon               bool    `json:"auto_logon"`
 	ObfuscatePassword       bool    `json:"obfuscate_password"`
+	RegisterWithLabLink     bool    `json:"register_with_lablink"`
+	LabLinkNodeName         string  `json:"lablink_node_name,omitempty"`
+	LabLinkRole             string  `json:"lablink_role,omitempty"`
+	LabLinkPort             int     `json:"lablink_port,omitempty"`
+	LabLinkAddress          string  `json:"lablink_address,omitempty"`
+	State                   string  `json:"state,omitempty"`
 }
 
 func createWindowsVMHandler(
@@ -51,6 +57,7 @@ func createWindowsVMHandler(
 	creds *credentials.Store,
 	defaults *vmconfig.Store,
 	auditLog *audit.Log,
+	enrollment VMEnrollmentConfig,
 	leaseCfg LeaseGateConfig,
 ) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -69,7 +76,7 @@ func createWindowsVMHandler(
 		gatedReq.Params.Name = "create_windows_vm"
 
 		execute := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return executeWindowsVMPlan(ctx, plan, reg, pool, creds, auditLog)
+			return executeWindowsVMPlan(ctx, plan, reg, pool, creds, auditLog, enrollment)
 		}
 		return LeaseGate(leaseCfg, extractTarget("target"), execute)(ctx, gatedReq)
 	}
@@ -84,7 +91,8 @@ func resolveWindowsVMPlan(
 	creds *credentials.Store,
 	defaults *vmconfig.Store,
 ) (windowsVMPlan, error) {
-	profile, profileName, err := defaults.Resolve(req.GetString("profile", ""))
+	requestedTarget := req.GetString("target", "")
+	profile, profileName, err := defaults.ResolveForTarget(req.GetString("profile", ""), requestedTarget)
 	if err != nil {
 		return windowsVMPlan{}, err
 	}
@@ -192,7 +200,8 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		DynamicMaxMB: p.DynamicMaxMB, DynamicBufferPct: p.DynamicBufferPct,
 		SecureBoot: secureBoot, Locale: locale, TimeZone: p.TimeZone,
 		AutoLogon: p.AutoLogon, ObfuscatePassword: p.ObfuscatePassword,
-		VMRoot: p.VMRoot,
+		RegisterWithLabLink: p.RegisterLabLink, LabLinkRole: p.LabLinkRole,
+		LabLinkPort: p.LabLinkPort, VMRoot: p.VMRoot,
 	}
 }
 
@@ -210,6 +219,8 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	applyStringArg(args, "locale", &plan.Locale)
 	applyStringArg(args, "timezone", &plan.TimeZone)
 	applyStringArg(args, "first_boot_script", &plan.FirstBootScript)
+	applyStringArg(args, "lablink_node_name", &plan.LabLinkNodeName)
+	applyStringArg(args, "lablink_role", &plan.LabLinkRole)
 	applyFloatArg(args, "memory_mb", &plan.MemoryMB)
 	applyFloatArg(args, "cpu_count", &plan.CPUCount)
 	applyFloatArg(args, "dynamic_min_mb", &plan.DynamicMinMB)
@@ -219,6 +230,10 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	applyBoolArg(args, "secure_boot", &plan.SecureBoot)
 	applyBoolArg(args, "auto_logon", &plan.AutoLogon)
 	applyBoolArg(args, "obfuscate_password", &plan.ObfuscatePassword)
+	applyBoolArg(args, "register_with_lablink", &plan.RegisterWithLabLink)
+	if value, ok := numericArgument(args["lablink_port"]); ok {
+		plan.LabLinkPort = int(value)
+	}
 }
 
 func missingPlanFields(plan windowsVMPlan, final bool) []string {
@@ -245,6 +260,17 @@ func missingPlanFields(plan windowsVMPlan, final bool) []string {
 func derivePlanPaths(plan *windowsVMPlan) {
 	if plan.Hostname == "" {
 		plan.Hostname = windowsHostname(plan.Name)
+	}
+	if plan.RegisterWithLabLink {
+		if plan.LabLinkNodeName == "" {
+			plan.LabLinkNodeName = plan.Hostname
+		}
+		if plan.LabLinkRole == "" {
+			plan.LabLinkRole = "vm"
+		}
+		if plan.LabLinkPort <= 0 {
+			plan.LabLinkPort = 9091
+		}
 	}
 	root := plan.VMRoot
 	if root == "" {
@@ -285,15 +311,29 @@ func validateVMPathName(name string) error {
 	return nil
 }
 
-func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, auditLog *audit.Log) (*mcp.CallToolResult, error) {
+func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig) (*mcp.CallToolResult, error) {
+	payload, err := prepareEnrollmentPayload(ctx, plan, enrollment, reg, pool)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if payload.Cleanup != nil {
+		defer payload.Cleanup()
+	}
 	provisionReq := mcp.CallToolRequest{}
+	firstBootScript := plan.FirstBootScript
+	autoLogon := plan.AutoLogon
+	if plan.RegisterWithLabLink {
+		firstBootScript = enrollmentFirstBootScript(plan.FirstBootScript)
+		autoLogon = true
+	}
 	provisionReq.Params.Arguments = map[string]any{
 		"target": plan.Target, "vm_name": plan.Name, "hostname": plan.Hostname,
 		"base_vhd": plan.BaseVHD, "vhd_path": plan.VHDPath,
 		"admin_password_credential": plan.AdminPasswordCredential,
 		"locale":                    plan.Locale, "timezone": plan.TimeZone,
-		"first_boot_script": plan.FirstBootScript, "auto_logon": plan.AutoLogon,
+		"first_boot_script": firstBootScript, "auto_logon": autoLogon,
 		"obfuscate_password": plan.ObfuscatePassword, "injection_method": "mount-vhd",
+		"payload_remote_dir": payload.RemoteDir,
 	}
 	provisioned, err := provisionUnattendHandler(reg, pool, creds, auditLog)(ctx, provisionReq)
 	if err != nil || provisioned == nil || provisioned.IsError {
@@ -312,6 +352,17 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 	if err != nil || created == nil || created.IsError {
 		cleanupProvisionedVHD(ctx, plan, reg, pool)
 		return created, err
+	}
+	if plan.RegisterWithLabLink {
+		started, err := startVMAndDiscoverIP(ctx, plan, reg, pool)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("VM created but guest start/IP discovery failed: %v", err)), nil
+		}
+		if err := registerEnrolledVM(ctx, plan, started, reg, pool); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("VM created at %s but LabLink registration failed: %v", started.IPAddress, err)), nil
+		}
+		plan.LabLinkAddress = fmt.Sprintf("%s:%d", started.IPAddress, plan.LabLinkPort)
+		plan.State = started.State
 	}
 	return vmResult(fmt.Sprintf("**Windows VM `%s` created on `%s`**", plan.Name, plan.Target), marshalPlan(plan)), nil
 }
@@ -395,9 +446,25 @@ func applyStringArg(args map[string]any, name string, dst *string) {
 }
 
 func applyFloatArg(args map[string]any, name string, dst *float64) {
-	if value, ok := args[name].(float64); ok {
+	if value, ok := numericArgument(args[name]); ok {
 		*dst = value
 	}
+}
+
+func numericArgument(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	}
+	return 0, false
 }
 
 func applyBoolArg(args map[string]any, name string, dst *bool) {

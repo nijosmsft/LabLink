@@ -35,6 +35,9 @@ type MountInjectParams struct {
 	// FirstBootRemote, when set, is the path on the target where the first-boot
 	// PowerShell script was staged; it is copied to \Windows\Setup\Scripts.
 	FirstBootRemote string
+	// PayloadRemote, when set, is a staged directory copied into the guest for
+	// SetupComplete enrollment. It is removed from the target on every path.
+	PayloadRemote string
 }
 
 // BuildMountInjectScript builds the Method A injection script. Key safety
@@ -60,6 +63,7 @@ func BuildMountInjectScript(p MountInjectParams) (string, error) {
 	fmt.Fprintf(&b, "$baseVhd = %s\n", hyperv.PSLit(p.BaseVHD))
 	fmt.Fprintf(&b, "$unattendSrc = %s\n", hyperv.PSLit(p.UnattendRemote))
 	fmt.Fprintf(&b, "$firstBootSrc = %s\n", hyperv.PSLit(p.FirstBootRemote))
+	fmt.Fprintf(&b, "$payloadSrc = %s\n", hyperv.PSLit(p.PayloadRemote))
 
 	b.WriteString(`
 $mountedByUs = $false
@@ -111,6 +115,12 @@ try {
         New-Item -ItemType Directory -Force -Path "$winDrive\Windows\Setup\Scripts" | Out-Null
         Copy-Item $firstBootSrc "$winDrive\Windows\Setup\Scripts\FirstBoot.ps1" -Force
     }
+    if ($payloadSrc) {
+        if (-not (Test-Path $payloadSrc)) { throw "PAYLOAD_NOT_STAGED: '$payloadSrc' not found on target" }
+        $payloadDst = "$winDrive\Windows\Setup\Scripts\LabLinkPayload"
+        New-Item -ItemType Directory -Force -Path $payloadDst | Out-Null
+        Copy-Item (Join-Path $payloadSrc '*') $payloadDst -Recurse -Force
+    }
 
     [pscustomobject]@{
         injected_to    = "$winDrive\Windows\Panther\unattend.xml"
@@ -129,6 +139,7 @@ finally {
     # scrubbed by Windows during specialize/first-logon.
     try { Remove-Item $unattendSrc -Force -ErrorAction SilentlyContinue } catch {}
     if ($firstBootSrc) { try { Remove-Item $firstBootSrc -Force -ErrorAction SilentlyContinue } catch {} }
+    if ($payloadSrc) { try { Remove-Item $payloadSrc -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
     # Remove only drive letters we assigned.
     foreach ($a in $assignedLetters) {
         try { Remove-PartitionAccessPath -DiskNumber $a[0] -PartitionNumber $a[1] -AccessPath ($a[2] + ':\') -ErrorAction SilentlyContinue } catch {}

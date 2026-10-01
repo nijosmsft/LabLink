@@ -265,6 +265,8 @@ AES-GCM key stored with restrictive permissions in `~/.lablink/secrets.key`.
 | `create_vm` | Low-level Gen2 VM primitive. |
 | `provision_unattend` | Create/inject a differencing Windows OS disk using a saved administrator credential profile. |
 | `create_windows_vm` | High-level safe composition of provisioning plus VM creation. |
+| `save_vm_template` / `list_vm_templates` / `delete_vm_template` | Manage persistent, non-secret VM defaults and per-host template selection. |
+| `delete_vm` | Dry-run-first VM deletion with optional safe child-storage, registry, and issued-identity cleanup. |
 
 `create_windows_vm` resolves settings in this order:
 
@@ -301,6 +303,29 @@ Set `LABLINK_VM_DEFAULTS_FILE` to use a different path. A complete explicit
 request or complete profile runs without prompting; a partial request overrides
 the profile and prompts only for what remains missing. Use `dry_run:true` to
 inspect the resolved plan without modifying the host.
+
+`save_vm_template(..., set_as_target_default:true)` records the template under
+`target_defaults`, so a request such as “create a VM on RR1N4406-30” selects
+that host's template automatically.
+
+When `register_with_lablink:true`, `create_windows_vm` also:
+
+1. Issues a unique guest mTLS server certificate.
+2. Injects the LabLink agent, token, certificate, and private key into the
+   differencing disk.
+3. Completes OOBE with a one-time Administrator logon, installs the agent from
+   token/key files, configures the firewall, starts the service, and removes
+   staged secret copies.
+4. Starts the VM, discovers its IPv4 address, verifies the agent over mTLS, and
+   registers the guest in `nodes.json`.
+
+`delete_vm` defaults to a dry run. Actual deletion requires `dry_run:false`;
+stopping a running VM additionally requires `force_stop:true`, and file removal
+requires `delete_storage:true`. Storage deletion is limited to
+`<managed_root>\<vm-name>` and never follows or deletes a differencing parent
+VHD. If the VM is still a registered LabLink node, deletion first runs
+`ipconfig /release` as a best effort—the resulting disconnect/error is expected
+and ignored—then removes the registry entry after successful VM deletion.
 
 ### Files and packaging
 | Tool | What it does |

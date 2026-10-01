@@ -51,6 +51,7 @@ type templateData struct {
 	HasFirstBootScript     bool
 	AdminPasswordValue     string
 	AdminPasswordPlainText string
+	AutoLogonPasswordValue string
 }
 
 // Render produces the answer-file XML for p. All caller-supplied values are
@@ -80,9 +81,11 @@ func Render(p Params) (string, error) {
 	}
 	if p.Obfuscate {
 		data.AdminPasswordValue = xmlEscape(obfuscatePassword(p.AdminPassword, "AdministratorPassword"))
+		data.AutoLogonPasswordValue = xmlEscape(obfuscatePassword(p.AdminPassword, "Password"))
 		data.AdminPasswordPlainText = "false"
 	} else {
 		data.AdminPasswordValue = xmlEscape(p.AdminPassword)
+		data.AutoLogonPasswordValue = xmlEscape(p.AdminPassword)
 		data.AdminPasswordPlainText = "true"
 	}
 
