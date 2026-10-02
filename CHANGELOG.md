@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- VM creation now enforces a configurable host resource reserve before any
+  VM/VHD mutation. Projected free physical memory and target-volume capacity
+  must each remain at or above 10% by default, including worst-case dynamic or
+  differencing VHD growth.
+- `min_host_reserve_pct` can be stored in VM templates or supplied per request.
+  Only the explicit per-request `allow_host_resource_pressure=true` flag can
+  bypass a failed reserve check. Dry runs return the full measured projection.
+
 ## [0.6.1] - 2026-10-01
 
 ### Added

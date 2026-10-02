@@ -187,6 +187,9 @@ func TestBuildCreateVMScript_Completeness(t *testing.T) {
 		"VM_EXISTS",
 		"INSUFFICIENT_SPACE",
 		"VHD_IN_USE",
+		"HOST_MEMORY_RESERVE",
+		"HOST_STORAGE_RESERVE",
+		"resource_safety",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("create_vm script missing %q", want)

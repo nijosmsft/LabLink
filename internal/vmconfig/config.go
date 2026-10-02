@@ -34,6 +34,7 @@ type Profile struct {
 	RegisterLabLink   bool    `json:"register_with_lablink,omitempty"`
 	LabLinkRole       string  `json:"lablink_role,omitempty"`
 	LabLinkPort       int     `json:"lablink_port,omitempty"`
+	MinHostReservePct float64 `json:"min_host_reserve_pct,omitempty"`
 }
 
 // Config is loaded from ~/.lablink/vm-defaults.json by default.

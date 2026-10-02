@@ -18,17 +18,19 @@ type CreateVMParams struct {
 	MemoryMB float64 // startup memory (default applied by caller)
 
 	// Dynamic-memory policy. When DynamicMemory is true, Min/Max/Buffer apply.
-	DynamicMemory       bool
-	DynamicMinMB        float64
-	DynamicMaxMB        float64
-	DynamicBufferPct    float64
-	CPUCount            float64
-	VSwitch             string
-	ISOPath             string
-	SecureBoot          bool
-	SecureBootTemplate  string // default MicrosoftWindows
-	UseHostDefaults     bool   // permit Hyper-V default VM location when VMLocation empty
-	RequiredFreeSpaceGB float64
+	DynamicMemory             bool
+	DynamicMinMB              float64
+	DynamicMaxMB              float64
+	DynamicBufferPct          float64
+	CPUCount                  float64
+	VSwitch                   string
+	ISOPath                   string
+	SecureBoot                bool
+	SecureBootTemplate        string // default MicrosoftWindows
+	UseHostDefaults           bool   // permit Hyper-V default VM location when VMLocation empty
+	RequiredFreeSpaceGB       float64
+	MinHostReservePct         float64
+	AllowHostResourcePressure bool
 }
 
 // BuildCreateVMScript builds the create_vm mutation script with the network
@@ -83,6 +85,29 @@ func BuildCreateVMScript(p CreateVMParams) (string, error) {
 	fmt.Fprintf(&b, "$secureBoot = %s\n", PSBool(p.SecureBoot))
 	fmt.Fprintf(&b, "$secureBootTemplate = %s\n", PSLit(sbTemplate))
 	fmt.Fprintf(&b, "$requiredFreeGB = %d\n", int64(p.RequiredFreeSpaceGB))
+
+	storagePath := p.VHDPath
+	reserveVHD := p.VHDPath
+	reserveRemainingGrowth := true
+	var storageReserveBytes int64
+	if hasNew {
+		storagePath = p.NewVHDPath
+		reserveVHD = ""
+		reserveRemainingGrowth = false
+		storageReserveBytes = int64(p.NewVHDSizeGB * 1024 * 1024 * 1024)
+	}
+	resourceScript, err := ResourceSafetyScript(ResourceSafetyParams{
+		MemoryMB: mem, StoragePath: storagePath,
+		ReserveVHDPath:            reserveVHD,
+		ReserveRemainingGrowth:    reserveRemainingGrowth,
+		StorageReserveBytes:       storageReserveBytes,
+		MinHostReservePct:         p.MinHostReservePct,
+		AllowHostResourcePressure: p.AllowHostResourcePressure,
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(resourceScript)
 
 	b.WriteString(`
 # Idempotency: refuse to clobber an existing VM.
@@ -167,6 +192,7 @@ $disk = ($vm | Get-VMHardDiskDrive | Select-Object -First 1).Path
     vswitch    = $vswitch
     vhd_path   = $disk
     secure_boot = [bool]$secureBoot
+    resource_safety = [pscustomobject]$resourceSafety
     action     = 'created'
 } | ConvertTo-Json -Depth 4
 `)

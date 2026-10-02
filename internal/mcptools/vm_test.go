@@ -240,9 +240,13 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
 		t.Fatal(err)
 	}
-	reg := newRebootTestRegistry(t, map[string]string{"node1": "127.0.0.1:1"})
+	agent := &vmRoutingMockAgent{payload: `{"minimum_free_pct":10,"safe":true}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
 	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
-	h := createWindowsVMHandler(s, reg, nil, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqNoToken(map[string]any{
 		"name": "vm-one", "memory_mb": float64(12288), "dry_run": true,
@@ -258,6 +262,7 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 		`"vm_location": "E:\\VM\\vm-one"`,
 		`"memory_mb": 12288`,
 		`"cpu_count": 4`,
+		`"minimum_free_pct": 10`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dry-run plan missing %s:\n%s", want, text)

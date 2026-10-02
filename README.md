@@ -308,6 +308,18 @@ inspect the resolved plan without modifying the host.
 `target_defaults`, so a request such as “create a VM on RR1N4406-30” selects
 that host's template automatically.
 
+Before any VM/VHD mutation, LabLink projects:
+
+- host available physical memory minus the VM startup allocation, and
+- target-volume free space minus worst-case VHD growth.
+
+Both projected values must leave at least `min_host_reserve_pct` of total host
+RAM/volume capacity free (default `10`). Templates can raise or lower the
+threshold. They cannot disable it: bypass requires an explicit
+`allow_host_resource_pressure:true` on the individual creation request.
+`dry_run:true` performs the same live check and returns the measured totals,
+projected values, thresholds, and safe/unsafe flags.
+
 When `register_with_lablink:true`, `create_windows_vm` also:
 
 1. Issues a unique guest mTLS server certificate.
