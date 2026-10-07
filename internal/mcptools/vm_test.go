@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/audit"
@@ -29,9 +30,11 @@ import (
 // the shell the handler requested.
 type vmRoutingMockAgent struct {
 	pb.UnimplementedNodeAgentServer
-	payload  string
-	gotShell string
-	exitCode int32
+	payload   string
+	gotShell  string
+	gotScript string
+	exitCode  int32
+	delay     time.Duration
 }
 
 type dhcpReleaseMockAgent struct {
@@ -48,6 +51,10 @@ func (a *dhcpReleaseMockAgent) Execute(req *pb.ExecuteRequest, stream grpc.Serve
 
 func (a *vmRoutingMockAgent) ExecuteScript(req *pb.ExecuteScriptRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
 	a.gotShell = req.Shell
+	a.gotScript = req.ScriptBody
+	if a.delay > 0 {
+		time.Sleep(a.delay)
+	}
 	if err := stream.Send(&pb.ExecuteResponse{Pid: 1, Data: []byte(a.payload)}); err != nil {
 		return err
 	}
@@ -271,6 +278,78 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 
 	if strings.Contains(text, "secret") {
 		t.Fatal("credential value leaked into VM plan")
+	}
+}
+
+func TestCreateWindowsVMDryRunEmitsHeartbeat(t *testing.T) {
+	shrinkHeartbeatInterval(t)
+	rec := withNotifRecorder(t)
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile": "lab",
+  "profiles": {
+    "lab": {
+      "target": "node1",
+      "base_vhd": "E:\\base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "labadmin"
+    }
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &vmRoutingMockAgent{
+		payload: `{"minimum_free_pct":10,"safe":true}`,
+		delay:   4 * defaultHeartbeatInterval,
+	}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+
+	res, err := h(context.Background(), reqWithToken(map[string]any{
+		"name": "vm-one", "dry_run": true,
+	}))
+	if err != nil || res == nil || res.IsError {
+		t.Fatalf("dry run failed: %#v, %v", res, err)
+	}
+	if rec.count() == 0 {
+		t.Fatal("expected create_windows_vm to emit progress heartbeats")
+	}
+}
+
+func TestStartVMAndDiscoverIPUsesTerminatingStartErrors(t *testing.T) {
+	agent := &vmRoutingMockAgent{payload: `{"ip_address":"10.0.0.10","state":"Running"}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+
+	info, err := startVMAndDiscoverIP(context.Background(), windowsVMPlan{
+		Target: "node1", Name: "vm-one",
+	}, reg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.IPAddress != "10.0.0.10" {
+		t.Fatalf("unexpected VM info: %+v", info)
+	}
+	for _, want := range []string{
+		`$ErrorActionPreference = 'Stop'`,
+		`Start-VM -Name $name -ErrorAction Stop`,
+		`VM_START_FAILED`,
+	} {
+		if !strings.Contains(agent.gotScript, want) {
+			t.Errorf("start script missing %q:\n%s", want, agent.gotScript)
+		}
 	}
 }
 

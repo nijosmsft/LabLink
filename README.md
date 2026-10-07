@@ -331,6 +331,11 @@ When `register_with_lablink:true`, `create_windows_vm` also:
 4. Starts the VM, discovers its IPv4 address, verifies the agent over mTLS, and
    registers the guest in `nodes.json`.
 
+The tool emits MCP progress notifications during long provisioning and
+enrollment waits. If Hyper-V cannot start the guest—for example because the
+host lacks available memory—the operation returns the `Start-VM` error
+immediately instead of waiting for the guest IP timeout.
+
 `delete_vm` defaults to a dry run. Actual deletion requires `dry_run:false`;
 stopping a running VM additionally requires `force_stop:true`, and file removal
 requires `delete_storage:true`. Storage deletion is limited to

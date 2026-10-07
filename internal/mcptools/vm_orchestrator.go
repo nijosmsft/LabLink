@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -68,6 +69,11 @@ func createWindowsVMHandler(
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, req, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), 20 * 60
+		})
+		defer stopHB()
 		if req.GetBool("dry_run", false) {
 			safety, err := checkWindowsVMResources(ctx, plan, reg, pool)
 			if err != nil {
