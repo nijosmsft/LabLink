@@ -34,6 +34,7 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 			mcp.WithBoolean("register_with_lablink", mcp.Description("Enroll created VMs as LabLink nodes")),
 			mcp.WithString("lablink_role", mcp.Description("Role assigned to enrolled VM nodes")),
 			mcp.WithNumber("lablink_port", mcp.Description("Guest LabLink agent port (default 9091)")),
+			mcp.WithNumber("min_host_reserve_pct", mcp.Description("Minimum projected free host RAM and target-volume capacity percentage (default 10)")),
 			mcp.WithBoolean("set_as_target_default", mcp.Description("Use this template by default when target matches (default true)")),
 		),
 		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -53,6 +54,7 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 				RegisterLabLink:   req.GetBool("register_with_lablink", false),
 				LabLinkRole:       req.GetString("lablink_role", ""),
 				LabLinkPort:       int(req.GetFloat("lablink_port", 9091)),
+				MinHostReservePct: req.GetFloat("min_host_reserve_pct", 10),
 			}
 			name := req.GetString("name", "")
 			if err := store.Set(name, profile, req.GetBool("set_as_target_default", true)); err != nil {

@@ -204,10 +204,17 @@ func startVMAndDiscoverIP(ctx context.Context, plan windowsVMPlan, reg *registry
 		return startedVMInfo{}, err
 	}
 	script := fmt.Sprintf(`
+$ErrorActionPreference = 'Stop'
 $name = %s
 $deadline = (Get-Date).AddMinutes(15)
 $vm = Get-VM -Name $name -ErrorAction Stop
-if ($vm.State -ne 'Running') { Start-VM -Name $name | Out-Null }
+if ($vm.State -ne 'Running') {
+    try {
+        Start-VM -Name $name -ErrorAction Stop | Out-Null
+    } catch {
+        throw "VM_START_FAILED: VM '$name' could not start: $($_.Exception.Message)"
+    }
+}
 do {
     $ip = Get-VMNetworkAdapter -VMName $name -ErrorAction SilentlyContinue |
         ForEach-Object IPAddresses |

@@ -308,6 +308,18 @@ inspect the resolved plan without modifying the host.
 `target_defaults`, so a request such as “create a VM on RR1N4406-30” selects
 that host's template automatically.
 
+Before any VM/VHD mutation, LabLink projects:
+
+- host available physical memory minus the VM startup allocation, and
+- target-volume free space minus worst-case VHD growth.
+
+Both projected values must leave at least `min_host_reserve_pct` of total host
+RAM/volume capacity free (default `10`). Templates can raise or lower the
+threshold. They cannot disable it: bypass requires an explicit
+`allow_host_resource_pressure:true` on the individual creation request.
+`dry_run:true` performs the same live check and returns the measured totals,
+projected values, thresholds, and safe/unsafe flags.
+
 When `register_with_lablink:true`, `create_windows_vm` also:
 
 1. Issues a unique guest mTLS server certificate.
@@ -318,6 +330,11 @@ When `register_with_lablink:true`, `create_windows_vm` also:
    staged secret copies.
 4. Starts the VM, discovers its IPv4 address, verifies the agent over mTLS, and
    registers the guest in `nodes.json`.
+
+The tool emits MCP progress notifications during long provisioning and
+enrollment waits. If Hyper-V cannot start the guest—for example because the
+host lacks available memory—the operation returns the `Start-VM` error
+immediately instead of waiting for the guest IP timeout.
 
 `delete_vm` defaults to a dry run. Actual deletion requires `dry_run:false`;
 stopping a running VM additionally requires `force_stop:true`, and file removal

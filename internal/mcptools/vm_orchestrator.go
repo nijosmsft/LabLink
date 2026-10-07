@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -20,34 +21,37 @@ import (
 )
 
 type windowsVMPlan struct {
-	Profile                 string  `json:"profile,omitempty"`
-	Target                  string  `json:"target"`
-	Name                    string  `json:"name"`
-	Hostname                string  `json:"hostname"`
-	BaseVHD                 string  `json:"base_vhd"`
-	VMRoot                  string  `json:"vm_root,omitempty"`
-	VHDPath                 string  `json:"vhd_path"`
-	VMLocation              string  `json:"vm_location"`
-	VSwitch                 string  `json:"vswitch"`
-	AdminPasswordCredential string  `json:"admin_password_credential"`
-	MemoryMB                float64 `json:"memory_mb"`
-	CPUCount                float64 `json:"cpu_count"`
-	DynamicMemory           bool    `json:"dynamic_memory"`
-	DynamicMinMB            float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB            float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct        float64 `json:"dynamic_buffer_pct,omitempty"`
-	SecureBoot              bool    `json:"secure_boot"`
-	Locale                  string  `json:"locale"`
-	TimeZone                string  `json:"timezone,omitempty"`
-	FirstBootScript         string  `json:"-"`
-	AutoLogon               bool    `json:"auto_logon"`
-	ObfuscatePassword       bool    `json:"obfuscate_password"`
-	RegisterWithLabLink     bool    `json:"register_with_lablink"`
-	LabLinkNodeName         string  `json:"lablink_node_name,omitempty"`
-	LabLinkRole             string  `json:"lablink_role,omitempty"`
-	LabLinkPort             int     `json:"lablink_port,omitempty"`
-	LabLinkAddress          string  `json:"lablink_address,omitempty"`
-	State                   string  `json:"state,omitempty"`
+	Profile                   string  `json:"profile,omitempty"`
+	Target                    string  `json:"target"`
+	Name                      string  `json:"name"`
+	Hostname                  string  `json:"hostname"`
+	BaseVHD                   string  `json:"base_vhd"`
+	VMRoot                    string  `json:"vm_root,omitempty"`
+	VHDPath                   string  `json:"vhd_path"`
+	VMLocation                string  `json:"vm_location"`
+	VSwitch                   string  `json:"vswitch"`
+	AdminPasswordCredential   string  `json:"admin_password_credential"`
+	MemoryMB                  float64 `json:"memory_mb"`
+	CPUCount                  float64 `json:"cpu_count"`
+	DynamicMemory             bool    `json:"dynamic_memory"`
+	DynamicMinMB              float64 `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB              float64 `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct          float64 `json:"dynamic_buffer_pct,omitempty"`
+	SecureBoot                bool    `json:"secure_boot"`
+	Locale                    string  `json:"locale"`
+	TimeZone                  string  `json:"timezone,omitempty"`
+	FirstBootScript           string  `json:"-"`
+	AutoLogon                 bool    `json:"auto_logon"`
+	ObfuscatePassword         bool    `json:"obfuscate_password"`
+	RegisterWithLabLink       bool    `json:"register_with_lablink"`
+	LabLinkNodeName           string  `json:"lablink_node_name,omitempty"`
+	LabLinkRole               string  `json:"lablink_role,omitempty"`
+	LabLinkPort               int     `json:"lablink_port,omitempty"`
+	LabLinkAddress            string  `json:"lablink_address,omitempty"`
+	State                     string  `json:"state,omitempty"`
+	MinHostReservePct         float64 `json:"min_host_reserve_pct"`
+	AllowHostResourcePressure bool    `json:"allow_host_resource_pressure"`
+	ResourceSafety            any     `json:"resource_safety,omitempty"`
 }
 
 func createWindowsVMHandler(
@@ -65,7 +69,17 @@ func createWindowsVMHandler(
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		start := time.Now()
+		stopHB := StartMCPHeartbeat(ctx, req, defaultHeartbeatInterval, func() (int64, int64) {
+			return int64(time.Since(start).Seconds()), 20 * 60
+		})
+		defer stopHB()
 		if req.GetBool("dry_run", false) {
+			safety, err := checkWindowsVMResources(ctx, plan, reg, pool)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			plan.ResourceSafety = safety
 			return vmResult("**Resolved Windows VM configuration** (dry run; no changes made)", marshalPlan(plan)), nil
 		}
 
@@ -202,6 +216,7 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		AutoLogon: p.AutoLogon, ObfuscatePassword: p.ObfuscatePassword,
 		RegisterWithLabLink: p.RegisterLabLink, LabLinkRole: p.LabLinkRole,
 		LabLinkPort: p.LabLinkPort, VMRoot: p.VMRoot,
+		MinHostReservePct: p.MinHostReservePct,
 	}
 }
 
@@ -226,11 +241,13 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	applyFloatArg(args, "dynamic_min_mb", &plan.DynamicMinMB)
 	applyFloatArg(args, "dynamic_max_mb", &plan.DynamicMaxMB)
 	applyFloatArg(args, "dynamic_buffer_pct", &plan.DynamicBufferPct)
+	applyFloatArg(args, "min_host_reserve_pct", &plan.MinHostReservePct)
 	applyBoolArg(args, "dynamic_memory", &plan.DynamicMemory)
 	applyBoolArg(args, "secure_boot", &plan.SecureBoot)
 	applyBoolArg(args, "auto_logon", &plan.AutoLogon)
 	applyBoolArg(args, "obfuscate_password", &plan.ObfuscatePassword)
 	applyBoolArg(args, "register_with_lablink", &plan.RegisterWithLabLink)
+	applyBoolArg(args, "allow_host_resource_pressure", &plan.AllowHostResourcePressure)
 	if value, ok := numericArgument(args["lablink_port"]); ok {
 		plan.LabLinkPort = int(value)
 	}
@@ -264,6 +281,9 @@ func derivePlanPaths(plan *windowsVMPlan) {
 	if plan.RegisterWithLabLink {
 		if plan.LabLinkNodeName == "" {
 			plan.LabLinkNodeName = plan.Hostname
+		}
+		if plan.MinHostReservePct <= 0 {
+			plan.MinHostReservePct = 10
 		}
 		if plan.LabLinkRole == "" {
 			plan.LabLinkRole = "vm"
@@ -312,6 +332,11 @@ func validateVMPathName(name string) error {
 }
 
 func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig) (*mcp.CallToolResult, error) {
+	safety, err := checkWindowsVMResources(ctx, plan, reg, pool)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	plan.ResourceSafety = safety
 	payload, err := prepareEnrollmentPayload(ctx, plan, enrollment, reg, pool)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -347,6 +372,8 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		"dynamic_memory": plan.DynamicMemory, "dynamic_min_mb": plan.DynamicMinMB,
 		"dynamic_max_mb": plan.DynamicMaxMB, "dynamic_buffer_pct": plan.DynamicBufferPct,
 		"vswitch": plan.VSwitch, "secure_boot": plan.SecureBoot,
+		"min_host_reserve_pct":         plan.MinHostReservePct,
+		"allow_host_resource_pressure": plan.AllowHostResourcePressure,
 	}
 	created, err := createVMHandler(reg, pool, auditLog)(ctx, createReq)
 	if err != nil || created == nil || created.IsError {
