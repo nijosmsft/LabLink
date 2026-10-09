@@ -78,7 +78,12 @@ func prepareEnrollmentPayload(
 		cleanupLocal()
 		return enrollmentPayload{}, err
 	}
-	remoteDir := fmt.Sprintf(`C:\Windows\Temp\lablink-enroll-%d`, time.Now().UnixNano())
+	stageID, err := newRemoteStageID()
+	if err != nil {
+		cleanupLocal()
+		return enrollmentPayload{}, err
+	}
+	remoteDir := `C:\Windows\Temp\lablink-enroll-` + stageID
 	cleanupRemote := func() {
 		script := fmt.Sprintf(`Remove-Item -LiteralPath %s -Recurse -Force -ErrorAction SilentlyContinue`, hyperv.PSLit(remoteDir))
 		_, _, _ = runPS(context.Background(), reg, pool, target, script, vmDefaultTimeoutSec)
@@ -255,6 +260,9 @@ func registerEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMI
 					TransportMode: "mtls", TLSServerName: plan.LabLinkNodeName,
 				})
 			}
+			if isPermanentTLSIdentityError(probeErr) {
+				return fmt.Errorf("LabLink guest agent at %s presented the wrong TLS identity for %q: %w", address, plan.LabLinkNodeName, probeErr)
+			}
 			lastErr = probeErr
 		} else {
 			lastErr = err
@@ -262,4 +270,14 @@ func registerEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMI
 		time.Sleep(5 * time.Second)
 	}
 	return fmt.Errorf("LabLink guest agent did not become ready at %s: %w", address, lastErr)
+}
+
+func isPermanentTLSIdentityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "failed to verify certificate") &&
+		(strings.Contains(message, "certificate is valid for") ||
+			strings.Contains(message, "certificate is not valid for any names"))
 }

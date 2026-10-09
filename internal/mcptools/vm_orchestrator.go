@@ -184,6 +184,13 @@ func resolveWindowsVMPlan(
 	if strings.TrimSpace(plan.Hostname) == "" {
 		return windowsVMPlan{}, fmt.Errorf("VM name %q does not produce a valid Windows hostname; provide hostname explicitly", plan.Name)
 	}
+	if err := validateWindowsHostname(plan.Hostname); err != nil {
+		suggestion := windowsHostname(plan.Hostname)
+		if suggestion != "" {
+			return windowsVMPlan{}, fmt.Errorf("%w; use %q or omit hostname to derive it from the VM name", err, suggestion)
+		}
+		return windowsVMPlan{}, err
+	}
 	if _, err := creds.Get(plan.AdminPasswordCredential); err != nil {
 		return windowsVMPlan{}, err
 	}
@@ -318,6 +325,31 @@ func windowsHostname(name string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+func validateWindowsHostname(name string) error {
+	if name == "" || len(name) > 15 {
+		return fmt.Errorf("invalid Windows hostname %q: must contain 1-15 characters", name)
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return fmt.Errorf("invalid Windows hostname %q: must not begin or end with a hyphen", name)
+	}
+	allDigits := true
+	for _, r := range name {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+			allDigits = false
+		case r >= '0' && r <= '9':
+		case r == '-':
+			allDigits = false
+		default:
+			return fmt.Errorf("invalid Windows hostname %q: use only ASCII letters, digits, and hyphens", name)
+		}
+	}
+	if allDigits {
+		return fmt.Errorf("invalid Windows hostname %q: must not consist only of digits", name)
+	}
+	return nil
 }
 
 func validateVMPathName(name string) error {

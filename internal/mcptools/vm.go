@@ -422,8 +422,12 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		}
 		defer cleanupLocal()
 
-		stamp := time.Now().UnixNano()
-		remoteUnattend := fmt.Sprintf(`C:\Windows\Temp\lablink-unattend-%d.xml`, stamp)
+		stageID, stageErr := newRemoteStageID()
+		if stageErr != nil {
+			opErr = stageErr
+			return mcp.NewToolResultError(stageErr.Error()), nil
+		}
+		remoteUnattend := fmt.Sprintf(`C:\Windows\Temp\lablink-unattend-%s.xml`, stageID)
 		// Register the scrub BEFORE initiating the push, keyed on the known
 		// staged path. The lablink agent COMMITS the uploaded bytes to disk
 		// (os.Rename to remoteUnattend) BEFORE SendAndClose, so a post-commit
@@ -450,7 +454,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 				return mcp.NewToolResultError(ferr.Error()), nil
 			}
 			defer cleanupFB()
-			remoteFirstBoot = fmt.Sprintf(`C:\Windows\Temp\lablink-firstboot-%d.ps1`, stamp)
+			remoteFirstBoot = fmt.Sprintf(`C:\Windows\Temp\lablink-firstboot-%s.ps1`, stageID)
 			// Same post-commit window as the unattend push above: defer the
 			// scrub before the push so a post-commit push/transport error still
 			// removes the staged file from the target.

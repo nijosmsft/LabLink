@@ -336,6 +336,15 @@ enrollment waits. If Hyper-V cannot start the guest—for example because the
 host lacks available memory—the operation returns the `Start-VM` error
 immediately instead of waiting for the guest IP timeout.
 
+Explicit `hostname` values must be valid Windows computer names: 1–15 ASCII
+letters, digits, or hyphens; no leading/trailing hyphen; and not all digits.
+When `hostname` is omitted, LabLink derives and truncates a safe value from the
+VM name.
+
+Parallel VM creation remains supported. Each request uses independent,
+cryptographically random remote staging paths so answer files and enrollment
+certificates cannot overwrite another request's payload.
+
 `delete_vm` defaults to a dry run. Actual deletion requires `dry_run:false`;
 stopping a running VM additionally requires `force_stop:true`, and file removal
 requires `delete_storage:true`. Storage deletion is limited to
