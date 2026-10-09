@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-08
+
+### Fixed
+
+- VM enrollment and unattend staging now use cryptographically random remote
+  paths instead of timestamp-only names, preventing parallel requests from
+  overwriting another guest's certificate, key, or answer file.
+- Guest TLS certificate-name mismatches are reported immediately instead of
+  being retried until the registration or MCP request timeout.
+- Explicit Windows hostnames are validated before mutation; names longer than
+  15 characters or otherwise invalid for `ComputerName` are rejected with a
+  Windows-safe suggestion.
+
 ## [0.6.2] - 2026-10-07
 
 ### Added

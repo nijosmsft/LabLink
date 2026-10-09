@@ -281,6 +281,133 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	}
 }
 
+func TestValidateWindowsHostname(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		wantErr bool
+	}{
+		{name: "PERF-INVESTIGAT"},
+		{name: "server-01"},
+		{name: "perf-investigation", wantErr: true},
+		{name: "-server", wantErr: true},
+		{name: "server-", wantErr: true},
+		{name: "server_name", wantErr: true},
+		{name: "123456", wantErr: true},
+	} {
+		err := validateWindowsHostname(test.name)
+		if test.wantErr && err == nil {
+			t.Errorf("validateWindowsHostname(%q) succeeded, want error", test.name)
+		}
+		if !test.wantErr && err != nil {
+			t.Errorf("validateWindowsHostname(%q) failed: %v", test.name, err)
+		}
+	}
+}
+
+func TestRemoteStageIDsAreUniqueUnderConcurrency(t *testing.T) {
+	const count = 1000
+	ids := make(chan string, count)
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := newRemoteStageID()
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	seen := make(map[string]struct{}, count)
+	for id := range ids {
+		if len(id) != 32 {
+			t.Fatalf("remote stage ID length = %d, want 32: %q", len(id), id)
+		}
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate remote stage ID: %s", id)
+		}
+		seen[id] = struct{}{}
+	}
+	if len(seen) != count {
+		t.Fatalf("generated %d unique IDs, want %d", len(seen), count)
+	}
+}
+
+func TestPermanentTLSIdentityError(t *testing.T) {
+	permanent := []error{
+		fmt.Errorf(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate is valid for ATC-ST-01, not ATC-ST-02"`),
+		fmt.Errorf("tls: failed to verify certificate: x509: certificate is not valid for any names"),
+	}
+	for _, err := range permanent {
+		if !isPermanentTLSIdentityError(err) {
+			t.Errorf("expected permanent TLS identity error: %v", err)
+		}
+	}
+	for _, err := range []error{
+		nil,
+		fmt.Errorf("connection refused"),
+		fmt.Errorf("context deadline exceeded"),
+		fmt.Errorf("tls: handshake failure"),
+	} {
+		if isPermanentTLSIdentityError(err) {
+			t.Errorf("unexpected permanent TLS identity classification: %v", err)
+		}
+	}
+}
+
+func TestCreateWindowsVMRejectsInvalidExplicitHostnameBeforeMutation(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile": "lab",
+  "profiles": {
+    "lab": {
+      "target": "node1",
+      "base_vhd": "E:\\base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "labadmin"
+    }
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &vmRoutingMockAgent{payload: `{"minimum_free_pct":10,"safe":true}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+
+	res, err := h(context.Background(), reqNoToken(map[string]any{
+		"name": "perf-investigation", "hostname": "perf-investigation",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := toolResultText(res)
+	if !res.IsError || !strings.Contains(text, "1-15 characters") || !strings.Contains(text, "PERF-INVESTIGAT") {
+		t.Fatalf("unexpected invalid-hostname result: %s", text)
+	}
+	if agent.gotScript != "" {
+		t.Fatalf("invalid hostname reached remote mutation: %s", agent.gotScript)
+	}
+}
+
 func TestCreateWindowsVMDryRunEmitsHeartbeat(t *testing.T) {
 	shrinkHeartbeatInterval(t)
 	rec := withNotifRecorder(t)
