@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -111,25 +110,70 @@ func executeCommand(ctx context.Context, command, shell, workingDir string, env 
 	return runAndStream(ctx, cmd, timeoutSec, stream)
 }
 
-func executeScript(ctx context.Context, scriptBody, shell, workingDir string, env map[string]string, timeoutSec int32, args []string, stream executeResponseStream) error {
-	if shell == "" {
-		shell = defaultShell()
-	}
-
-	// Write script to temp file.
+func scriptExtension(shell string) string {
 	ext := ".sh"
 	if strings.ToLower(shell) == "powershell" || strings.ToLower(shell) == "pwsh" {
 		ext = ".ps1"
 	} else if strings.ToLower(shell) == "cmd" {
 		ext = ".cmd"
 	}
+	return ext
+}
 
-	tmpDir := os.TempDir()
-	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("lablink-script-%d%s", time.Now().UnixNano(), ext))
-	if err := os.WriteFile(tmpFile, []byte(scriptBody), 0755); err != nil {
-		return fmt.Errorf("failed to write temp script: %w", err)
+func createTempScript(tempDir, scriptBody, shell string) (path string, err error) {
+	file, err := os.CreateTemp(tempDir, "lablink-script-*"+scriptExtension(shell))
+	if err != nil {
+		return "", fmt.Errorf("create temp script: %w", err)
 	}
-	defer os.Remove(tmpFile)
+	path = file.Name()
+	closeNeeded := true
+	keep := false
+	defer func() {
+		if keep {
+			return
+		}
+		if closeNeeded {
+			if closeErr := file.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close partial temp script %q: %w", path, closeErr))
+			}
+		}
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("remove partial temp script %q: %w", path, removeErr))
+		}
+	}()
+
+	written, err := io.Copy(file, strings.NewReader(scriptBody))
+	if err != nil {
+		return "", fmt.Errorf("write temp script %q: %w", path, err)
+	}
+	if written != int64(len(scriptBody)) {
+		return "", fmt.Errorf("write temp script %q: wrote %d of %d bytes", path, written, len(scriptBody))
+	}
+	if err := file.Chmod(0o700); err != nil {
+		return "", fmt.Errorf("chmod temp script %q: %w", path, err)
+	}
+	closeNeeded = false
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("close temp script %q: %w", path, err)
+	}
+	keep = true
+	return path, nil
+}
+
+func executeScript(ctx context.Context, scriptBody, shell, workingDir string, env map[string]string, timeoutSec int32, args []string, stream executeResponseStream) (err error) {
+	if shell == "" {
+		shell = defaultShell()
+	}
+
+	tmpFile, err := createTempScript(os.TempDir(), scriptBody, shell)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if removeErr := os.Remove(tmpFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("remove temp script %q: %w", tmpFile, removeErr))
+		}
+	}()
 
 	cmd := buildScriptCommand(shell, tmpFile, args)
 	if workingDir != "" {

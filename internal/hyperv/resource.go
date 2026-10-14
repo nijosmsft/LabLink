@@ -58,11 +58,14 @@ if ($resourceReserveVhd) {
     }
     $reserveVhd = Get-VHD -Path $resourceReserveVhd
     $vhdReserve = if ($resourceReserveRemainingGrowth) {
-        [math]::Max(0, [double]$reserveVhd.Size - [double]$reserveVhd.FileSize)
+        [math]::Max([double]0, [double]$reserveVhd.Size - [double]$reserveVhd.FileSize)
     } else {
         [double]$reserveVhd.Size
     }
-    $resourceStorageReserveBytes = [math]::Max([double]$resourceStorageReserveBytes, $vhdReserve)
+    $resourceStorageReserveBytes = [math]::Max(
+        [double]$resourceStorageReserveBytes,
+        [double]$vhdReserve
+    )
 }
 $projectedStorage = [double]$volume.SizeRemaining - [double]$resourceStorageReserveBytes
 $minimumStorage = [double]$volume.Size * ($resourceMinPct / 100.0)

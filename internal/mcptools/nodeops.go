@@ -168,12 +168,38 @@ func getNodeInfoHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
 
+		var command, shell string
+		switch strings.ToLower(strings.TrimSpace(node.OS)) {
+		case "windows":
+			command = windowsNodeInfoCommand
+			shell = "powershell"
+		case "linux":
+			command = linuxNodeInfoCommand
+			shell = "bash"
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"unsupported OS %q for node %q (expected windows or linux)", node.OS, nodeName,
+			)), nil
+		}
+
 		client, err := pool.GetClient(node.Address, node.TLSServerName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("connect: %v", err)), nil
 		}
 
-		cmd := `
+		callCtx, callCancel := nodeCallContext(ctx, nodeName)
+		defer callCancel()
+
+		output, _, _, err := executeAndCollect(callCtx, client, command, shell, "", nil, 20)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed: %v", err)), nil
+		}
+
+		return mcp.NewToolResultText(fmt.Sprintf("**%s** system info:\n\n```\n%s```", nodeName, strings.TrimRight(output, "\n\r "))), nil
+	}
+}
+
+const windowsNodeInfoCommand = `
 $os = Get-CimInstance Win32_OperatingSystem
 $cs = Get-CimInstance Win32_ComputerSystem
 $uptime = (Get-Date) - $os.LastBootUpTime
@@ -207,14 +233,98 @@ Write-Host "--- Test Signing ---"
 $ts = bcdedit /enum "{current}" 2>$null | Select-String "testsigning\s+Yes"
 if ($ts) { Write-Host "Test signing: ON" } else { Write-Host "Test signing: OFF" }
 `
-		output, _, _, err := executeAndCollect(ctx, client, cmd, "powershell", "", nil, 20)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed: %v", err)), nil
-		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("**%s** system info:\n\n```\n%s```", nodeName, strings.TrimRight(output, "\n\r "))), nil
-	}
-}
+const linuxNodeInfoCommand = `
+hostname_value="$(hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')"
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+    os_value="${PRETTY_NAME:-${NAME:-Linux}}"
+    version_value="${VERSION_ID:-unknown}"
+else
+    os_value="$(uname -s 2>/dev/null || printf 'Linux')"
+    version_value="unknown"
+fi
+kernel_value="$(uname -r 2>/dev/null || printf 'unknown')"
+
+uptime_seconds="$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)"
+case "$uptime_seconds" in
+    ''|*[!0-9]*) uptime_value="unknown" ;;
+    *) uptime_value="$((uptime_seconds / 3600))h $(((uptime_seconds % 3600) / 60))m" ;;
+esac
+
+if command -v nproc >/dev/null 2>&1; then
+    logical_cpus="$(nproc 2>/dev/null)"
+else
+    logical_cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
+fi
+[ -n "$logical_cpus" ] || logical_cpus="$(awk '/^processor[[:space:]]*:/{count++} END{print count+0}' /proc/cpuinfo 2>/dev/null)"
+
+if command -v lscpu >/dev/null 2>&1; then
+    socket_count="$(LC_ALL=C lscpu -p=Socket 2>/dev/null | awk '!/^#/ {seen[$1]=1} END {for (socket in seen) count++; print count+0}')"
+else
+    socket_count="$(awk -F: '/^physical id[[:space:]]*:/{gsub(/[[:space:]]/, "", $2); seen[$2]=1} END {for (socket in seen) count++; print count+0}' /proc/cpuinfo 2>/dev/null)"
+fi
+[ "$socket_count" -gt 0 ] 2>/dev/null || socket_count=1
+
+memory_value="$(awk '/^MemTotal:/ {printf "%.1f GB", $2/1048576}' /proc/meminfo 2>/dev/null)"
+[ -n "$memory_value" ] || memory_value="unknown"
+
+printf 'Hostname: %s\n' "$hostname_value"
+printf 'OS: %s\n' "$os_value"
+printf 'Version: %s (kernel %s)\n' "$version_value" "$kernel_value"
+printf 'Uptime: %s\n' "$uptime_value"
+printf 'CPUs: %s (%s socket(s))\n' "${logical_cpus:-unknown}" "$socket_count"
+printf 'Memory: %s\n' "$memory_value"
+
+printf '\n--- Networking Modules ---\n'
+module_rows=""
+if command -v lsmod >/dev/null 2>&1; then
+    module_rows="$(lsmod 2>/dev/null | awk 'NR > 1 && $1 ~ /^(hv_netvsc|mlx5_core|mlx5_ib|ixgbe|i40e|ice|ena|virtio_net|xdp|wireguard|bonding|bridge|8021q|nf_conntrack|ip_tables|ip6_tables|nft_)/ {printf "%s size=%s used=%s\n", $1, $2, $3}')"
+elif [ -r /proc/modules ]; then
+    module_rows="$(awk '$1 ~ /^(hv_netvsc|mlx5_core|mlx5_ib|ixgbe|i40e|ice|ena|virtio_net|xdp|wireguard|bonding|bridge|8021q|nf_conntrack|ip_tables|ip6_tables|nft_)/ {printf "%s size=%s used=%s\n", $1, $2, $3}' /proc/modules 2>/dev/null)"
+fi
+if [ -n "$module_rows" ]; then
+    printf '%s\n' "$module_rows"
+else
+    printf 'No matching networking modules reported\n'
+fi
+
+printf '\n--- NICs ---\n'
+nic_count=0
+for nic_path in /sys/class/net/*; do
+    [ -e "$nic_path" ] || continue
+    nic_name="${nic_path##*/}"
+    [ "$nic_name" != "lo" ] || continue
+    operstate="$(cat "$nic_path/operstate" 2>/dev/null)"
+    [ "$operstate" = "up" ] || continue
+    nic_count=$((nic_count + 1))
+
+    mtu="$(cat "$nic_path/mtu" 2>/dev/null)"
+    speed="$(cat "$nic_path/speed" 2>/dev/null)"
+    duplex="$(cat "$nic_path/duplex" 2>/dev/null)"
+    driver_path="$(readlink -f "$nic_path/device/driver" 2>/dev/null)"
+    driver="${driver_path##*/}"
+    if command -v ip >/dev/null 2>&1; then
+        ipv4="$(ip -o -4 addr show dev "$nic_name" scope global 2>/dev/null | awk 'BEGIN {separator=""} {printf "%s%s", separator, $4; separator=", "} END {print ""}')"
+    else
+        ipv4="ip command unavailable"
+    fi
+
+    [ -n "$mtu" ] || mtu="unknown"
+    [ -n "$speed" ] && [ "$speed" -ge 0 ] 2>/dev/null || speed="unknown"
+    [ -n "$duplex" ] || duplex="unknown"
+    [ -n "$driver" ] || driver="unknown"
+    [ -n "$ipv4" ] || ipv4="none"
+    if [ "$speed" = "unknown" ]; then
+        link_speed="unknown"
+    else
+        link_speed="${speed}Mb/s"
+    fi
+    printf '%s: state=%s speed=%s duplex=%s mtu=%s driver=%s ip=%s\n' \
+        "$nic_name" "$operstate" "$link_speed" "$duplex" "$mtu" "$driver" "$ipv4"
+done
+[ "$nic_count" -gt 0 ] || printf 'No active non-loopback NICs reported\n'
+`
 
 func tailFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {

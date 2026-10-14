@@ -6,6 +6,181 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0-beta.1] - 2026-10-14
+
+### Added
+
+- Backward-compatible Linux VM profile fields with independent
+  `default_linux_profile` and `linux_target_defaults` selection. Empty
+  `guest_os` remains Windows and existing Windows defaults are unchanged.
+- Fixed-source Canonical Ubuntu 24.04 amd64 Azure VHD archive metadata, exact
+  SHA256SUMS verification, content-addressed cache paths, resumable preparation
+  state, and pinned OpenPGP verification of Canonical's documented cloud-image
+  key.
+- Dedicated reusable Windows image-builder VM support. Builders use the
+  existing Windows profile/orchestrator and mTLS enrollment, expose nested
+  virtualization and explicitly opt out of virtualization-based security
+  while Off before first start, carry role `linux-image-builder`, install
+  WSL2/Ubuntu only inside the guest, and are retained stopped by default or
+  optionally deleted after successful preparation. Builder profiles must also
+  use static memory.
+- Service-safe builder bootstrap for the pinned Microsoft WSL 3.0.3 x64 MSI.
+  It distinguishes the in-box `wsl.exe` stub from a real runtime, downloads
+  through resumable BITS, verifies the exact SHA-256 plus Microsoft
+  Authenticode signer, installs with quiet/no-restart MSI flags, resumes
+  feature/MSI/distro reboots, quarantines invalid files, and verifies Ubuntu
+  24.04 is the default WSL2 distribution without an elevation or UI path.
+- Builder WSL setup, every reboot resume, and image transformation now execute
+  as the builder profile's saved normal administrator through a random
+  ephemeral password-logon/highest-run-level Scheduled Task. Credential
+  values travel only in the agent request environment, are redacted and
+  cleared immediately after registration, and exact task/job cleanup is
+  fail-closed.
+- Builder user resolution now treats the saved username as preferred rather
+  than authoritative. When Windows unattend applied the password to the
+  built-in Administrator instead, LabLink accepts only one enabled,
+  Administrators-member local RID-500 account, persists its exact name/SID,
+  and requires that SID on every setup resume and transform.
+- Backward-compatible `virtualization_based_security_opt_out` support for
+  Windows profiles, `create_vm`, `create_windows_vm`, and `save_vm_template`.
+  The default remains false; requested opt-out is applied immediately after
+  `New-VM`, verified with `Get-VMSecurity`, and surfaced in dry-run and result
+  JSON.
+- Safe host extraction and in-box `Convert-VHD` conversion of the authenticated
+  Azure VHD, followed by exact operation-owned SCSI attachment, pre-attach disk
+  inventory, WSL ext4 root discovery by content, atomic NoCloud datasource
+  configuration, detach, hash, and read-only publication.
+- A builder-identity lock shared by every cache key and disk-size variant using
+  the same target/builder VM. It covers builder setup through detach and
+  optional deletion, uses exact owner-token release and atomic stale recovery,
+  and leaves unrelated builders parallel.
+- `prepare_linux_image`, `get_linux_image_status`, and `create_linux_vm`.
+  Active BITS transfers return immediately with resumable job progress; an
+  empty cache returns `image_preparing` without creating a VM.
+- Standard NoCloud seed generation on an ISO9660/Joliet `CIDATA` ISO with
+  root-level `meta-data`, `user-data`, optional `network-config`, and separate
+  LabLink payloads; plus idempotent Linux agent/systemd/SSH/KVP installation,
+  Gen2 Linux secure boot, VHD-first boot ordering, DHCP/KVP discovery, mTLS
+  verification, registration, and success-only ISO cleanup.
+- Linux guests enable cloud-init manual cache-clean mode during first-boot
+  installation so the cached NoCloud datasource remains authoritative after
+  the secret CIDATA ISO is removed; later boots no longer degrade to
+  `DataSourceNone`.
+- Key-only, password-only, and combined Linux access modes. Saved password
+  credentials are transformed in memory into salted SHA-512 crypt hashes;
+  `allow_ssh_password_auth` controls SSH policy while root login remains
+  disabled.
+- Windows release archives now include the version-matched linux-amd64 agent
+  at `bin/linux-amd64/lablink-agent`; Linux archive layout is unchanged.
+
+### Security
+
+- Linux image publication verifies `SHA256SUMS.gpg` using the embedded
+  Canonical UEC Image Automatic Signing Key and requires exact fingerprint
+  `D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81` before parsing the image hash.
+- `image_builder_profile` is required and fully validated before any download,
+  VM creation, feature enablement, or host mutation. Same-name unrelated
+  builders and disks are never adopted.
+- Linux VM cloud-init user-data contains no enrollment secrets. Guest
+  registration occurs only after the expected per-guest mTLS identity is
+  proven; failures after boot retain the expected CIDATA ISO for diagnosis.
+  Password plaintext is excluded from plans, metadata, audit, seed files, and
+  tool output.
+- Linux image transform schema
+  `lablink-linux-nocloud-azure-vhd-wsl-builder-v1` prevents every prior Linux
+  image cache generation from being adopted.
+- WSL feature enablement and reboot are builder-only. Disk identification uses
+  persisted unique ID/serial/path/location inventory plus expected virtual
+  size and SCSI target identity, never disk number alone. Ambiguous roots,
+  identity mismatches, and unmount failures retain explicit safe diagnostic
+  state.
+- WSL block devices are inventoried immediately before the staging mount.
+  Exactly one newly added disk is accepted, and only partitions with a
+  validated parent relationship to that disk are inspected; the WSL
+  distribution root is never scanned or remounted.
+- After builder disk attachment, cleanup is retain-by-default. Only a completed,
+  verified transform with explicit `safe_to_detach:true` after WSL unmount can
+  authorize detach. Transport, agent, JSON, transform, and detach-response
+  failures stop the builder when reachable and retain or restore the exact
+  operation disk.
+- CIDATA ownership is atomically persisted before ISO creation. Windows ACLs
+  on the managed staging directory, secret staging tree, and ISO are verified
+  fail-closed; ISO attachment grants read access only to the exact Hyper-V VM
+  identity in addition to SYSTEM and Administrators.
+- The Linux root agent service retains compatible hardening (`NoNewPrivileges`
+  and `PrivateTmp`) without `ProtectSystem=strict` or a finite
+  `ReadWritePaths` allowlist, so requested administrative execute/push/install
+  operations can write `/etc`, `/usr`, `/opt`, and other explicit paths.
+- Image-cache lock ownership is published by same-directory atomic rename.
+  Missing or malformed owner records age from the lock-directory timestamp;
+  stale locks are atomically renamed before exact-path removal rather than
+  deleting the live lock name in place.
+
+### Fixed
+
+- Parallel Linux VM creation now serializes only the host IMAPI2FS CIDATA
+  authoring section with a bounded, crash-safe exclusive file handle at
+  `%ProgramData%\LabLink\locks\cidata-imapi.lock`. The lock covers COM image
+  creation through the completed ISO stream write, never deletes the persistent
+  lock file, and fails explicitly with `CIDATA_IMAPI_LOCK_TIMEOUT` after two
+  minutes instead of retrying COM activation.
+- Pinned WSL MSI installation now writes bounded verbose logs for every
+  attempt, uses `Start-Process -Wait -PassThru`, accepts `0`/`3010`, re-detects
+  WSL after unexpected exits, and retries at most once when it is still
+  absent.
+- Reusable builder startup detects only the current VM/start's Hyper-V Worker
+  Admin event 18590 with fatal pre-OS `ErrorCode0=0x10`, turns off only that
+  managed VM, and retries once. Ordinary DHCP timeouts are unchanged.
+- Linux readiness uses a bounded 15-minute KVP address wait plus a 10-minute
+  mTLS registration wait with progress heartbeats. Permanent TLS identity
+  failures remain immediate, and the Windows registration timeout remains
+  five minutes.
+- Same-name create/resume reconciles exact persisted CIDATA staging, ISO, and
+  pre-VM child-disk artifacts under the per-VM lock, covering crashes before
+  ISO creation, after ISO creation, and during VM creation without globbing
+  outside the managed VM directory.
+- Managed Linux resume inspects persisted VM metadata before image-cache
+  resolution and uses the persisted parent/ISO identity. A current cache is
+  needed only for new VM creation.
+- Existing managed Linux resume validates persisted metadata/ownership before
+  resolving SSH key files or password credentials. Missing retired access
+  inputs no longer block resume; new VM/seed paths still require valid access
+  before any lifecycle lock, cache preparation, or artifact mutation.
+- Restricted CIDATA staging cleanup now validates exact persisted ownership,
+  removes the exact stage directory, and verifies absence. Failure aborts
+  before VM creation and retains the ownership record, ISO, and stage identity
+  for safe same-name reconciliation.
+- New-VM cache misses resolve and validate the required Windows builder
+  profile, target, credential, fixed source, base VHD, VM root, vSwitch, and
+  required host commands before the per-VM lifecycle lock or artifact
+  reconciliation. Existing managed resumes do not require the current builder
+  or cache.
+- Every managed Linux resume phase, including `cidata_detached` and `complete`,
+  non-mutatingly verifies the exact Hyper-V child OS-disk path and exact
+  `Get-VHD` parent path before boot or mTLS. CIDATA reconfiguration remains
+  exclusive to `cidata_attached`.
+- Managed Linux resume now treats an owned, present but not-yet-attached CIDATA
+  ISO as a safe `cidata_attached` crash state. It idempotently reapplies the
+  remaining OFF-VM CPU/memory, Secure Boot, ACL, boot-order, ISO, and KVP
+  configuration while rejecting unmanaged identity or any unexpected ISO.
+- A running managed VM left in `cidata_attached` is now validated against its
+  persisted metadata, child/parent disk chain, ownership record, and exact
+  attached ISO, then resumes KVP discovery, enrollment verification, and
+  success cleanup without requiring the guest to be stopped.
+- Managed Linux deletion validates VM identity and all storage before stopping
+  a running guest, walks OS/checkpoint parent chains to the persisted base, and
+  validates unrelated data-disk storage without treating its parent as OS
+  identity.
+- `delete_vm` now acquires the same case-insensitive per-VM lifecycle lock as
+  create/resume before metadata inspection and holds it through Hyper-V,
+  storage, registry, and issued-identity cleanup. Existing Windows deletion
+  behavior remains unchanged apart from serialization.
+- BITS recovery no longer trusts a destination merely because a file exists.
+  Exact persisted source/destination completion records are required; terminal
+  Error/Cancelled jobs are removed and recreated. Image digest failures
+  quarantine only the exact owned download/blob while holding the content
+  cache lock, allowing a later call to redownload it.
+
 ## [0.6.3] - 2026-10-08
 
 ### Fixed

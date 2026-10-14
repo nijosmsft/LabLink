@@ -1,0 +1,59 @@
+{
+  "default_profile": "windows-lab",
+  "default_linux_profile": "ubuntu-lab",
+  "target_defaults": {
+    "hyperv-host-1": "windows-lab"
+  },
+  "linux_target_defaults": {
+    "hyperv-host-1": "ubuntu-lab"
+  },
+  "profiles": {
+    "windows-lab": {
+      "target": "hyperv-host-1",
+      "base_vhd": "E:\\Images\\windows-base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "lab-admin"
+    },
+    "linux-image-builder": {
+      "guest_os": "windows",
+      "target": "hyperv-host-1",
+      "base_vhd": "E:\\Images\\windows-base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "lab-admin",
+      "memory_mb": 8192,
+      "cpu_count": 4,
+      "dynamic_memory": false,
+      "register_with_lablink": true,
+      "lablink_role": "linux-image-builder",
+      "expose_virtualization_extensions": true,
+      "virtualization_based_security_opt_out": true
+    },
+    "ubuntu-lab": {
+      "guest_os": "linux",
+      "target": "hyperv-host-1",
+      "distribution": "ubuntu",
+      "release": "24.04",
+      "architecture": "amd64",
+      "image_cache_root": "E:\\LabLinkImages",
+      "image_builder_profile": "linux-image-builder",
+      "builder_vm_name": "LabLink-Ubuntu-Builder",
+      "delete_builder_after_prepare": false,
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "linux_username": "lab",
+      "ssh_public_key_file": "C:\\Users\\operator\\.ssh\\id_ed25519.pub",
+      "linux_password_credential": "linux-lab",
+      "allow_ssh_password_auth": true,
+      "memory_mb": 4096,
+      "cpu_count": 2,
+      "dynamic_memory": false,
+      "disk_size_gb": 64,
+      "register_with_lablink": true,
+      "lablink_role": "vm",
+      "lablink_port": 9091,
+      "min_host_reserve_pct": 10
+    }
+  }
+}

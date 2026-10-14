@@ -20,6 +20,8 @@ func TestResourceSafetyScriptChecksMemoryStorageAndOverride(t *testing.T) {
 		"FreePhysicalMemory",
 		"Get-VHD -Path $resourceReserveVhd",
 		"minimum_free_pct",
+		"[math]::Max([double]0",
+		"[double]$vhdReserve",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("resource script missing %q", want)

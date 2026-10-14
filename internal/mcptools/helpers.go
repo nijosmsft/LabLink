@@ -140,6 +140,10 @@ func localPowershellExe() string {
 // nonzero process exit is reported via the returned exit code (callers/runPS
 // treat a nonzero exit as a tool failure).
 func executeLocalPowershell(ctx context.Context, script string, timeoutSec int) (string, int, int, error) {
+	return executeLocalPowershellWithEnv(ctx, script, timeoutSec, nil)
+}
+
+func executeLocalPowershellWithEnv(ctx context.Context, script string, timeoutSec int, env map[string]string) (string, int, int, error) {
 	if timeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
@@ -147,6 +151,12 @@ func executeLocalPowershell(ctx context.Context, script string, timeoutSec int) 
 	}
 
 	cmd := exec.CommandContext(ctx, localPowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range env {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

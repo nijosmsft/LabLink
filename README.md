@@ -345,6 +345,18 @@ Parallel VM creation remains supported. Each request uses independent,
 cryptographically random remote staging paths so answer files and enrollment
 certificates cannot overwrite another request's payload.
 
+Windows profiles and both `create_vm` / `create_windows_vm` accept
+`expose_virtualization_extensions`. When true, LabLink configures the VM
+processor immediately after `New-VM` and before any guest start. The default is
+false, preserving existing Windows VM behavior.
+
+They also accept `virtualization_based_security_opt_out`. When true, LabLink
+requires the new VM to remain Off, runs
+`Set-VMSecurity -VirtualizationBasedSecurityOptOut $true` immediately after
+`New-VM`, and verifies the value with `Get-VMSecurity` before continuing.
+The default is false for backward compatibility. Dry-run plans and creation
+results expose the resolved value.
+
 `delete_vm` defaults to a dry run. Actual deletion requires `dry_run:false`;
 stopping a running VM additionally requires `force_stop:true`, and file removal
 requires `delete_storage:true`. Storage deletion is limited to
@@ -352,6 +364,187 @@ requires `delete_storage:true`. Storage deletion is limited to
 VHD. If the VM is still a registered LabLink node, deletion first runs
 `ipconfig /release` as a best effort—the resulting disconnect/error is expected
 and ignored—then removes the registry entry after successful VM deletion.
+For managed Linux VMs, persisted identity and every attached disk path are
+validated before a running guest is stopped. The OS/checkpoint VHD parent chain
+must terminate at the persisted base; unrelated data-disk parents do not define
+OS identity, but each data disk must still be within the managed VM directory.
+Create/resume and delete use the same case-insensitive per-VM lifecycle lock,
+held from metadata inspection through all requested VM, storage, registry, and
+identity cleanup.
+
+### Ubuntu 24.04 Hyper-V VMs
+
+| Tool | What it does |
+|------|--------------|
+| `prepare_linux_image` | Verify Canonical's fixed Ubuntu 24.04 Azure VHD archive and prepare it through a required nested-virtualization Windows builder VM. |
+| `get_linux_image_status` | Return persisted phase state plus any active BITS job IDs and byte progress. |
+| `create_linux_vm` | Prepare-on-demand, create a Gen2 differencing VM, provision through standard NoCloud CIDATA, verify mTLS, and optionally register it. |
+
+The physical host needs Hyper-V, BITS, in-box `tar.exe`, and the Hyper-V
+`Convert-VHD`/`Resize-VHD` cmdlets. It verifies Canonical's signed manifest,
+validates and safely extracts the exact Azure VHD archive, converts it to a
+dynamic 1 MiB-block VHDX, and never installs WSL, enables WSL features, mounts
+the Linux filesystem, or reboots for image preparation.
+
+Linux profiles use `guest_os:"linux"` plus the independent
+`default_linux_profile` / `linux_target_defaults` selectors. Empty `guest_os`
+continues to mean Windows, and existing `default_profile` / `target_defaults`
+behavior is unchanged. Linux image preparation additionally requires
+`image_builder_profile`, which must name a complete Windows profile for the
+same target. Builder profiles must explicitly expose virtualization
+extensions, use static memory, and opt out of virtualization-based security;
+validation rejects an unsafe or incomplete builder before host mutation.
+Example:
+
+```json
+{
+  "default_linux_profile": "ubuntu-lab",
+  "linux_target_defaults": {
+    "hyperv-host-1": "ubuntu-lab"
+  },
+  "profiles": {
+    "linux-image-builder": {
+      "guest_os": "windows",
+      "target": "hyperv-host-1",
+      "base_vhd": "E:\\Images\\windows-base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "lab-admin",
+      "memory_mb": 8192,
+      "cpu_count": 4,
+      "dynamic_memory": false,
+      "register_with_lablink": true,
+      "expose_virtualization_extensions": true,
+      "virtualization_based_security_opt_out": true
+    },
+    "ubuntu-lab": {
+      "guest_os": "linux",
+      "target": "hyperv-host-1",
+      "distribution": "ubuntu",
+      "release": "24.04",
+      "architecture": "amd64",
+      "image_cache_root": "E:\\LabLinkImages",
+      "image_builder_profile": "linux-image-builder",
+      "builder_vm_name": "LabLink-Ubuntu-Builder",
+      "delete_builder_after_prepare": false,
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "linux_username": "lab",
+      "ssh_public_key_file": "C:\\Users\\operator\\.ssh\\id_ed25519.pub",
+      "linux_password_credential": "linux-lab",
+      "allow_ssh_password_auth": true,
+      "memory_mb": 4096,
+      "cpu_count": 2,
+      "disk_size_gb": 64,
+      "register_with_lablink": true,
+      "lablink_role": "vm"
+    }
+  }
+}
+```
+
+Downloads use resumable asynchronous BITS jobs. If a transfer is active,
+`prepare_linux_image` returns `image_preparing` immediately with job identity
+and progress instead of blocking for the full image download. State is stored
+under the configured cache root and reused by later calls. An existing file is
+reused only when the persisted state records the exact fixed URL and
+destination as completed. Error/Cancelled jobs are removed and recreated, and
+a digest mismatch quarantines only the exact owned file/blob so the next call
+redownloads it.
+
+Security is fail-closed: the MVP accepts no arbitrary image URL. It downloads
+the stable amd64 Azure VHD archive from
+`https://cloud-images.ubuntu.com/releases/noble/release`, pulls
+`SHA256SUMS`/`SHA256SUMS.gpg` back to the LabLink server over the authenticated
+agent channel, verifies the detached signature using an embedded Canonical key
+whose fingerprint is pinned to
+`D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81`, then checks the exact image hash
+on the target. Prepared bases are content-addressed, hashed after the builder
+transform, and published read-only.
+
+The builder is created through the existing Windows VM orchestrator and
+enrolled separately with role `linux-image-builder`. Nested virtualization is
+configured before first start. Only the builder enables WSL features, reboots,
+detects and rejects the in-box-only `wsl.exe` stub, downloads the fixed WSL
+3.0.3 x64 MSI with resumable BITS, verifies its exact SHA-256 and Microsoft
+Authenticode signer, and then installs Ubuntu 24.04 with
+`--web-download --no-launch`. WSL setup/resume and transformation run as the
+builder profile's saved normal administrator through a random, ephemeral,
+highest-run-level Scheduled Task because WSL rejects LocalSystem and keeps
+distribution registration per-user. The password travels only in the agent
+request environment, is cleared immediately after task registration, is
+redacted from transport failures/output, and never enters scripts, command
+lines, task names, paths, state, plans, or audit. Exact task/job cleanup is
+fail-closed. MSI execution uses bounded verbose logs and one retry only when
+an unexpected exit leaves WSL absent. The pinned MSI is
+`https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi`
+with SHA-256
+`ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211`.
+Only after Ubuntu is verified as the default WSL2 distribution does it
+inventory disks and mount the exact operation-owned staging disk, snapshots
+WSL block devices before the mount, identifies exactly one newly added WSL
+disk, and inspects only partitions whose `PKNAME` names that disk. The WSL
+distro root is never scanned or remounted. A builder-identity lock spans all
+cache/disk-size variants using the same builder while unrelated builders remain
+parallel. It is retained stopped by default for reuse;
+`delete_builder_after_prepare:true` deletes only the owned VM/child/identity,
+never its shared Windows parent or profile assets.
+Builder start additionally retries once only for the current VM/start's exact
+Hyper-V Worker Admin 18590 pre-OS fatal signature (`ErrorCode0=0x10`);
+ordinary 15-minute DHCP failures are not retried.
+After data-disk attachment, cleanup retains the exact disk unless a completed,
+verified transform returns explicit `safe_to_detach:true` after WSL unmount.
+Transport, agent, JSON, transform, and cleanup failures stop the builder when
+reachable and retain or restore that exact attachment for diagnosis. See
+[docs/linux-vm.md](docs/linux-vm.md).
+
+`create_linux_vm` uses a per-VM ISO9660/Joliet ISO labeled `CIDATA` with
+root-level `meta-data`, `user-data`, optional `network-config`, and separate
+LabLink payload files. The generic Ubuntu image consumes the standard NoCloud
+seed directly. The VM uses its normal Hyper-V firmware identity.
+
+At least one SSH key or saved `linux_password_credential` is required. Saved
+passwords are converted in memory to salted SHA-512 crypt hashes; plaintext is
+never written to seed data, profiles, metadata, audit, or output.
+Direct root login remains disabled. The ISO carries the version-matched agent,
+CA, guest certificate/key, token, and idempotent installer as separate files.
+The root agent service keeps `NoNewPrivileges` and `PrivateTmp`, but deliberately
+does not apply a read-only-system or finite writable-path sandbox because
+remote administrative operations must be able to write requested locations
+such as `/etc`, `/usr`, and `/opt`.
+It is detached and deleted only after the expected guest mTLS identity is
+verified. Its ownership is atomically persisted before creation, and both the
+staging directory and ISO use verified, inheritance-disabled Windows ACLs
+limited to SYSTEM, Administrators, and the exact Hyper-V VM identity required
+for attachment. Same-name retries reconcile only those persisted exact paths;
+they never glob-delete outside the managed VM directory.
+After ISO creation, exact stage removal and absence are verified before
+`New-VM`; cleanup failure retains ownership and stage identity for resume
+reconciliation rather than continuing with secret files on disk.
+
+Linux creation waits up to 15 minutes for DHCP IPv4 through Hyper-V KVP and up
+to 10 additional minutes for the mTLS agent. MCP progress heartbeats identify
+the current phase and wait status; permanent TLS certificate-name errors fail
+immediately. Windows registration retains its existing five-minute default.
+
+Retries inspect persisted VM metadata before consulting the current image
+cache. Existing managed guests then acquire the per-VM lock and resume with their
+persisted parent/ISO identity even if the cache was removed or the stable image
+selection changed. Resume also does not resolve retired SSH key files or saved
+password credentials; those inputs are required only after inspection proves
+a new VM/seed is needed. The cache is required only for a new VM. An Off partial VM
+receives idempotent remaining configuration. A Running VM in
+`cidata_attached` must already have the exact persisted child/parent disk and
+CIDATA attachment; after validation it continues address discovery, enrollment,
+and success cleanup without being stopped. `cidata_detached` and `complete`
+resumes also validate the exact Hyper-V child path and `Get-VHD` parent path
+before boot/mTLS, without reconfiguring CIDATA. On a new-VM cache miss, builder
+profile/target/credential and non-mutating builder source preconditions are
+validated before the lifecycle lock or artifact reconciliation. Unsafe
+mismatches are rejected. Post-boot failures retain the managed VM and ISO for
+diagnosis. See
+[docs/linux-vm.md](docs/linux-vm.md) and
+[`configs/vm-defaults.example.json`](configs/vm-defaults.example.json).
 
 ### Files and packaging
 | Tool | What it does |

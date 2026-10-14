@@ -1,6 +1,7 @@
 package mcptools
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/registry"
+	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
 // Target is the execution endpoint for a tool that can run on either the
@@ -74,25 +76,45 @@ func targetMgmtIP(t Target) string {
 // network/Heimdall reviews). The tagged "LABLINK_ERROR:" line emitted by the
 // hyperv builders is surfaced in the error.
 func runPS(ctx context.Context, reg *registry.Registry, pool *agentclient.Pool, t Target, script string, timeoutSec int) (string, int, error) {
+	return runPSWithEnv(ctx, reg, pool, t, script, timeoutSec, nil, nil)
+}
+
+// runPSWithEnv is the narrow secret-bearing variant used by internal
+// orchestrators. Environment values are sent through ExecuteScriptRequest.Env,
+// merged over node context, and selected values are redacted from all output
+// and errors. Existing public execute secret handling remains unchanged.
+func runPSWithEnv(
+	ctx context.Context,
+	reg *registry.Registry,
+	pool *agentclient.Pool,
+	t Target,
+	script string,
+	timeoutSec int,
+	env map[string]string,
+	secretValues []string,
+) (string, int, error) {
 	var output string
 	var exitCode int
 
 	if t.IsLocal {
-		out, code, _, err := executeLocalPowershell(ctx, script, timeoutSec)
+		out, code, _, err := executeLocalPowershellWithEnv(ctx, script, timeoutSec, env)
 		if err != nil {
-			return out, code, fmt.Errorf("local powershell: %w", err)
+			out = redactSecrets(out, secretValues)
+			return out, code, fmt.Errorf("local powershell: %s", redactSecrets(err.Error(), secretValues))
 		}
 		output, exitCode = out, code
 	} else {
 		if t.Node == nil {
 			return "", -1, fmt.Errorf("remote target %q has no resolved node", t.Name)
 		}
-		res := executeScriptOnNode(ctx, t.Node, script, "powershell", float64(timeoutSec), reg, pool)
+		res := executeScriptOnNodeWithEnv(ctx, t.Node, script, "powershell", float64(timeoutSec), env, reg, pool)
 		if res.Err != nil {
-			return res.Output, res.ExitCode, fmt.Errorf("remote powershell on %s: %w", t.Name, res.Err)
+			output = redactSecrets(res.Output, secretValues)
+			return output, res.ExitCode, fmt.Errorf("remote powershell on %s: %s", t.Name, redactSecrets(res.Err.Error(), secretValues))
 		}
 		output, exitCode = res.Output, res.ExitCode
 	}
+	output = redactSecrets(output, secretValues)
 
 	if exitCode != 0 {
 		return output, exitCode, fmt.Errorf("powershell exited %d: %s", exitCode, firstTaggedError(output))
@@ -133,6 +155,55 @@ func pushToTarget(ctx context.Context, reg *registry.Registry, pool *agentclient
 	defer cancel()
 	_, err = pushFileToNode(callCtx, client, localPath, remotePath)
 	return err
+}
+
+// readTargetFile pulls a small target-side file into memory. Remote transfers
+// use the already-authenticated agent channel and are size-bounded before the
+// data is used for trust decisions.
+func readTargetFile(ctx context.Context, pool *agentclient.Pool, t Target, remotePath string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("maxBytes must be positive")
+	}
+	if t.IsLocal {
+		info, err := os.Stat(remotePath)
+		if err != nil {
+			return nil, err
+		}
+		if info.Size() > maxBytes {
+			return nil, fmt.Errorf("file %s is %d bytes, limit is %d", remotePath, info.Size(), maxBytes)
+		}
+		return os.ReadFile(remotePath)
+	}
+	if t.Node == nil {
+		return nil, fmt.Errorf("remote target %q has no resolved node", t.Name)
+	}
+	client, err := pool.GetClient(t.Node.Address, t.Node.TLSServerName)
+	if err != nil {
+		return nil, fmt.Errorf("connect to %s: %w", t.Node.Address, err)
+	}
+	callCtx, cancel := nodeCallContext(ctx, t.Name)
+	defer cancel()
+	stream, err := client.PullFile(callCtx, &pb.PullFileRequest{RemotePath: remotePath})
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	for {
+		response, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("pull %s: %w", remotePath, err)
+		}
+		if response.TotalSize > maxBytes || int64(out.Len()+len(response.Chunk)) > maxBytes {
+			return nil, fmt.Errorf("file %s exceeds %d-byte limit", remotePath, maxBytes)
+		}
+		if _, err := out.Write(response.Chunk); err != nil {
+			return nil, err
+		}
+	}
+	return out.Bytes(), nil
 }
 
 func copyLocalFile(src, dst string) error {

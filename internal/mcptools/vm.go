@@ -35,6 +35,8 @@ const passwordMask = "***"
 // create_windows_vm is deliberately DEFERRED (primitives-first, OQ-5).
 func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig, leaseCfg LeaseGateConfig) {
 	registerVMTemplateTools(s, vmDefaults)
+	registerLinuxImageTools(s, reg, pool, vmDefaults, creds, auditLog, enrollment, leaseCfg)
+	registerCreateLinuxVMTool(s, reg, pool, vmDefaults, creds, auditLog, enrollment, leaseCfg)
 
 	// list_physical_nics — discovery, read-only, ungated.
 	s.AddTool(
@@ -93,6 +95,8 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithNumber("required_free_gb", mcp.Description("Extra free-space requirement in GB on the new VHD volume")),
 			mcp.WithNumber("min_host_reserve_pct", mcp.Description("Minimum projected free host RAM and target-volume capacity percentage (default 10)")),
 			mcp.WithBoolean("allow_host_resource_pressure", mcp.Description("Explicitly bypass host memory/storage reserve failures (default false)")),
+			mcp.WithBoolean("expose_virtualization_extensions", mcp.Description("Expose nested virtualization extensions to the guest before its first start (default false)")),
+			mcp.WithBoolean("virtualization_based_security_opt_out", mcp.Description("Opt the VM out of virtualization-based security immediately after creation while it is Off (default false)")),
 		),
 		LeaseGate(leaseCfg, extractTarget("target"), createVMHandler(reg, pool, auditLog)),
 	)
@@ -166,6 +170,8 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithNumber("lablink_port", mcp.Description("Guest LabLink agent port (default 9091)")),
 			mcp.WithNumber("min_host_reserve_pct", mcp.Description("Minimum projected free host RAM and target-volume capacity percentage (default 10)")),
 			mcp.WithBoolean("allow_host_resource_pressure", mcp.Description("Explicitly bypass host memory/storage reserve failures; never inherited from templates")),
+			mcp.WithBoolean("expose_virtualization_extensions", mcp.Description("Expose nested virtualization extensions to the guest before its first start")),
+			mcp.WithBoolean("virtualization_based_security_opt_out", mcp.Description("Opt the VM out of virtualization-based security immediately after creation while it is Off")),
 			mcp.WithBoolean("dry_run", mcp.Description("Resolve and return configuration without creating anything")),
 		),
 		createWindowsVMHandler(s, reg, pool, creds, vmDefaults, auditLog, enrollment, leaseCfg),
@@ -305,24 +311,27 @@ func createVMHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *a
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		p := hyperv.CreateVMParams{
-			Name:                      req.GetString("name", ""),
-			VMLocation:                req.GetString("vm_location", ""),
-			UseHostDefaults:           req.GetBool("use_host_defaults", false),
-			VHDPath:                   req.GetString("vhd_path", ""),
-			NewVHDPath:                req.GetString("new_vhd_path", ""),
-			NewVHDSizeGB:              req.GetFloat("new_vhd_size_gb", 0),
-			MemoryMB:                  req.GetFloat("memory_mb", 4096),
-			DynamicMemory:             req.GetBool("dynamic_memory", false),
-			DynamicMinMB:              req.GetFloat("dynamic_min_mb", 0),
-			DynamicMaxMB:              req.GetFloat("dynamic_max_mb", 0),
-			DynamicBufferPct:          req.GetFloat("dynamic_buffer_pct", 0),
-			CPUCount:                  req.GetFloat("cpu_count", 2),
-			VSwitch:                   req.GetString("vswitch", ""),
-			ISOPath:                   req.GetString("iso_path", ""),
-			SecureBoot:                req.GetBool("secure_boot", true),
-			RequiredFreeSpaceGB:       req.GetFloat("required_free_gb", 0),
-			MinHostReservePct:         req.GetFloat("min_host_reserve_pct", 10),
-			AllowHostResourcePressure: req.GetBool("allow_host_resource_pressure", false),
+			Name:                              req.GetString("name", ""),
+			VMLocation:                        req.GetString("vm_location", ""),
+			UseHostDefaults:                   req.GetBool("use_host_defaults", false),
+			VHDPath:                           req.GetString("vhd_path", ""),
+			NewVHDPath:                        req.GetString("new_vhd_path", ""),
+			NewVHDSizeGB:                      req.GetFloat("new_vhd_size_gb", 0),
+			MemoryMB:                          req.GetFloat("memory_mb", 4096),
+			DynamicMemory:                     req.GetBool("dynamic_memory", false),
+			DynamicMinMB:                      req.GetFloat("dynamic_min_mb", 0),
+			DynamicMaxMB:                      req.GetFloat("dynamic_max_mb", 0),
+			DynamicBufferPct:                  req.GetFloat("dynamic_buffer_pct", 0),
+			CPUCount:                          req.GetFloat("cpu_count", 2),
+			VSwitch:                           req.GetString("vswitch", ""),
+			ISOPath:                           req.GetString("iso_path", ""),
+			SecureBoot:                        req.GetBool("secure_boot", true),
+			RequiredFreeSpaceGB:               req.GetFloat("required_free_gb", 0),
+			MinHostReservePct:                 req.GetFloat("min_host_reserve_pct", 10),
+			AllowHostResourcePressure:         req.GetBool("allow_host_resource_pressure", false),
+			ExposeVirtualizationExtensions:    req.GetBool("expose_virtualization_extensions", false),
+			VirtualizationBasedSecurityOptOut: req.GetBool("virtualization_based_security_opt_out", false),
+			ManagedMetadata:                   req.GetString("managed_metadata", ""),
 		}
 
 		ctx, op := beginOp(ctx, "create_vm", t.Name, fmt.Sprintf("create VM %s", p.Name), map[string]string{

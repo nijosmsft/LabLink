@@ -64,7 +64,9 @@ $bundleFiles = @(
     'LICENSE',
     'SECURITY.md',
     'configs/mcp.example.json',
+    'configs/vm-defaults.example.json',
     'docs/quickstart.md',
+    'docs/linux-vm.md',
     'scripts/bootstrap-operator.ps1',
     'scripts/bootstrap-windows-node.ps1',
     'scripts/build-manual-package.ps1',
@@ -90,6 +92,22 @@ function Build-Target {
         $env:CGO_ENABLED = '0'
         & go build -trimpath -ldflags $ldflags -o $out $b.Pkg
         if ($LASTEXITCODE -ne 0) { throw "go build failed for $($b.Name) [$Os/$Arch]" }
+    }
+
+    # The Windows MCP server provisions Linux guests, so its archive also
+    # carries the exact same version of the linux/amd64 agent in a distinct
+    # path. The native Linux archive layout remains unchanged.
+    if ($Os -eq 'windows' -and $Arch -eq 'amd64') {
+        $linuxAgentDir = Join-Path $binDir 'linux-amd64'
+        New-Item -ItemType Directory -Path $linuxAgentDir -Force | Out-Null
+        $linuxAgent = Join-Path $linuxAgentDir 'lablink-agent'
+        Write-Host "  build lablink-agent [linux/amd64 guest payload]"
+        $env:GOOS = 'linux'
+        $env:GOARCH = 'amd64'
+        $env:CGO_ENABLED = '0'
+        $ldflags = "$baseLdflags -X main.agentVersion=$Version"
+        & go build -trimpath -ldflags $ldflags -o $linuxAgent './cmd/lablink-agent'
+        if ($LASTEXITCODE -ne 0) { throw "go build failed for lablink-agent [linux/amd64 guest payload]" }
     }
 }
 
