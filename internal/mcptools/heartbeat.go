@@ -2,6 +2,7 @@ package mcptools
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -20,6 +21,44 @@ var defaultHeartbeatInterval = 5 * time.Second
 // "no token → no notification" invariant is preserved even when the override
 // is set.
 var heartbeatNotifierOverride progressNotifier
+var heartbeatDetailNotifierOverride func(done, total int64, message string)
+
+type MCPProgressState struct {
+	mu      sync.RWMutex
+	started time.Time
+	total   int64
+	phase   string
+	status  string
+}
+
+func NewMCPProgressState(total time.Duration, phase, status string) *MCPProgressState {
+	return &MCPProgressState{
+		started: time.Now(),
+		total:   int64(total.Seconds()),
+		phase:   phase,
+		status:  status,
+	}
+}
+
+func (p *MCPProgressState) Update(phase, status string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.phase = phase
+	p.status = status
+	p.mu.Unlock()
+}
+
+func (p *MCPProgressState) snapshot() (int64, int64, string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	done := int64(time.Since(p.started).Seconds())
+	if done > p.total {
+		done = p.total
+	}
+	return done, p.total, "phase=" + p.phase + "; status=" + p.status
+}
 
 // ProgressTokenFromRequest extracts _meta.progressToken from an inbound
 // CallToolRequest.  Returns nil if the client did not supply one.
@@ -90,6 +129,52 @@ func StartMCPHeartbeat(
 			case <-ticker.C:
 				d, t := progress()
 				notifier(d, t)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-doneCh
+	}
+}
+
+func StartMCPProgressHeartbeat(
+	ctx context.Context,
+	req mcp.CallToolRequest,
+	interval time.Duration,
+	state *MCPProgressState,
+) func() {
+	token := ProgressTokenFromRequest(req)
+	if token == nil || state == nil {
+		return func() {}
+	}
+	notifier := heartbeatDetailNotifierOverride
+	if notifier == nil {
+		srv := server.ServerFromContext(ctx)
+		if srv == nil {
+			return func() {}
+		}
+		notifier = func(done, total int64, message string) {
+			_ = srv.SendNotificationToClient(ctx, "notifications/progress", map[string]any{
+				"progressToken": token,
+				"progress":      float64(done),
+				"total":         float64(total),
+				"message":       message,
+			})
+		}
+	}
+	hbCtx, cancel := context.WithCancel(ctx)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				notifier(state.snapshot())
 			}
 		}
 	}()

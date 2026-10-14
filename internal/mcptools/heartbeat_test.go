@@ -3,6 +3,7 @@ package mcptools
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -138,6 +139,33 @@ func TestStartMCPHeartbeat_WithToken_Fires(t *testing.T) {
 
 	if n := rec.count(); n < 1 {
 		t.Fatalf("expected >=1 notifications with progressToken, got %d", n)
+	}
+}
+
+func TestStartMCPProgressHeartbeatIncludesPhaseStatus(t *testing.T) {
+	shrinkHeartbeatInterval(t)
+	var mu sync.Mutex
+	var messages []string
+	heartbeatDetailNotifierOverride = func(_, _ int64, message string) {
+		mu.Lock()
+		messages = append(messages, message)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { heartbeatDetailNotifierOverride = nil })
+
+	state := NewMCPProgressState(30*time.Minute, "registration", "waiting for NoCloud guest agent")
+	stop := StartMCPProgressHeartbeat(context.Background(), reqWithToken(nil), defaultHeartbeatInterval, state)
+	time.Sleep(120 * time.Millisecond)
+	state.Update("cleanup", "detaching owned CIDATA ISO")
+	time.Sleep(120 * time.Millisecond)
+	stop()
+
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(messages, "\n")
+	if !strings.Contains(joined, "phase=registration; status=waiting for NoCloud guest agent") ||
+		!strings.Contains(joined, "phase=cleanup; status=detaching owned CIDATA ISO") {
+		t.Fatalf("detailed progress messages missing phase/status: %q", joined)
 	}
 }
 

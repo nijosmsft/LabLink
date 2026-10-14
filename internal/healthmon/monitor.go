@@ -140,6 +140,13 @@ func (m *Monitor) GetAllStatuses() map[string]NodeState {
 	return result
 }
 
+// RecordAuthenticatedProbeSuccess marks a node healthy after the caller has
+// independently completed an authenticated agent probe for this exact node.
+// Reachability-only checks must not use this method.
+func (m *Monitor) RecordAuthenticatedProbeSuccess(node *registry.Node) {
+	m.recordSuccess(node)
+}
+
 func (m *Monitor) loop() {
 	// Run an initial probe immediately.
 	m.probeAll()

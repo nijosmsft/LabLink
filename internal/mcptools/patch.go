@@ -2,10 +2,13 @@ package mcptools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +19,9 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/registry"
+	pb "github.com/nijosmsft/lablink/proto/agent"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Tuning knobs for reboot_nodes. Package-level vars so tests can shrink them
@@ -96,7 +102,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 
 	addTool(s,
 		mcp.NewTool("reboot_node",
-			mcp.WithDescription("Reboot a single remote node and wait for its agent to return."),
+			mcp.WithDescription("Reboot a single Windows or Linux node and verify its authenticated agent returns with a changed boot identity."),
 			mcp.WithString("node", mcp.Required(), mcp.Description("Node name from registry")),
 			mcp.WithNumber("wait_seconds", mcp.Description("Max seconds to wait, default 120")),
 		),
@@ -105,7 +111,7 @@ func RegisterPatch(s *server.MCPServer, reg *registry.Registry, pool *agentclien
 
 	addTool(s,
 		mcp.NewTool("reboot_nodes",
-			mcp.WithDescription("Reboot multiple nodes in parallel and wait for all to return."),
+			mcp.WithDescription("Reboot Windows and Linux nodes in parallel and verify their authenticated agents return with changed boot identities."),
 			mcp.WithArray("nodes",
 				mcp.Required(),
 				mcp.Description("Node names from the registry"),
@@ -259,6 +265,10 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 		if !ok {
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
+		plan, err := newRebootPlan(node)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		var doneAtomic atomic.Int64
 		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
@@ -266,102 +276,206 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 		})
 		defer stop()
 
-		client, err := pool.GetClient(node.Address, node.TLSServerName)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("connect to %s: %v", node.Address, err)), nil
-		}
-
-		// Initiate reboot.
-		executeAndCollect(ctx, client, "shutdown /r /t 2 /f", "cmd", "", nil, 5)
-
-		auditLog.Append(audit.Entry{
-			Timestamp: timeNow(),
-			Node:      nodeName,
-			Tool:      "reboot_node",
-			Command:   "shutdown /r /t 2 /f",
-		})
-
-		pool.ResetConnection(node.Address)
-		start := time.Now()
-		deadline := start.Add(time.Duration(waitSec) * time.Second)
-		wentDown, backOnline, wall := waitForReboot(ctx, rebootNodesDial, node.Address, start, deadline)
-		if backOnline {
+		statuses := rebootNodes(ctx, pool, auditLog, "reboot_node", []*rebootPlan{plan}, waitSec, func() {
 			doneAtomic.Store(1)
-			return mcp.NewToolResultText(fmt.Sprintf("**%s** rebooted (went offline, back online after %s).", nodeName, wall.Round(time.Second))), nil
+		})
+		s := statuses[0]
+		if s.KickErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to initiate reboot on %s: %v", nodeName, s.KickErr)), nil
 		}
-		if !wentDown {
-			return mcp.NewToolResultError(fmt.Sprintf("Reboot initiated but %s never went offline within %ds -- the reboot may not have taken effect.", nodeName, waitSec)), nil
+		if s.IdentityChanged {
+			offline := "without a sampled offline interval"
+			if s.WentDown {
+				offline = fmt.Sprintf("after going offline at %s", s.DownAfter.Round(time.Second))
+			}
+			return mcp.NewToolResultText(fmt.Sprintf(
+				"**%s** rebooted; authenticated agent recovered with a changed boot identity after %s (%s).",
+				nodeName, s.WallTime.Round(time.Second), offline,
+			)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("%s went offline but did not come back within %ds.", nodeName, waitSec)), nil
+		if s.LastIdentityErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"%s became reachable after reboot initiation, but its boot identity could not be validated within %ds: %v",
+				nodeName, waitSec, s.LastIdentityErr,
+			)), nil
+		}
+		if s.AuthenticatedRecovery {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"reboot not observed for %s within %ds: the authenticated agent remained reachable with the same boot identity",
+				nodeName, waitSec,
+			)), nil
+		}
+		if s.WentDown {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"%s went offline after %s but did not return with an authenticated agent within %ds",
+				nodeName, s.DownAfter.Round(time.Second), waitSec,
+			)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"reboot not observed for %s within %ds: no changed boot identity or authenticated recovery was observed",
+			nodeName, waitSec,
+		)), nil
+	}
+}
+
+type rebootPlan struct {
+	node            *registry.Node
+	command         string
+	shell           string
+	identityCommand string
+	identityShell   string
+	initialIdentity string
+}
+
+const (
+	windowsRebootCommand = "shutdown /r /t 2 /f"
+	linuxRebootCommand   = "systemctl reboot"
+	windowsBootIDCommand = `$boot = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime; if ($null -eq $boot) { exit 2 }; $boot.ToUniversalTime().ToString('o')`
+	linuxBootIDCommand   = "cat /proc/sys/kernel/random/boot_id"
+)
+
+var linuxBootIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func newRebootPlan(node *registry.Node) (*rebootPlan, error) {
+	plan := &rebootPlan{node: node}
+	switch strings.ToLower(strings.TrimSpace(node.OS)) {
+	case "windows":
+		plan.command = windowsRebootCommand
+		plan.shell = "cmd"
+		plan.identityCommand = windowsBootIDCommand
+		plan.identityShell = "powershell"
+	case "linux":
+		plan.command = linuxRebootCommand
+		plan.shell = "bash"
+		plan.identityCommand = linuxBootIDCommand
+		plan.identityShell = "bash"
+	default:
+		return nil, fmt.Errorf(
+			"unsupported OS %q for node %q (expected windows or linux); refusing to initiate reboot",
+			node.OS, node.Name,
+		)
+	}
+	return plan, nil
+}
+
+func normalizeBootIdentity(plan *rebootPlan, output string) (string, error) {
+	value := strings.TrimSpace(output)
+	if value == "" {
+		return "", fmt.Errorf("empty boot identity returned by %s", plan.node.Name)
+	}
+	if len(strings.Fields(value)) != 1 {
+		return "", fmt.Errorf("malformed boot identity %q returned by %s", value, plan.node.Name)
+	}
+	switch plan.identityShell {
+	case "powershell":
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return "", fmt.Errorf("malformed Windows last-boot timestamp %q returned by %s: %w", value, plan.node.Name, err)
+		}
+		return parsed.UTC().Format(time.RFC3339Nano), nil
+	case "bash":
+		if !linuxBootIDPattern.MatchString(value) {
+			return "", fmt.Errorf("malformed Linux boot_id %q returned by %s", value, plan.node.Name)
+		}
+		return strings.ToLower(value), nil
+	default:
+		return "", fmt.Errorf("unsupported boot identity shell %q", plan.identityShell)
+	}
+}
+
+func readBootIdentity(ctx context.Context, pool *agentclient.Pool, plan *rebootPlan, reset bool) (identity string, authenticated bool, err error) {
+	if reset {
+		pool.ResetConnection(plan.node.Address)
+	}
+	client, err := pool.GetClient(plan.node.Address, plan.node.TLSServerName)
+	if err != nil {
+		return "", false, fmt.Errorf("connect: %w", err)
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, rebootNodesConnectTimeout)
+	defer cancel()
+	if _, err := client.GetInfo(probeCtx, &pb.GetInfoRequest{}); err != nil {
+		return "", false, fmt.Errorf("authenticated probe: %w", err)
+	}
+	authenticated = true
+
+	identityCtx, identityCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer identityCancel()
+	output, exitCode, _, err := executeAndCollect(identityCtx, client, plan.identityCommand, plan.identityShell, "", nil, 5)
+	if err != nil {
+		return "", true, fmt.Errorf("capture boot identity: %w", err)
+	}
+	if exitCode != 0 {
+		return "", true, fmt.Errorf("capture boot identity exited %d: %s", exitCode, strings.TrimSpace(output))
+	}
+	identity, err = normalizeBootIdentity(plan, output)
+	if err != nil {
+		return "", true, err
+	}
+	return identity, true, nil
+}
+
+func isExpectedRebootDisconnect(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return status.Code(err) == codes.Unavailable
+}
+
+func initiateReboot(ctx context.Context, client pb.NodeAgentClient, plan *rebootPlan) error {
+	stream, err := client.Execute(ctx, &pb.ExecuteRequest{
+		Command:        plan.command,
+		Shell:          plan.shell,
+		TimeoutSeconds: 5,
+	})
+	if err != nil {
+		return fmt.Errorf("launch reboot command: %w", err)
+	}
+
+	var output strings.Builder
+	pid := 0
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr != nil {
+			if pid > 0 && isExpectedRebootDisconnect(recvErr) && ctx.Err() == nil {
+				return nil
+			}
+			return fmt.Errorf("reboot command stream ended before successful completion (pid=%d): %w", pid, recvErr)
+		}
+		if resp.Pid != 0 && pid == 0 {
+			pid = int(resp.Pid)
+		}
+		if len(resp.Data) > 0 {
+			output.Write(resp.Data)
+		}
+		if !resp.Done {
+			continue
+		}
+		if resp.ExitCode != 0 {
+			return fmt.Errorf("reboot command exited %d: %s", resp.ExitCode, strings.TrimSpace(output.String()))
+		}
+		if pid == 0 {
+			return fmt.Errorf("reboot command reported success without launch evidence")
+		}
+		return nil
 	}
 }
 
 // rebootNodeStatus tracks the result of a single node within a reboot_nodes call.
 type rebootNodeStatus struct {
-	NodeName   string
-	Kicked     bool
-	KickErr    error
-	WentDown   bool
-	BackOnline bool
-	WallTime   time.Duration
+	NodeName              string
+	Kicked                bool
+	KickErr               error
+	WentDown              bool
+	DownAfter             time.Duration
+	AuthenticatedRecovery bool
+	IdentityChanged       bool
+	LastIdentityErr       error
+	WallTime              time.Duration
 }
 
 type rebootWaitState struct {
-	wentDown            bool
-	backOnline          bool
 	consecutiveFailures int
-}
-
-func (s *rebootWaitState) observe(reachable bool) {
-	if s.backOnline {
-		return
-	}
-	if !s.wentDown {
-		if reachable {
-			s.consecutiveFailures = 0
-			return
-		}
-		s.consecutiveFailures++
-		if s.consecutiveFailures >= rebootNodesDownConfirmations {
-			s.wentDown = true
-			s.consecutiveFailures = 0
-		}
-		return
-	}
-	if reachable {
-		s.backOnline = true
-	}
-}
-
-func waitForReboot(ctx context.Context, dial func(addr string, timeout time.Duration) (net.Conn, error), addr string, start time.Time, deadline time.Time) (wentDown bool, backOnline bool, wall time.Duration) {
-	select {
-	case <-ctx.Done():
-		return false, false, time.Since(start)
-	case <-time.After(rebootNodesInitialDownSleep):
-	}
-
-	state := rebootWaitState{}
-	for time.Now().Before(deadline) {
-		conn, err := dial(addr, rebootNodesConnectTimeout)
-		reachable := err == nil
-		if conn != nil {
-			_ = conn.Close()
-		}
-		state.observe(reachable)
-		if state.wentDown {
-			wentDown = true
-		}
-		if state.backOnline {
-			return true, true, time.Since(start)
-		}
-
-		select {
-		case <-ctx.Done():
-			return wentDown, false, time.Since(start)
-		case <-time.After(rebootNodesPollInterval):
-		}
-	}
-	return wentDown, false, time.Since(start)
 }
 
 func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *audit.Log) server.ToolHandlerFunc {
@@ -375,7 +489,7 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 
 		// Atomic validation: resolve every name before kicking anything. De-dupe
 		// in input order so callers can safely pass overlapping lists.
-		nodes := make([]*registry.Node, 0, len(names))
+		plans := make([]*rebootPlan, 0, len(names))
 		var unknown []string
 		seen := make(map[string]struct{}, len(names))
 		for _, name := range names {
@@ -388,7 +502,11 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 				unknown = append(unknown, name)
 				continue
 			}
-			nodes = append(nodes, node)
+			plan, err := newRebootPlan(node)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			plans = append(plans, plan)
 		}
 		if len(unknown) > 0 {
 			return mcp.NewToolResultError(fmt.Sprintf(
@@ -398,132 +516,175 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 
 		var doneAtomic atomic.Int64
 		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
-			return doneAtomic.Load(), int64(len(nodes))
+			return doneAtomic.Load(), int64(len(plans))
 		})
 		defer stop()
 
-		statuses := make([]rebootNodeStatus, len(nodes))
-		starts := make([]time.Time, len(nodes))
-		now := timeNow()
-		for i, node := range nodes {
-			statuses[i].NodeName = node.Name
-			starts[i] = now
-		}
-
-		// Step 1: fan out the shutdown command in parallel.
-		var wg sync.WaitGroup
-		for i, node := range nodes {
-			wg.Add(1)
-			go func(idx int, n *registry.Node) {
-				defer wg.Done()
-				client, err := pool.GetClient(n.Address, n.TLSServerName)
-				if err != nil {
-					statuses[idx].KickErr = err
-					return
-				}
-				if _, _, _, err := executeAndCollect(ctx, client, "shutdown /r /t 2 /f", "cmd", "", nil, 5); err != nil {
-					statuses[idx].KickErr = err
-					return
-				}
-				statuses[idx].Kicked = true
-			}(i, node)
-		}
-		wg.Wait()
-
-		// Audit every reboot attempt — one entry per node, matching reboot_node.
-		for i, node := range nodes {
-			entry := audit.Entry{
-				Timestamp: timeNow(),
-				Node:      node.Name,
-				Tool:      "reboot_nodes",
-				Command:   "shutdown /r /t 2 /f",
-			}
-			if statuses[i].KickErr != nil {
-				entry.ExitCode = -1
-			}
-			auditLog.Append(entry)
-		}
-
-		deadline := now.Add(time.Duration(waitSec) * time.Second)
-
-		// Step 2: central sleep before polling. Correctness does not depend on
-		// this grace period; each node still must be observed down before up.
-		select {
-		case <-ctx.Done():
-			// Caller cancelled — fall through and render whatever we have.
-		case <-time.After(rebootNodesInitialDownSleep):
-		}
-
-		// Drop cached gRPC connections; the next probe should dial fresh.
-		for _, node := range nodes {
-			pool.ResetConnection(node.Address)
-		}
-
-		// Step 3: poll loop. Every rebootNodesPollInterval, try every still-pending
-		// node in parallel via TCP-connect to its agent port. A node is done only
-		// after failed dials confirm it went down and a later dial succeeds.
-		waitStates := make([]rebootWaitState, len(nodes))
-		pending := make([]int, 0, len(nodes))
-		for i := range nodes {
-			if statuses[i].Kicked {
-				pending = append(pending, i)
-			}
-		}
-
-		for len(pending) > 0 && time.Now().Before(deadline) {
-			results := make([]bool, len(pending))
-			var pollWg sync.WaitGroup
-			for j, idx := range pending {
-				pollWg.Add(1)
-				go func(j, idx int) {
-					defer pollWg.Done()
-					conn, err := rebootNodesDial(nodes[idx].Address, rebootNodesConnectTimeout)
-					if err == nil {
-						_ = conn.Close()
-						results[j] = true
-					}
-				}(j, idx)
-			}
-			pollWg.Wait()
-
-			stillPending := pending[:0]
-			for j, idx := range pending {
-				waitStates[idx].observe(results[j])
-				statuses[idx].WentDown = waitStates[idx].wentDown
-				if waitStates[idx].backOnline {
-					statuses[idx].BackOnline = true
-					statuses[idx].WallTime = time.Since(starts[idx])
-					doneAtomic.Add(1)
-				} else {
-					stillPending = append(stillPending, idx)
-				}
-			}
-			pending = stillPending
-			if len(pending) == 0 {
-				break
-			}
-
-			select {
-			case <-ctx.Done():
-				pending = nil
-			case <-time.After(rebootNodesPollInterval):
-			}
-		}
-
-		// Whatever remained when we exited the loop never came back — record the
-		// timeout wall time so the table column has something to show.
-		for i := range statuses {
-			if !statuses[i].BackOnline && statuses[i].WallTime == 0 {
-				statuses[i].WallTime = time.Since(starts[i])
-			}
-		}
+		statuses := rebootNodes(ctx, pool, auditLog, "reboot_nodes", plans, waitSec, func() {
+			doneAtomic.Add(1)
+		})
 
 		return mcp.NewToolResultText(renderRebootNodesTable(statuses, waitSec)), nil
 	}
 }
 
+func rebootNodes(ctx context.Context, pool *agentclient.Pool, auditLog *audit.Log, auditTool string, plans []*rebootPlan, waitSec int, nodeDone func()) []rebootNodeStatus {
+	statuses := make([]rebootNodeStatus, len(plans))
+	starts := make([]time.Time, len(plans))
+	for i, plan := range plans {
+		statuses[i].NodeName = plan.node.Name
+	}
+
+	// Preflight every boot identity before mutating any node.
+	var preflightWG sync.WaitGroup
+	for i, plan := range plans {
+		preflightWG.Add(1)
+		go func(idx int, p *rebootPlan) {
+			defer preflightWG.Done()
+			identity, _, err := readBootIdentity(ctx, pool, p, false)
+			if err != nil {
+				statuses[idx].KickErr = fmt.Errorf("capture initial boot identity: %w", err)
+				return
+			}
+			p.initialIdentity = identity
+		}(i, plan)
+	}
+	preflightWG.Wait()
+	for i := range statuses {
+		if statuses[i].KickErr != nil {
+			// Preserve atomic fleet behavior: no reboot is initiated if any
+			// node cannot complete the read-only preflight.
+			for j := range statuses {
+				if j != i && statuses[j].KickErr == nil {
+					statuses[j].KickErr = fmt.Errorf("reboot not initiated because another node failed preflight")
+				}
+			}
+			return statuses
+		}
+	}
+
+	var kickWG sync.WaitGroup
+	for i, plan := range plans {
+		kickWG.Add(1)
+		go func(idx int, p *rebootPlan) {
+			defer kickWG.Done()
+			client, err := pool.GetClient(p.node.Address, p.node.TLSServerName)
+			if err != nil {
+				statuses[idx].KickErr = fmt.Errorf("connect: %w", err)
+				return
+			}
+			if err := initiateReboot(ctx, client, p); err != nil {
+				statuses[idx].KickErr = err
+				return
+			}
+			statuses[idx].Kicked = true
+		}(i, plan)
+	}
+	kickWG.Wait()
+
+	now := timeNow()
+	for i := range starts {
+		starts[i] = now
+	}
+	for i, plan := range plans {
+		entry := audit.Entry{
+			Timestamp: timeNow(),
+			Node:      plan.node.Name,
+			Tool:      auditTool,
+			Command:   plan.command,
+		}
+		if statuses[i].KickErr != nil {
+			entry.ExitCode = -1
+		}
+		auditLog.Append(entry)
+	}
+
+	deadline := now.Add(time.Duration(waitSec) * time.Second)
+	waitCtx, cancelWait := context.WithDeadline(ctx, deadline)
+	defer cancelWait()
+	select {
+	case <-waitCtx.Done():
+	case <-time.After(rebootNodesInitialDownSleep):
+	}
+
+	waitStates := make([]rebootWaitState, len(plans))
+	pending := make([]int, 0, len(plans))
+	for i := range plans {
+		if statuses[i].Kicked {
+			pending = append(pending, i)
+		}
+	}
+
+	for len(pending) > 0 && time.Now().Before(deadline) && waitCtx.Err() == nil {
+		type probeResult struct {
+			identity      string
+			authenticated bool
+			err           error
+		}
+		results := make([]probeResult, len(pending))
+		var pollWG sync.WaitGroup
+		for j, idx := range pending {
+			pollWG.Add(1)
+			go func(resultIndex, planIndex int) {
+				defer pollWG.Done()
+				results[resultIndex].identity, results[resultIndex].authenticated, results[resultIndex].err =
+					readBootIdentity(waitCtx, pool, plans[planIndex], true)
+			}(j, idx)
+		}
+		pollWG.Wait()
+
+		stillPending := pending[:0]
+		for j, idx := range pending {
+			result := results[j]
+			if result.authenticated {
+				statuses[idx].AuthenticatedRecovery = true
+				waitStates[idx].consecutiveFailures = 0
+				if result.err != nil {
+					statuses[idx].LastIdentityErr = result.err
+					stillPending = append(stillPending, idx)
+					continue
+				}
+				statuses[idx].LastIdentityErr = nil
+				if result.identity != plans[idx].initialIdentity {
+					if hmon != nil {
+						hmon.RecordAuthenticatedProbeSuccess(plans[idx].node)
+					}
+					statuses[idx].IdentityChanged = true
+					statuses[idx].WallTime = time.Since(starts[idx])
+					nodeDone()
+					continue
+				}
+				stillPending = append(stillPending, idx)
+				continue
+			}
+
+			waitStates[idx].consecutiveFailures++
+			if waitStates[idx].consecutiveFailures >= rebootNodesDownConfirmations && !statuses[idx].WentDown {
+				statuses[idx].WentDown = true
+				statuses[idx].DownAfter = time.Since(starts[idx])
+			}
+			stillPending = append(stillPending, idx)
+		}
+		pending = stillPending
+		if len(pending) == 0 {
+			break
+		}
+		select {
+		case <-waitCtx.Done():
+		case <-time.After(rebootNodesPollInterval):
+		}
+	}
+
+	for i := range statuses {
+		if !statuses[i].IdentityChanged && statuses[i].WallTime == 0 {
+			statuses[i].WallTime = time.Since(starts[i])
+		}
+	}
+	return statuses
+}
+
 func renderRebootNodesTable(statuses []rebootNodeStatus, waitSec int) string {
-	kicked, down, back := 0, 0, 0
+	kicked, down, recovered, changed := 0, 0, 0, 0
 	for _, s := range statuses {
 		if s.Kicked {
 			kicked++
@@ -531,19 +692,25 @@ func renderRebootNodesTable(statuses []rebootNodeStatus, waitSec int) string {
 		if s.WentDown {
 			down++
 		}
-		if s.BackOnline {
-			back++
+		if s.AuthenticatedRecovery {
+			recovered++
+		}
+		if s.IdentityChanged {
+			changed++
 		}
 	}
 	headline := "Reboot incomplete"
-	if kicked == len(statuses) && down == len(statuses) && back == len(statuses) {
-		headline = "All nodes rebooted and back online"
+	if kicked == len(statuses) && changed == len(statuses) {
+		headline = "All nodes rebooted and authenticated"
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**%s** (%d/%d kicked, %d/%d went offline, %d/%d back)\n\n", headline, kicked, len(statuses), down, len(statuses), back, len(statuses)))
-	sb.WriteString("| Node | Shutdown kicked? | Went offline? | Came back online? | Wall time |\n")
-	sb.WriteString("|---|---|---|---|---|\n")
+	sb.WriteString(fmt.Sprintf(
+		"**%s** (%d/%d kicked, %d/%d sampled offline, %d/%d authenticated, %d/%d boot identities changed)\n\n",
+		headline, kicked, len(statuses), down, len(statuses), recovered, len(statuses), changed, len(statuses),
+	))
+	sb.WriteString("| Node | Reboot kicked? | Sampled offline? | Authenticated recovery? | Boot identity changed? | Wall time |\n")
+	sb.WriteString("|---|---|---|---|---|---|\n")
 	for _, s := range statuses {
 		kickCol := "yes"
 		if !s.Kicked {
@@ -556,24 +723,42 @@ func renderRebootNodesTable(statuses []rebootNodeStatus, waitSec int) string {
 		downCol := "yes"
 		if !s.WentDown {
 			if s.Kicked {
-				downCol = "NO (never observed offline)"
+				downCol = "no (not required)"
 			} else {
 				downCol = "n/a"
 			}
+		} else {
+			downCol = fmt.Sprintf("yes (after %s)", s.DownAfter.Round(time.Second))
 		}
-		backCol := "yes"
-		if !s.BackOnline {
+		recoveryCol := "yes"
+		if !s.AuthenticatedRecovery {
 			if s.Kicked {
 				if s.WentDown {
-					backCol = fmt.Sprintf("NO (went offline; timeout %ds)", waitSec)
+					recoveryCol = fmt.Sprintf("NO (offline; timeout %ds)", waitSec)
 				} else {
-					backCol = "NO (never observed offline; reboot may not have taken effect)"
+					recoveryCol = fmt.Sprintf("NO (timeout %ds)", waitSec)
 				}
 			} else {
-				backCol = "n/a"
+				recoveryCol = "n/a"
 			}
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", s.NodeName, kickCol, downCol, backCol, s.WallTime.Round(time.Second)))
+		identityCol := "yes"
+		if !s.IdentityChanged {
+			switch {
+			case !s.Kicked:
+				identityCol = "n/a"
+			case s.LastIdentityErr != nil:
+				identityCol = fmt.Sprintf("NO (%v)", s.LastIdentityErr)
+			case s.AuthenticatedRecovery:
+				identityCol = "NO (same identity; reboot not observed)"
+			default:
+				identityCol = "NO (not available)"
+			}
+		}
+		sb.WriteString(fmt.Sprintf(
+			"| %s | %s | %s | %s | %s | %s |\n",
+			s.NodeName, kickCol, downCol, recoveryCol, identityCol, s.WallTime.Round(time.Second),
+		))
 	}
 	return sb.String()
 }

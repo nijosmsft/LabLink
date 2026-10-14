@@ -200,6 +200,10 @@ func runScriptOnRoleHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 }
 
 func executeScriptOnNode(ctx context.Context, node *registry.Node, scriptBody, shell string, timeout float64, reg *registry.Registry, pool *agentclient.Pool) nodeResult {
+	return executeScriptOnNodeWithEnv(ctx, node, scriptBody, shell, timeout, nil, reg, pool)
+}
+
+func executeScriptOnNodeWithEnv(ctx context.Context, node *registry.Node, scriptBody, shell string, timeout float64, overlayEnv map[string]string, reg *registry.Registry, pool *agentclient.Pool) nodeResult {
 	result := nodeResult{NodeName: node.Name}
 
 	client, err := pool.GetClient(node.Address, node.TLSServerName)
@@ -214,6 +218,7 @@ func executeScriptOnNode(ctx context.Context, node *registry.Node, scriptBody, s
 		workingDir = nctx.WorkingDir
 		env = nctx.Env
 	}
+	env = mergeEnv(env, overlayEnv)
 
 	callCtx, callCancel := nodeCallContext(ctx, node.Name)
 	defer callCancel()

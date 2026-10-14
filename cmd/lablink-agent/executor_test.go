@@ -175,6 +175,98 @@ func TestExecuteCommandStartProcessWithRedirectsReturnsCleanly(t *testing.T) {
 	}
 }
 
+func TestScriptExtension(t *testing.T) {
+	tests := map[string]string{
+		"powershell": ".ps1",
+		"PowerShell": ".ps1",
+		"pwsh":       ".ps1",
+		"cmd":        ".cmd",
+		"bash":       ".sh",
+		"":           ".sh",
+		"unknown":    ".sh",
+	}
+	for shell, want := range tests {
+		t.Run(shell, func(t *testing.T) {
+			if got := scriptExtension(shell); got != want {
+				t.Fatalf("scriptExtension(%q) = %q, want %q", shell, got, want)
+			}
+		})
+	}
+}
+
+func TestExecuteScriptParallelUsesUniqueFilesWithoutContentCorruption(t *testing.T) {
+	const parallel = 32
+
+	shell := "bash"
+	if runtime.GOOS == "windows" {
+		shell = "powershell"
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		marker string
+		path   string
+		err    error
+	}
+	results := make(chan result, parallel)
+
+	for i := 0; i < parallel; i++ {
+		i := i
+		go func() {
+			marker := fmt.Sprintf("parallel-script-%02d", i)
+			var body string
+			if runtime.GOOS == "windows" {
+				body = fmt.Sprintf("Write-Output ('%s|' + $PSCommandPath); Start-Sleep -Milliseconds 100", marker)
+			} else {
+				body = fmt.Sprintf("printf '%%s|%%s\\n' '%s' \"$0\"; sleep 0.1", marker)
+			}
+
+			stream := &testExecuteStream{}
+			<-start
+			err := executeScript(context.Background(), body, shell, "", nil, 30, nil, stream)
+			output := strings.TrimSpace(combinedStreamOutput(stream.responses))
+			parts := strings.SplitN(output, "|", 2)
+			if err == nil && (len(parts) != 2 || parts[0] != marker) {
+				err = fmt.Errorf("unexpected output %q for marker %q", output, marker)
+			}
+			path := ""
+			if len(parts) == 2 {
+				path = strings.TrimSpace(parts[1])
+			}
+			results <- result{marker: marker, path: path, err: err}
+		}()
+	}
+
+	close(start)
+	paths := make(map[string]string, parallel)
+	for i := 0; i < parallel; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Errorf("%s failed: %v", result.marker, result.err)
+			continue
+		}
+		if result.path == "" {
+			t.Errorf("%s returned no script path", result.marker)
+			continue
+		}
+		if prior, exists := paths[result.path]; exists {
+			t.Errorf("scripts %s and %s used the same path %q", prior, result.marker, result.path)
+		}
+		paths[result.path] = result.marker
+
+		wantExt := scriptExtension(shell)
+		if filepath.Ext(result.path) != wantExt {
+			t.Errorf("%s path %q extension = %q, want %q", result.marker, result.path, filepath.Ext(result.path), wantExt)
+		}
+		if _, err := os.Stat(result.path); !os.IsNotExist(err) {
+			t.Errorf("%s temp script %q was not cleaned up: %v", result.marker, result.path, err)
+		}
+	}
+	if len(paths) != parallel {
+		t.Fatalf("got %d unique successful script paths, want %d", len(paths), parallel)
+	}
+}
+
 func TestStreamPipeHandlesLongLines(t *testing.T) {
 	stream := &testExecuteStream{}
 	longLine := append(bytes.Repeat([]byte("a"), 2*1024*1024), '\n')

@@ -17,6 +17,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
+	"github.com/nijosmsft/lablink/internal/registry"
 	internalsec "github.com/nijosmsft/lablink/internal/security"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
@@ -33,6 +34,7 @@ type vmRoutingMockAgent struct {
 	payload   string
 	gotShell  string
 	gotScript string
+	gotEnv    map[string]string
 	exitCode  int32
 	delay     time.Duration
 }
@@ -52,6 +54,7 @@ func (a *dhcpReleaseMockAgent) Execute(req *pb.ExecuteRequest, stream grpc.Serve
 func (a *vmRoutingMockAgent) ExecuteScript(req *pb.ExecuteScriptRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
 	a.gotShell = req.Shell
 	a.gotScript = req.ScriptBody
+	a.gotEnv = cloneStringMap(req.Env)
 	if a.delay > 0 {
 		time.Sleep(a.delay)
 	}
@@ -156,6 +159,36 @@ func TestRunPS_RemoteNonzeroExitIsFailure(t *testing.T) {
 	}
 }
 
+func TestRunPSWithEnvMergesNodeContextAndRedacts(t *testing.T) {
+	const secret = "runps-secret-value"
+	agent := &vmRoutingMockAgent{payload: "LABLINK_ERROR: " + secret, exitCode: 1}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	if err := reg.SetNodeContext("node1", &registry.NodeContext{
+		Env: map[string]string{"CONTEXT_ONLY": "context", "OVERLAY": "old"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	tgt, _ := resolveTarget(reqNoToken(map[string]any{"target": "node1"}), reg)
+	output, exit, err := runPSWithEnv(
+		context.Background(), reg, pool, tgt, "throw", 30,
+		map[string]string{"OVERLAY": "new", "SECRET": secret}, []string{secret},
+	)
+	if err == nil || exit != 1 {
+		t.Fatalf("runPSWithEnv exit=%d err=%v", exit, err)
+	}
+	if strings.Contains(output, secret) || strings.Contains(err.Error(), secret) ||
+		!strings.Contains(output, passwordMask) {
+		t.Fatalf("secret was not redacted: output=%q err=%v", output, err)
+	}
+	if agent.gotEnv["CONTEXT_ONLY"] != "context" || agent.gotEnv["OVERLAY"] != "new" ||
+		agent.gotEnv["SECRET"] != secret {
+		t.Fatalf("ExecuteScriptRequest.Env = %#v", agent.gotEnv)
+	}
+}
+
 func TestReleaseGuestDHCPBestEffort(t *testing.T) {
 	agent := &dhcpReleaseMockAgent{}
 	addr := startNodeAgent(t, agent)
@@ -256,7 +289,8 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqNoToken(map[string]any{
-		"name": "vm-one", "memory_mb": float64(12288), "dry_run": true,
+		"name": "vm-one", "memory_mb": float64(12288),
+		"virtualization_based_security_opt_out": true, "dry_run": true,
 	}))
 	if err != nil || res == nil || res.IsError {
 		t.Fatalf("dry run failed: %#v, %v", res, err)
@@ -269,6 +303,7 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 		`"vm_location": "E:\\VM\\vm-one"`,
 		`"memory_mb": 12288`,
 		`"cpu_count": 4`,
+		`"virtualization_based_security_opt_out": true`,
 		`"minimum_free_pct": 10`,
 	} {
 		if !strings.Contains(text, want) {
@@ -347,6 +382,7 @@ func TestPermanentTLSIdentityError(t *testing.T) {
 		fmt.Errorf(`rpc error: code = Unavailable desc = connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate is valid for ATC-ST-01, not ATC-ST-02"`),
 		fmt.Errorf("tls: failed to verify certificate: x509: certificate is not valid for any names"),
 	}
+
 	for _, err := range permanent {
 		if !isPermanentTLSIdentityError(err) {
 			t.Errorf("expected permanent TLS identity error: %v", err)
@@ -361,6 +397,34 @@ func TestPermanentTLSIdentityError(t *testing.T) {
 		if isPermanentTLSIdentityError(err) {
 			t.Errorf("unexpected permanent TLS identity classification: %v", err)
 		}
+	}
+}
+
+func TestLinuxRegistrationWaitIsBoundedWithoutChangingWindowsDefault(t *testing.T) {
+	if linuxEnrollmentReadyTimeout != 10*time.Minute {
+		t.Fatalf("Linux registration timeout = %s, want 10 minutes", linuxEnrollmentReadyTimeout)
+	}
+	if windowsEnrollmentReadyTimeout != 5*time.Minute {
+		t.Fatalf("Windows registration timeout changed to %s", windowsEnrollmentReadyTimeout)
+	}
+}
+
+func TestEnrollmentWaitHonorsParentContextAndRemainsBounded(t *testing.T) {
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := verifyEnrolledVMWithOptions(ctx, windowsVMPlan{
+		LabLinkNodeName: "missing", LabLinkPort: 1,
+	}, startedVMInfo{IPAddress: "127.0.0.1"}, newRebootTestRegistry(t, nil), pool, false, enrollmentWaitOptions{
+		Timeout: 10 * time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected bounded readiness wait to honor parent cancellation")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("readiness wait ignored parent context: %s", elapsed)
 	}
 }
 
@@ -495,6 +559,21 @@ func TestGuestEnrollmentScriptUsesSecretFilesNotArguments(t *testing.T) {
 	}
 	if strings.Contains(script, "temporary-secret") {
 		t.Fatal("enrollment script unexpectedly embeds a secret value")
+	}
+}
+
+func TestWindowsProfileCarriesNestedVirtualizationWithoutChangingDefault(t *testing.T) {
+	enabled := true
+	withNested := planFromProfile(vmconfig.Profile{
+		ExposeVirtualizationExtensions:    &enabled,
+		VirtualizationBasedSecurityOptOut: &enabled,
+	}, "builder")
+	if !withNested.ExposeVirtualizationExtensions || !withNested.VirtualizationBasedSecurityOptOut {
+		t.Fatal("Windows profile lost nested-virtualization isolation settings")
+	}
+	ordinary := planFromProfile(vmconfig.Profile{}, "ordinary")
+	if ordinary.ExposeVirtualizationExtensions || ordinary.VirtualizationBasedSecurityOptOut {
+		t.Fatal("ordinary Windows profiles must preserve false virtualization defaults")
 	}
 }
 

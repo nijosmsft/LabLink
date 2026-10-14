@@ -17,10 +17,11 @@ import (
 )
 
 type VMEnrollmentConfig struct {
-	ConfigDir   string
-	PKIDir      string
-	AgentBinary string
-	AuthToken   string
+	ConfigDir        string
+	PKIDir           string
+	AgentBinary      string
+	LinuxAgentBinary string
+	AuthToken        string
 }
 
 type enrollmentPayload struct {
@@ -203,6 +204,11 @@ type startedVMInfo struct {
 	State     string `json:"state"`
 }
 
+const (
+	windowsEnrollmentReadyTimeout = 5 * time.Minute
+	linuxEnrollmentReadyTimeout   = 10 * time.Minute
+)
+
 func startVMAndDiscoverIP(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool) (startedVMInfo, error) {
 	target, err := resolvePlanTarget(plan.Target, reg)
 	if err != nil {
@@ -243,22 +249,58 @@ if (-not $ip) { throw "VM_IP_TIMEOUT: VM '$name' did not report an IPv4 address 
 }
 
 func registerEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMInfo, reg *registry.Registry, pool *agentclient.Pool) error {
+	return verifyEnrolledVM(ctx, plan, info, reg, pool, true)
+}
+
+func verifyEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMInfo, reg *registry.Registry, pool *agentclient.Pool, register bool) error {
+	return verifyEnrolledVMWithOptions(ctx, plan, info, reg, pool, register, enrollmentWaitOptions{
+		Timeout: windowsEnrollmentReadyTimeout,
+	})
+}
+
+type enrollmentWaitOptions struct {
+	Timeout  time.Duration
+	OnStatus func(string)
+}
+
+func verifyEnrolledVMWithOptions(ctx context.Context, plan windowsVMPlan, info startedVMInfo, reg *registry.Registry, pool *agentclient.Pool, register bool, options enrollmentWaitOptions) error {
 	address := fmt.Sprintf("%s:%d", info.IPAddress, plan.LabLinkPort)
-	deadline := time.Now().Add(5 * time.Minute)
+	if options.Timeout <= 0 {
+		options.Timeout = windowsEnrollmentReadyTimeout
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, options.Timeout)
+	defer cancelWait()
 	var lastErr error
-	for time.Now().Before(deadline) {
+	attempt := 0
+	for {
+		attempt++
+		if options.OnStatus != nil {
+			options.OnStatus(fmt.Sprintf("waiting for mTLS agent at %s (attempt %d; bounded timeout %s)", address, attempt, options.Timeout))
+		}
 		client, err := pool.GetClient(address, plan.LabLinkNodeName)
 		if err == nil {
-			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			probeCtx, cancel := context.WithTimeout(waitCtx, 10*time.Second)
 			live, probeErr := client.GetInfo(probeCtx, &pb.GetInfoRequest{})
 			cancel()
 			if probeErr == nil {
-				return reg.SetNode(&registry.Node{
+				if options.OnStatus != nil {
+					options.OnStatus("mTLS identity verified; guest agent is ready")
+				}
+				verifiedNode := &registry.Node{
 					Name: plan.LabLinkNodeName, Address: address, Role: plan.LabLinkRole,
 					OS: live.Os, Arch: live.Arch, CPUCount: int(live.CpuCount),
 					Memory: live.MemoryBytes, LastSeen: time.Now(),
 					TransportMode: "mtls", TLSServerName: plan.LabLinkNodeName,
-				})
+				}
+				if register {
+					if err := reg.SetNode(verifiedNode); err != nil {
+						return err
+					}
+				}
+				if hmon != nil {
+					hmon.RecordAuthenticatedProbeSuccess(verifiedNode)
+				}
+				return nil
 			}
 			if isPermanentTLSIdentityError(probeErr) {
 				return fmt.Errorf("LabLink guest agent at %s presented the wrong TLS identity for %q: %w", address, plan.LabLinkNodeName, probeErr)
@@ -267,9 +309,15 @@ func registerEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMI
 		} else {
 			lastErr = err
 		}
-		time.Sleep(5 * time.Second)
+		select {
+		case <-waitCtx.Done():
+			if lastErr == nil {
+				lastErr = waitCtx.Err()
+			}
+			return fmt.Errorf("LabLink guest agent did not become ready at %s within %s: %w", address, options.Timeout, lastErr)
+		case <-time.After(5 * time.Second):
+		}
 	}
-	return fmt.Errorf("LabLink guest agent did not become ready at %s: %w", address, lastErr)
 }
 
 func isPermanentTLSIdentityError(err error) bool {

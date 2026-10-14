@@ -18,19 +18,22 @@ type CreateVMParams struct {
 	MemoryMB float64 // startup memory (default applied by caller)
 
 	// Dynamic-memory policy. When DynamicMemory is true, Min/Max/Buffer apply.
-	DynamicMemory             bool
-	DynamicMinMB              float64
-	DynamicMaxMB              float64
-	DynamicBufferPct          float64
-	CPUCount                  float64
-	VSwitch                   string
-	ISOPath                   string
-	SecureBoot                bool
-	SecureBootTemplate        string // default MicrosoftWindows
-	UseHostDefaults           bool   // permit Hyper-V default VM location when VMLocation empty
-	RequiredFreeSpaceGB       float64
-	MinHostReservePct         float64
-	AllowHostResourcePressure bool
+	DynamicMemory                     bool
+	DynamicMinMB                      float64
+	DynamicMaxMB                      float64
+	DynamicBufferPct                  float64
+	CPUCount                          float64
+	VSwitch                           string
+	ISOPath                           string
+	SecureBoot                        bool
+	SecureBootTemplate                string // default MicrosoftWindows
+	UseHostDefaults                   bool   // permit Hyper-V default VM location when VMLocation empty
+	RequiredFreeSpaceGB               float64
+	MinHostReservePct                 float64
+	AllowHostResourcePressure         bool
+	ExposeVirtualizationExtensions    bool
+	VirtualizationBasedSecurityOptOut bool
+	ManagedMetadata                   string
 }
 
 // BuildCreateVMScript builds the create_vm mutation script with the network
@@ -84,6 +87,9 @@ func BuildCreateVMScript(p CreateVMParams) (string, error) {
 	fmt.Fprintf(&b, "$isoPath = %s\n", PSLit(p.ISOPath))
 	fmt.Fprintf(&b, "$secureBoot = %s\n", PSBool(p.SecureBoot))
 	fmt.Fprintf(&b, "$secureBootTemplate = %s\n", PSLit(sbTemplate))
+	fmt.Fprintf(&b, "$exposeVirtualizationExtensions = %s\n", PSBool(p.ExposeVirtualizationExtensions))
+	fmt.Fprintf(&b, "$virtualizationBasedSecurityOptOut = %s\n", PSBool(p.VirtualizationBasedSecurityOptOut))
+	fmt.Fprintf(&b, "$managedMetadata = %s\n", PSLit(p.ManagedMetadata))
 	fmt.Fprintf(&b, "$requiredFreeGB = %d\n", int64(p.RequiredFreeSpaceGB))
 
 	storagePath := p.VHDPath
@@ -134,7 +140,7 @@ if ($vhdPath) {
     $qualifier = (Split-Path -Qualifier $targetForSpace) -replace ':',''
     if ($qualifier) {
         $vol = Get-Volume -DriveLetter $qualifier -ErrorAction SilentlyContinue
-        $needBytes = [math]::Max($newVhdSizeBytes, ($requiredFreeGB * 1GB))
+        $needBytes = [math]::Max([int64]$newVhdSizeBytes, [int64]($requiredFreeGB * 1GB))
         if ($vol -and $vol.SizeRemaining -lt $needBytes) {
             throw "INSUFFICIENT_SPACE: volume ${qualifier}: has $([math]::Round($vol.SizeRemaining/1GB,1)) GB free, need $([math]::Round($needBytes/1GB,1)) GB"
         }
@@ -152,7 +158,28 @@ else             { $vmArgs.NewVHDPath = $newVhdPath; $vmArgs.NewVHDSizeBytes = $
 if ($vswitch)    { $vmArgs.SwitchName = $vswitch }
 New-VM @vmArgs | Out-Null
 
-Set-VMProcessor -VMName $name -Count $cpuCount
+$virtualizationBasedSecurityOptOutApplied = $false
+if ($virtualizationBasedSecurityOptOut) {
+    $vm = Get-VM -Name $name -ErrorAction Stop
+    if ([string]$vm.State -ne 'Off') {
+        throw "VBS_OPT_OUT_REQUIRES_OFF: VM '$name' must be Off before configuring VirtualizationBasedSecurityOptOut"
+    }
+    if (-not (Get-Command Set-VMSecurity -ErrorAction SilentlyContinue)) {
+        throw "VBS_OPT_OUT_UNSUPPORTED: Set-VMSecurity is unavailable on this Hyper-V host"
+    }
+    Set-VMSecurity -VMName $name -VirtualizationBasedSecurityOptOut $true
+    $virtualizationBasedSecurityOptOutApplied = [bool](Get-VMSecurity -VMName $name -ErrorAction Stop).VirtualizationBasedSecurityOptOut
+    if (-not $virtualizationBasedSecurityOptOutApplied) {
+        throw "VBS_OPT_OUT_VERIFY_FAILED: Hyper-V did not retain VirtualizationBasedSecurityOptOut for VM '$name'"
+    }
+}
+
+if ($managedMetadata) { Set-VM -Name $name -Notes $managedMetadata }
+if ($exposeVirtualizationExtensions) {
+    Set-VMProcessor -VMName $name -Count $cpuCount -ExposeVirtualizationExtensions $true
+} else {
+    Set-VMProcessor -VMName $name -Count $cpuCount
+}
 
 if ($dynamicMemory) {
     $memArgs = @{ VMName = $name; DynamicMemoryEnabled = $true; StartupBytes = $memStartupBytes }
@@ -192,6 +219,8 @@ $disk = ($vm | Get-VMHardDiskDrive | Select-Object -First 1).Path
     vswitch    = $vswitch
     vhd_path   = $disk
     secure_boot = [bool]$secureBoot
+    expose_virtualization_extensions = [bool]$exposeVirtualizationExtensions
+    virtualization_based_security_opt_out = [bool]$virtualizationBasedSecurityOptOutApplied
     resource_safety = [pscustomobject]$resourceSafety
     action     = 'created'
 } | ConvertTo-Json -Depth 4

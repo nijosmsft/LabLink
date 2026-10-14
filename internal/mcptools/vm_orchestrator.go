@@ -21,37 +21,40 @@ import (
 )
 
 type windowsVMPlan struct {
-	Profile                   string  `json:"profile,omitempty"`
-	Target                    string  `json:"target"`
-	Name                      string  `json:"name"`
-	Hostname                  string  `json:"hostname"`
-	BaseVHD                   string  `json:"base_vhd"`
-	VMRoot                    string  `json:"vm_root,omitempty"`
-	VHDPath                   string  `json:"vhd_path"`
-	VMLocation                string  `json:"vm_location"`
-	VSwitch                   string  `json:"vswitch"`
-	AdminPasswordCredential   string  `json:"admin_password_credential"`
-	MemoryMB                  float64 `json:"memory_mb"`
-	CPUCount                  float64 `json:"cpu_count"`
-	DynamicMemory             bool    `json:"dynamic_memory"`
-	DynamicMinMB              float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB              float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct          float64 `json:"dynamic_buffer_pct,omitempty"`
-	SecureBoot                bool    `json:"secure_boot"`
-	Locale                    string  `json:"locale"`
-	TimeZone                  string  `json:"timezone,omitempty"`
-	FirstBootScript           string  `json:"-"`
-	AutoLogon                 bool    `json:"auto_logon"`
-	ObfuscatePassword         bool    `json:"obfuscate_password"`
-	RegisterWithLabLink       bool    `json:"register_with_lablink"`
-	LabLinkNodeName           string  `json:"lablink_node_name,omitempty"`
-	LabLinkRole               string  `json:"lablink_role,omitempty"`
-	LabLinkPort               int     `json:"lablink_port,omitempty"`
-	LabLinkAddress            string  `json:"lablink_address,omitempty"`
-	State                     string  `json:"state,omitempty"`
-	MinHostReservePct         float64 `json:"min_host_reserve_pct"`
-	AllowHostResourcePressure bool    `json:"allow_host_resource_pressure"`
-	ResourceSafety            any     `json:"resource_safety,omitempty"`
+	Profile                           string  `json:"profile,omitempty"`
+	Target                            string  `json:"target"`
+	Name                              string  `json:"name"`
+	Hostname                          string  `json:"hostname"`
+	BaseVHD                           string  `json:"base_vhd"`
+	VMRoot                            string  `json:"vm_root,omitempty"`
+	VHDPath                           string  `json:"vhd_path"`
+	VMLocation                        string  `json:"vm_location"`
+	VSwitch                           string  `json:"vswitch"`
+	AdminPasswordCredential           string  `json:"admin_password_credential"`
+	MemoryMB                          float64 `json:"memory_mb"`
+	CPUCount                          float64 `json:"cpu_count"`
+	DynamicMemory                     bool    `json:"dynamic_memory"`
+	DynamicMinMB                      float64 `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB                      float64 `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct                  float64 `json:"dynamic_buffer_pct,omitempty"`
+	SecureBoot                        bool    `json:"secure_boot"`
+	Locale                            string  `json:"locale"`
+	TimeZone                          string  `json:"timezone,omitempty"`
+	FirstBootScript                   string  `json:"-"`
+	AutoLogon                         bool    `json:"auto_logon"`
+	ObfuscatePassword                 bool    `json:"obfuscate_password"`
+	RegisterWithLabLink               bool    `json:"register_with_lablink"`
+	LabLinkNodeName                   string  `json:"lablink_node_name,omitempty"`
+	LabLinkRole                       string  `json:"lablink_role,omitempty"`
+	LabLinkPort                       int     `json:"lablink_port,omitempty"`
+	LabLinkAddress                    string  `json:"lablink_address,omitempty"`
+	State                             string  `json:"state,omitempty"`
+	MinHostReservePct                 float64 `json:"min_host_reserve_pct"`
+	AllowHostResourcePressure         bool    `json:"allow_host_resource_pressure"`
+	ExposeVirtualizationExtensions    bool    `json:"expose_virtualization_extensions"`
+	VirtualizationBasedSecurityOptOut bool    `json:"virtualization_based_security_opt_out"`
+	ResourceSafety                    any     `json:"resource_safety,omitempty"`
+	ManagedMetadata                   string  `json:"-"`
 }
 
 func createWindowsVMHandler(
@@ -106,7 +109,7 @@ func resolveWindowsVMPlan(
 	defaults *vmconfig.Store,
 ) (windowsVMPlan, error) {
 	requestedTarget := req.GetString("target", "")
-	profile, profileName, err := defaults.ResolveForTarget(req.GetString("profile", ""), requestedTarget)
+	profile, profileName, err := defaults.ResolveWindowsForTarget(req.GetString("profile", ""), requestedTarget)
 	if err != nil {
 		return windowsVMPlan{}, err
 	}
@@ -221,10 +224,19 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		DynamicMaxMB: p.DynamicMaxMB, DynamicBufferPct: p.DynamicBufferPct,
 		SecureBoot: secureBoot, Locale: locale, TimeZone: p.TimeZone,
 		AutoLogon: p.AutoLogon, ObfuscatePassword: p.ObfuscatePassword,
-		RegisterWithLabLink: p.RegisterLabLink, LabLinkRole: p.LabLinkRole,
+		RegisterWithLabLink: boolValue(p.RegisterLabLink, false), LabLinkRole: p.LabLinkRole,
 		LabLinkPort: p.LabLinkPort, VMRoot: p.VMRoot,
-		MinHostReservePct: p.MinHostReservePct,
+		MinHostReservePct:                 p.MinHostReservePct,
+		ExposeVirtualizationExtensions:    boolValue(p.ExposeVirtualizationExtensions, false),
+		VirtualizationBasedSecurityOptOut: boolValue(p.VirtualizationBasedSecurityOptOut, false),
 	}
+}
+
+func boolValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
@@ -255,6 +267,8 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	applyBoolArg(args, "obfuscate_password", &plan.ObfuscatePassword)
 	applyBoolArg(args, "register_with_lablink", &plan.RegisterWithLabLink)
 	applyBoolArg(args, "allow_host_resource_pressure", &plan.AllowHostResourcePressure)
+	applyBoolArg(args, "expose_virtualization_extensions", &plan.ExposeVirtualizationExtensions)
+	applyBoolArg(args, "virtualization_based_security_opt_out", &plan.VirtualizationBasedSecurityOptOut)
 	if value, ok := numericArgument(args["lablink_port"]); ok {
 		plan.LabLinkPort = int(value)
 	}
@@ -404,8 +418,11 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		"dynamic_memory": plan.DynamicMemory, "dynamic_min_mb": plan.DynamicMinMB,
 		"dynamic_max_mb": plan.DynamicMaxMB, "dynamic_buffer_pct": plan.DynamicBufferPct,
 		"vswitch": plan.VSwitch, "secure_boot": plan.SecureBoot,
-		"min_host_reserve_pct":         plan.MinHostReservePct,
-		"allow_host_resource_pressure": plan.AllowHostResourcePressure,
+		"min_host_reserve_pct":                  plan.MinHostReservePct,
+		"allow_host_resource_pressure":          plan.AllowHostResourcePressure,
+		"expose_virtualization_extensions":      plan.ExposeVirtualizationExtensions,
+		"virtualization_based_security_opt_out": plan.VirtualizationBasedSecurityOptOut,
+		"managed_metadata":                      plan.ManagedMetadata,
 	}
 	created, err := createVMHandler(reg, pool, auditLog)(ctx, createReq)
 	if err != nil || created == nil || created.IsError {
@@ -540,7 +557,7 @@ func cloneArguments(args map[string]any) map[string]any {
 	return out
 }
 
-func marshalPlan(plan windowsVMPlan) string {
+func marshalPlan(plan any) string {
 	data, _ := json.MarshalIndent(plan, "", "  ")
 	return string(data)
 }

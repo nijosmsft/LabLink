@@ -152,10 +152,11 @@ func main() {
 	serverExecutable, _ := os.Executable()
 	installRoot := filepath.Dir(filepath.Dir(serverExecutable))
 	vmEnrollment := mcptools.VMEnrollmentConfig{
-		ConfigDir:   configDir,
-		PKIDir:      filepath.Join(configDir, "pki"),
-		AgentBinary: filepath.Join(installRoot, "bin", "lablink-agent.exe"),
-		AuthToken:   token,
+		ConfigDir:        configDir,
+		PKIDir:           filepath.Join(configDir, "pki"),
+		AgentBinary:      filepath.Join(installRoot, "bin", "lablink-agent.exe"),
+		LinuxAgentBinary: filepath.Join(installRoot, "bin", "linux-amd64", "lablink-agent"),
+		AuthToken:        token,
 	}
 
 	// Health monitor — background keepalive for all nodes.

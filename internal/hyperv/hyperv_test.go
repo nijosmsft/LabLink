@@ -186,6 +186,7 @@ func TestBuildCreateVMScript_Completeness(t *testing.T) {
 		"Where-Object { $_.Path -eq $isoPath }", // deterministic DVD by ISO path
 		"VM_EXISTS",
 		"INSUFFICIENT_SPACE",
+		"[math]::Max([int64]$newVhdSizeBytes",
 		"VHD_IN_USE",
 		"HOST_MEMORY_RESERVE",
 		"HOST_STORAGE_RESERVE",
@@ -203,6 +204,36 @@ func TestBuildCreateVMScript_Completeness(t *testing.T) {
 	})
 	if !strings.Contains(sd, "DynamicMemoryEnabled = $true") || !strings.Contains(sd, "$memArgs.MinimumBytes") {
 		t.Errorf("dynamic-memory policy not wired: %s", sd)
+	}
+
+	nested, err := BuildCreateVMScript(CreateVMParams{
+		Name: "builder", VMLocation: `D:\VMs\builder`, VHDPath: `D:\VMs\builder\builder.vhdx`,
+		ExposeVirtualizationExtensions: true, VirtualizationBasedSecurityOptOut: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newVM := strings.Index(nested, "New-VM @vmArgs")
+	vbsOptOut := strings.Index(nested, "Set-VMSecurity -VMName $name -VirtualizationBasedSecurityOptOut $true")
+	expose := strings.Index(nested, "Set-VMProcessor -VMName $name -Count $cpuCount -ExposeVirtualizationExtensions $true")
+	if newVM < 0 || vbsOptOut < 0 || expose < 0 || newVM > vbsOptOut || vbsOptOut > expose {
+		t.Fatal("VBS opt-out and nested virtualization must be configured immediately after VM creation")
+	}
+	for _, want := range []string{
+		"[string]$vm.State -ne 'Off'",
+		"Get-VMSecurity -VMName $name -ErrorAction Stop",
+		"VBS_OPT_OUT_VERIFY_FAILED",
+		"virtualization_based_security_opt_out = [bool]$virtualizationBasedSecurityOptOutApplied",
+	} {
+		if !strings.Contains(nested, want) {
+			t.Errorf("VBS opt-out script missing %q", want)
+		}
+	}
+	if strings.Contains(nested, "Start-VM") {
+		t.Fatal("create script must not start the guest before VBS opt-out and nested virtualization are configured")
+	}
+	if !strings.Contains(s, "$virtualizationBasedSecurityOptOut = $false") {
+		t.Fatal("ordinary VM creation must preserve the VBS opt-out false default")
 	}
 }
 
