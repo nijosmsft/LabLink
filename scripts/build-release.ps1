@@ -58,6 +58,17 @@ $binaries = @(
     @{ Name = 'lablink-ca';     Pkg = './cmd/lablink-ca';     LdflagKey = 'caVersion';     Targets = @('windows','linux') }
 )
 
+$sharedRoot = Join-Path $OutDir '.shared'
+$sharedLinuxAgent = Join-Path $sharedRoot 'lablink-agent-linux-amd64'
+New-Item -ItemType Directory -Path $sharedRoot -Force | Out-Null
+$env:GOOS = 'linux'
+$env:GOARCH = 'amd64'
+$env:CGO_ENABLED = '0'
+$sharedAgentLdflags = "$baseLdflags -X main.agentVersion=$Version"
+Write-Host "  build lablink-agent [linux/amd64 shared payload]"
+& go build -trimpath -ldflags $sharedAgentLdflags -o $sharedLinuxAgent './cmd/lablink-agent'
+if ($LASTEXITCODE -ne 0) { throw "go build failed for shared lablink-agent [linux/amd64]" }
+
 # Files copied into every release alongside the binaries.
 $bundleFiles = @(
     'README.md',
@@ -85,6 +96,11 @@ function Build-Target {
         if ($b.Targets -notcontains $Os) { continue }
         $ext = if ($Os -eq 'windows') { '.exe' } else { '' }
         $out = Join-Path $binDir ("{0}{1}" -f $b.Name, $ext)
+        if ($b.Name -eq 'lablink-agent' -and $Os -eq 'linux' -and $Arch -eq 'amd64') {
+            Write-Host "  copy lablink-agent [linux/amd64 shared payload]"
+            Copy-Item -LiteralPath $sharedLinuxAgent -Destination $out -Force
+            continue
+        }
         $ldflags = "$baseLdflags -X main.$($b.LdflagKey)=$Version"
         Write-Host "  build $($b.Name) [$Os/$Arch]"
         $env:GOOS   = $Os
@@ -101,13 +117,8 @@ function Build-Target {
         $linuxAgentDir = Join-Path $binDir 'linux-amd64'
         New-Item -ItemType Directory -Path $linuxAgentDir -Force | Out-Null
         $linuxAgent = Join-Path $linuxAgentDir 'lablink-agent'
-        Write-Host "  build lablink-agent [linux/amd64 guest payload]"
-        $env:GOOS = 'linux'
-        $env:GOARCH = 'amd64'
-        $env:CGO_ENABLED = '0'
-        $ldflags = "$baseLdflags -X main.agentVersion=$Version"
-        & go build -trimpath -ldflags $ldflags -o $linuxAgent './cmd/lablink-agent'
-        if ($LASTEXITCODE -ne 0) { throw "go build failed for lablink-agent [linux/amd64 guest payload]" }
+        Write-Host "  copy lablink-agent [linux/amd64 guest payload]"
+        Copy-Item -LiteralPath $sharedLinuxAgent -Destination $linuxAgent -Force
     }
 }
 
@@ -160,6 +171,7 @@ foreach ($plat in $Platforms.Split(',')) {
 
 $sumsFile = Join-Path $OutDir 'SHA256SUMS.txt'
 $sums | Set-Content -Encoding ASCII $sumsFile
+Remove-Item -LiteralPath $sharedRoot -Recurse -Force
 Write-Host ""
 Write-Host "Release artifacts in ${OutDir}:" -ForegroundColor Green
 Get-ChildItem $OutDir | ForEach-Object { Write-Host "  $($_.Name)" }
