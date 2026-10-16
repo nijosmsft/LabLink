@@ -17,6 +17,7 @@
     },
     "linux-image-builder": {
       "guest_os": "windows",
+      "profile_usage": "linux_image_builder",
       "target": "hyperv-host-1",
       "base_vhd": "E:\\Images\\windows-base.vhdx",
       "vm_root": "E:\\VM",

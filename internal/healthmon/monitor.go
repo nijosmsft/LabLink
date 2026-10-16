@@ -2,6 +2,7 @@ package healthmon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -22,9 +23,12 @@ const (
 
 // NodeState represents the health status of a node.
 type NodeState struct {
-	Status           string // "online", "offline", "unknown"
-	LastSeen         time.Time
-	ConsecutiveFails int
+	Status             string    `json:"status"` // "online", "offline", "unknown"
+	LastSeen           time.Time `json:"last_seen,omitempty"`
+	ConsecutiveFails   int       `json:"consecutive_fails"`
+	AgentVersion       string    `json:"agent_version,omitempty"`
+	UpgradeRecommended bool      `json:"upgrade_recommended"`
+	VersionWarning     string    `json:"version_warning,omitempty"`
 }
 
 // Monitor periodically probes registered nodes and cancels contexts for dead nodes.
@@ -40,22 +44,31 @@ type Monitor struct {
 	interval      time.Duration
 	probeTimeout  time.Duration
 	deadThreshold int
+	serverVersion string
+
+	warnedVersionTuples map[string]struct{}
 
 	stopCh chan struct{}
 }
 
 // New creates a new health monitor.
-func New(reg *registry.Registry, pool *agentclient.Pool) *Monitor {
+func New(reg *registry.Registry, pool *agentclient.Pool, serverVersion ...string) *Monitor {
+	version := ""
+	if len(serverVersion) > 0 {
+		version = serverVersion[0]
+	}
 	m := &Monitor{
-		states:        make(map[string]*NodeState),
-		ctxs:          make(map[string]context.Context),
-		cancels:       make(map[string]context.CancelFunc),
-		reg:           reg,
-		pool:          pool,
-		interval:      defaultInterval,
-		probeTimeout:  defaultProbeTimeout,
-		deadThreshold: defaultDeadThreshold,
-		stopCh:        make(chan struct{}),
+		states:              make(map[string]*NodeState),
+		ctxs:                make(map[string]context.Context),
+		cancels:             make(map[string]context.CancelFunc),
+		reg:                 reg,
+		pool:                pool,
+		interval:            defaultInterval,
+		probeTimeout:        defaultProbeTimeout,
+		deadThreshold:       defaultDeadThreshold,
+		serverVersion:       version,
+		warnedVersionTuples: make(map[string]struct{}),
+		stopCh:              make(chan struct{}),
 	}
 
 	// Override from env vars.
@@ -143,8 +156,13 @@ func (m *Monitor) GetAllStatuses() map[string]NodeState {
 // RecordAuthenticatedProbeSuccess marks a node healthy after the caller has
 // independently completed an authenticated agent probe for this exact node.
 // Reachability-only checks must not use this method.
-func (m *Monitor) RecordAuthenticatedProbeSuccess(node *registry.Node) {
-	m.recordSuccess(node)
+func (m *Monitor) RecordAuthenticatedProbeSuccess(node *registry.Node, agentVersion ...string) {
+	version := ""
+	reportVersion := len(agentVersion) > 0
+	if reportVersion {
+		version = agentVersion[0]
+	}
+	m.recordSuccess(node, version, reportVersion)
 }
 
 func (m *Monitor) loop() {
@@ -197,16 +215,16 @@ func (m *Monitor) probeNode(node *registry.Node) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.probeTimeout)
 	defer cancel()
 
-	_, err = client.GetInfo(ctx, &pb.GetInfoRequest{})
+	info, err := client.GetInfo(ctx, &pb.GetInfoRequest{})
 	if err != nil {
 		m.recordFailure(node)
 		return
 	}
 
-	m.recordSuccess(node)
+	m.recordSuccess(node, info.AgentVersion, true)
 }
 
-func (m *Monitor) recordSuccess(node *registry.Node) {
+func (m *Monitor) recordSuccess(node *registry.Node, agentVersion string, reportVersion bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -220,6 +238,9 @@ func (m *Monitor) recordSuccess(node *registry.Node) {
 	state.Status = "online"
 	state.LastSeen = time.Now()
 	state.ConsecutiveFails = 0
+	if reportVersion {
+		m.recordVersionState(node.Name, state, agentVersion)
+	}
 
 	// If the node was offline and is now back, create a fresh context.
 	if wasOffline {
@@ -236,6 +257,29 @@ func (m *Monitor) recordSuccess(node *registry.Node) {
 		m.ctxs[node.Name] = ctx
 		m.cancels[node.Name] = cancelFn
 	}
+}
+
+func (m *Monitor) recordVersionState(nodeName string, state *NodeState, agentVersion string) {
+	state.AgentVersion = agentVersion
+	state.UpgradeRecommended = false
+	state.VersionWarning = ""
+	if m.serverVersion == "" || agentVersion == "" || m.serverVersion == agentVersion {
+		return
+	}
+	state.UpgradeRecommended = true
+	state.VersionWarning = fmt.Sprintf(
+		"agent upgrade recommended: server version %s, agent version %s",
+		m.serverVersion, agentVersion,
+	)
+	key := nodeName + "\x00" + m.serverVersion + "\x00" + agentVersion
+	if _, warned := m.warnedVersionTuples[key]; warned {
+		return
+	}
+	m.warnedVersionTuples[key] = struct{}{}
+	log.Printf(
+		"healthmon: agent upgrade recommended: node=%s server_version=%s agent_version=%s",
+		nodeName, m.serverVersion, agentVersion,
+	)
 }
 
 func (m *Monitor) recordFailure(node *registry.Node) {

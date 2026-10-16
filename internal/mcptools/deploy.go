@@ -18,7 +18,7 @@ import (
 )
 
 func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, agentToken string) {
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("deploy_agent",
 			mcp.WithDescription("Deploy LabLink agent to a remote Windows machine via PS Remoting."),
 			mcp.WithString("machine", mcp.Required(), mcp.Description("IP or hostname of target machine")),
@@ -37,7 +37,7 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 		deployAgentHandler(reg, pool, creds, agentToken),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("save_credential",
 			mcp.WithDescription("Save a credential profile for use with deploy_agent."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Credential profile name")),
@@ -47,7 +47,7 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 		saveCredentialHandler(creds),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("list_credentials",
 			mcp.WithDescription("List saved credential profile names."),
 		),
@@ -156,6 +156,9 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 					TLSServerName: tlsServerName,
 				}
 				reg.SetNode(node)
+				if hmon != nil {
+					hmon.RecordAuthenticatedProbeSuccess(node, info.AgentVersion)
+				}
 				regResult = fmt.Sprintf("\nNode **%s** registered (%s/%s, %d CPUs, %s)",
 					name, info.Os, info.Arch, info.CpuCount, formatBytes(info.MemoryBytes))
 			} else {

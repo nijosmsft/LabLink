@@ -170,6 +170,7 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithNumber("lablink_port", mcp.Description("Guest LabLink agent port (default 9091)")),
 			mcp.WithNumber("min_host_reserve_pct", mcp.Description("Minimum projected free host RAM and target-volume capacity percentage (default 10)")),
 			mcp.WithBoolean("allow_host_resource_pressure", mcp.Description("Explicitly bypass host memory/storage reserve failures; never inherited from templates")),
+			mcp.WithBoolean("cleanup_on_failure", mcp.Description("Delete only exactly owned partial VM artifacts after create/configuration failure (default false; diagnostics are preserved otherwise)")),
 			mcp.WithBoolean("expose_virtualization_extensions", mcp.Description("Expose nested virtualization extensions to the guest before its first start")),
 			mcp.WithBoolean("virtualization_based_security_opt_out", mcp.Description("Opt the VM out of virtualization-based security immediately after creation while it is Off")),
 			mcp.WithBoolean("dry_run", mcp.Description("Resolve and return configuration without creating anything")),
@@ -331,6 +332,7 @@ func createVMHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *a
 			AllowHostResourcePressure:         req.GetBool("allow_host_resource_pressure", false),
 			ExposeVirtualizationExtensions:    req.GetBool("expose_virtualization_extensions", false),
 			VirtualizationBasedSecurityOptOut: req.GetBool("virtualization_based_security_opt_out", false),
+			CreationOwnershipMarker:           req.GetString("creation_ownership_marker", ""),
 			ManagedMetadata:                   req.GetString("managed_metadata", ""),
 		}
 

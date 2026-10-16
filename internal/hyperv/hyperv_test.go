@@ -209,15 +209,19 @@ func TestBuildCreateVMScript_Completeness(t *testing.T) {
 	nested, err := BuildCreateVMScript(CreateVMParams{
 		Name: "builder", VMLocation: `D:\VMs\builder`, VHDPath: `D:\VMs\builder\builder.vhdx`,
 		ExposeVirtualizationExtensions: true, VirtualizationBasedSecurityOptOut: true,
+		CreationOwnershipMarker: "opaque-owner", ManagedMetadata: "final-metadata",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	newVM := strings.Index(nested, "New-VM @vmArgs")
+	ownership := strings.Index(nested, "Set-VM -Name $name -Notes $creationOwnershipMarker")
 	vbsOptOut := strings.Index(nested, "Set-VMSecurity -VMName $name -VirtualizationBasedSecurityOptOut $true")
 	expose := strings.Index(nested, "Set-VMProcessor -VMName $name -Count $cpuCount -ExposeVirtualizationExtensions $true")
-	if newVM < 0 || vbsOptOut < 0 || expose < 0 || newVM > vbsOptOut || vbsOptOut > expose {
-		t.Fatal("VBS opt-out and nested virtualization must be configured immediately after VM creation")
+	finalMetadata := strings.LastIndex(nested, "Set-VM -Name $name -Notes $managedMetadata")
+	if newVM < 0 || ownership < 0 || vbsOptOut < 0 || expose < 0 || finalMetadata < 0 ||
+		newVM > ownership || ownership > vbsOptOut || vbsOptOut > expose || expose > finalMetadata {
+		t.Fatal("ownership, VBS opt-out, nested virtualization, and final metadata ordering is unsafe")
 	}
 	for _, want := range []string{
 		"[string]$vm.State -ne 'Off'",

@@ -15,6 +15,9 @@ import (
 const (
 	GuestOSWindows = "windows"
 	GuestOSLinux   = "linux"
+
+	ProfileUsageOrdinary          = "ordinary"
+	ProfileUsageLinuxImageBuilder = "linux_image_builder"
 )
 
 // Profile contains non-secret defaults for creating a Hyper-V VM.
@@ -23,6 +26,7 @@ const (
 type Profile struct {
 	Target                            string  `json:"target,omitempty"`
 	GuestOS                           string  `json:"guest_os,omitempty"`
+	ProfileUsage                      string  `json:"profile_usage,omitempty"`
 	BaseVHD                           string  `json:"base_vhd,omitempty"`
 	VMRoot                            string  `json:"vm_root,omitempty"`
 	VSwitch                           string  `json:"vswitch,omitempty"`
@@ -114,6 +118,14 @@ func (s *Store) load() (Config, error) {
 	if config.LinuxTargetDefaults == nil {
 		config.LinuxTargetDefaults = map[string]string{}
 	}
+	for name, profile := range config.Profiles {
+		if _, err := profile.EffectiveGuestOS(); err != nil {
+			return config, fmt.Errorf("VM defaults profile %q: %w", name, err)
+		}
+		if _, err := profile.EffectiveProfileUsage(); err != nil {
+			return config, fmt.Errorf("VM defaults profile %q: %w", name, err)
+		}
+	}
 	return config, nil
 }
 
@@ -146,6 +158,74 @@ func (s *Store) ResolveWindows(name string) (Profile, string, error) {
 // legacy target-specific default, then the legacy global default.
 func (s *Store) ResolveWindowsForTarget(name, target string) (Profile, string, error) {
 	return s.resolveForTarget(name, target, false, true)
+}
+
+// ResolveOrdinaryWindowsForTarget resolves the profile used by the public
+// create_windows_vm tool and rejects builder-only profiles. Internal Linux
+// image preparation intentionally uses ResolveWindowsForTarget instead.
+func (s *Store) ResolveOrdinaryWindowsForTarget(name, target string) (Profile, string, error) {
+	profile, selected, err := s.ResolveWindowsForTarget(name, target)
+	if err != nil {
+		return Profile{}, "", err
+	}
+	builderOnly, err := s.IsLinuxImageBuilderProfile(selected)
+	if err != nil {
+		return Profile{}, "", err
+	}
+	if !builderOnly {
+		return profile, selected, nil
+	}
+	suggestionTarget := target
+	if strings.TrimSpace(suggestionTarget) == "" {
+		suggestionTarget = profile.Target
+	}
+	suggestion := s.ordinaryWindowsDefaultSuggestion(suggestionTarget, selected)
+	return Profile{}, "", fmt.Errorf(
+		"VM defaults profile %q is reserved for internal Linux image preparation (profile_usage %q or referenced by a Linux image_builder_profile); %s",
+		selected, ProfileUsageLinuxImageBuilder, suggestion,
+	)
+}
+
+// IsLinuxImageBuilderProfile reports whether a Windows profile is explicitly
+// classified as a Linux image builder or is referenced by any Linux profile.
+// Reference inference preserves existing configurations created before
+// profile_usage was introduced.
+func (s *Store) IsLinuxImageBuilderProfile(name string) (bool, error) {
+	if s == nil || strings.TrimSpace(name) == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	return config.isLinuxImageBuilderProfile(name)
+}
+
+func (c Config) isLinuxImageBuilderProfile(name string) (bool, error) {
+	profile, ok := c.Profiles[name]
+	if !ok {
+		return false, fmt.Errorf("VM defaults profile %q not found", name)
+	}
+	usage, err := profile.EffectiveProfileUsage()
+	if err != nil {
+		return false, fmt.Errorf("VM defaults profile %q: %w", name, err)
+	}
+	if usage == ProfileUsageLinuxImageBuilder {
+		return true, nil
+	}
+	for linuxName, candidate := range c.Profiles {
+		guestOS, err := candidate.EffectiveGuestOS()
+		if err != nil {
+			return false, fmt.Errorf("VM defaults profile %q: %w", linuxName, err)
+		}
+		if guestOS == GuestOSLinux &&
+			strings.EqualFold(strings.TrimSpace(candidate.ImageBuilderProfile), strings.TrimSpace(name)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ResolveLinux returns a Linux profile using default_linux_profile and
@@ -197,6 +277,9 @@ func (s *Store) resolveForTarget(name, target string, linux, validateOS bool) (P
 	if !ok {
 		return Profile{}, "", fmt.Errorf("VM defaults profile %q not found in %s", selected, s.path)
 	}
+	if _, err := profile.EffectiveProfileUsage(); err != nil {
+		return Profile{}, "", fmt.Errorf("VM defaults profile %q: %w", selected, err)
+	}
 	if validateOS {
 		guestOS, err := profile.EffectiveGuestOS()
 		if err != nil {
@@ -211,6 +294,52 @@ func (s *Store) resolveForTarget(name, target string, linux, validateOS bool) (P
 		}
 	}
 	return profile, selected, nil
+}
+
+func (s *Store) ordinaryWindowsDefaultSuggestion(target, rejected string) string {
+	if s == nil {
+		return "choose an ordinary Windows profile"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config, err := s.load()
+	if err != nil {
+		return "choose an ordinary Windows profile"
+	}
+	candidates := make([]struct {
+		name   string
+		source string
+	}, 0, 2)
+	if strings.TrimSpace(target) != "" {
+		for configuredTarget, profileName := range config.TargetDefaults {
+			if strings.EqualFold(strings.TrimSpace(configuredTarget), strings.TrimSpace(target)) {
+				candidates = append(candidates, struct {
+					name   string
+					source string
+				}{strings.TrimSpace(profileName), fmt.Sprintf("target default for %q", target)})
+				break
+			}
+		}
+	}
+	candidates = append(candidates, struct {
+		name   string
+		source string
+	}{strings.TrimSpace(config.DefaultProfile), "default_profile"})
+	for _, candidate := range candidates {
+		if candidate.name == "" || candidate.name == rejected {
+			continue
+		}
+		profile, ok := config.Profiles[candidate.name]
+		if !ok {
+			continue
+		}
+		guestOS, guestErr := profile.EffectiveGuestOS()
+		builderOnly, builderErr := config.isLinuxImageBuilderProfile(candidate.name)
+		if guestErr == nil && builderErr == nil && guestOS == GuestOSWindows && !builderOnly {
+			return fmt.Sprintf("use ordinary profile %q configured as the %s", candidate.name, candidate.source)
+		}
+	}
+	return "choose an ordinary Windows profile or configure default_profile/target_defaults to one"
 }
 
 func (s *Store) Set(name string, profile Profile, targetDefault bool) error {
@@ -235,6 +364,13 @@ func (s *Store) Set(name string, profile Profile, targetDefault bool) error {
 	guestOS, err := profile.EffectiveGuestOS()
 	if err != nil {
 		return err
+	}
+	usage, err := profile.EffectiveProfileUsage()
+	if err != nil {
+		return err
+	}
+	if targetDefault && usage == ProfileUsageLinuxImageBuilder {
+		return fmt.Errorf("profile_usage %q cannot be an ordinary target default; save it with set_as_target_default=false", usage)
 	}
 	config.Profiles[name] = profile
 	if targetDefault {
@@ -332,5 +468,21 @@ func (p Profile) EffectiveGuestOS() (string, error) {
 		return GuestOSLinux, nil
 	default:
 		return "", fmt.Errorf("unsupported guest_os %q (expected windows or linux)", p.GuestOS)
+	}
+}
+
+// EffectiveProfileUsage normalizes profile_usage. Empty remains ordinary for
+// compatibility with profiles created before usage classification existed.
+func (p Profile) EffectiveProfileUsage() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(p.ProfileUsage)) {
+	case "", ProfileUsageOrdinary:
+		return ProfileUsageOrdinary, nil
+	case ProfileUsageLinuxImageBuilder:
+		return ProfileUsageLinuxImageBuilder, nil
+	default:
+		return "", fmt.Errorf(
+			"unsupported profile_usage %q (expected %s or %s)",
+			p.ProfileUsage, ProfileUsageOrdinary, ProfileUsageLinuxImageBuilder,
+		)
 	}
 }

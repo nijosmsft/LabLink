@@ -3,6 +3,7 @@ package vmconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,7 @@ func TestResolveLinuxProfilesWithoutChangingWindowsDefaults(t *testing.T) {
     "ubuntu-large": {"guest_os":"linux","target":"node1","memory_mb":8192},
     "builder": {
       "guest_os":"windows",
+      "profile_usage":"linux_image_builder",
       "target":"node1",
       "dynamic_memory":false,
       "expose_virtualization_extensions":true,
@@ -98,6 +100,9 @@ func TestResolveLinuxProfilesWithoutChangingWindowsDefaults(t *testing.T) {
 		!*builder.VirtualizationBasedSecurityOptOut {
 		t.Fatalf("builder isolation settings not preserved: %+v, %q, %v", builder, builderName, err)
 	}
+	if usage, err := builder.EffectiveProfileUsage(); err != nil || usage != ProfileUsageLinuxImageBuilder {
+		t.Fatalf("builder usage = %q, %v", usage, err)
+	}
 	linux, name, err = store.ResolveLinuxForTarget("", "NODE1")
 	if err != nil || name != "ubuntu-large" || linux.MemoryMB != 8192 {
 		t.Fatalf("Linux target = %+v, %q, %v", linux, name, err)
@@ -117,6 +122,63 @@ func TestEmptyGuestOSIsWindows(t *testing.T) {
 	}
 	if _, err := (Profile{GuestOS: "freebsd"}).EffectiveGuestOS(); err == nil {
 		t.Fatal("expected unsupported guest_os error")
+	}
+}
+
+func TestProfileUsageDefaultsValidatesAndGuardsPublicWindowsResolution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_profile": "ordinary",
+  "target_defaults": {"node1": "ordinary"},
+  "profiles": {
+    "ordinary": {"target":"node1","guest_os":"windows"},
+    "builder": {"target":"node1","guest_os":"windows","profile_usage":"linux_image_builder"},
+    "legacy-builder": {"target":"node1","guest_os":"windows"},
+    "ubuntu": {"target":"node1","guest_os":"linux","image_builder_profile":"legacy-builder"}
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := Load(path)
+
+	ordinary, name, err := store.ResolveOrdinaryWindowsForTarget("", "node1")
+	if err != nil || name != "ordinary" {
+		t.Fatalf("ordinary default = %+v, %q, %v", ordinary, name, err)
+	}
+	if usage, err := ordinary.EffectiveProfileUsage(); err != nil || usage != ProfileUsageOrdinary {
+		t.Fatalf("empty profile_usage = %q, %v", usage, err)
+	}
+	if _, name, err := store.ResolveWindowsForTarget("builder", "node1"); err != nil || name != "builder" {
+		t.Fatalf("internal builder resolution failed: %q, %v", name, err)
+	}
+	if _, _, err := store.ResolveOrdinaryWindowsForTarget("builder", "node1"); err == nil ||
+		!strings.Contains(err.Error(), `ordinary profile "ordinary"`) ||
+		!strings.Contains(err.Error(), "target default") {
+		t.Fatalf("unexpected public builder rejection: %v", err)
+	}
+	if builderOnly, err := store.IsLinuxImageBuilderProfile("legacy-builder"); err != nil || !builderOnly {
+		t.Fatalf("legacy referenced builder was not inferred: %v, %v", builderOnly, err)
+	}
+	if _, _, err := store.ResolveOrdinaryWindowsForTarget("legacy-builder", "node1"); err == nil ||
+		!strings.Contains(err.Error(), "referenced by a Linux image_builder_profile") {
+		t.Fatalf("unexpected inferred builder rejection: %v", err)
+	}
+}
+
+func TestUnknownProfileUsageFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_profile": "bad",
+  "profiles": {"bad": {"profile_usage":"future_mode"}}
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := Load(path)
+	if _, _, err := store.ResolveWindows(""); err == nil || !strings.Contains(err.Error(), "unsupported profile_usage") {
+		t.Fatalf("unknown profile usage did not fail closed: %v", err)
+	}
+	if _, err := store.List(); err == nil {
+		t.Fatal("list must not silently return an unknown profile_usage")
 	}
 }
 
@@ -146,6 +208,26 @@ func TestSetListDeleteTargetTemplate(t *testing.T) {
 	config, err = store.List()
 	if err != nil || len(config.Profiles) != 0 || len(config.TargetDefaults) != 0 {
 		t.Fatalf("after delete = %+v, %v", config, err)
+	}
+}
+
+func TestSetListBuilderUsageRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	store := Load(path)
+	profile := Profile{
+		Target: "node30", GuestOS: GuestOSWindows,
+		ProfileUsage: ProfileUsageLinuxImageBuilder,
+	}
+	if err := store.Set("builder", profile, false); err != nil {
+		t.Fatal(err)
+	}
+	config, err := store.List()
+	if err != nil || config.Profiles["builder"].ProfileUsage != ProfileUsageLinuxImageBuilder {
+		t.Fatalf("profile_usage did not round trip: %+v, %v", config.Profiles["builder"], err)
+	}
+	if err := store.Set("bad-default", profile, true); err == nil ||
+		!strings.Contains(err.Error(), "set_as_target_default=false") {
+		t.Fatalf("builder profile became an ordinary target default: %v", err)
 	}
 }
 

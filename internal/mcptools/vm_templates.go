@@ -17,6 +17,7 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 			mcp.WithString("name", mcp.Required(), mcp.Description("Template name")),
 			mcp.WithString("target", mcp.Required(), mcp.Description("Registered Hyper-V host")),
 			mcp.WithString("guest_os", mcp.Description("windows (default) or linux")),
+			mcp.WithString("profile_usage", mcp.Description("ordinary (default) or linux_image_builder; builder profiles are reserved for internal image preparation")),
 			mcp.WithString("base_vhd", mcp.Description("Shared sysprepped Windows base VHDX")),
 			mcp.WithString("vm_root", mcp.Description("Root folder for VM config and child VHDs")),
 			mcp.WithString("vswitch", mcp.Description("Default Hyper-V vSwitch")),
@@ -78,8 +79,8 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 			}
 			profile := vmconfig.Profile{
 				Target: req.GetString("target", ""), BaseVHD: req.GetString("base_vhd", ""),
-				GuestOS: req.GetString("guest_os", ""),
-				VMRoot:  req.GetString("vm_root", ""), VSwitch: req.GetString("vswitch", ""),
+				GuestOS: req.GetString("guest_os", ""), ProfileUsage: req.GetString("profile_usage", ""),
+				VMRoot: req.GetString("vm_root", ""), VSwitch: req.GetString("vswitch", ""),
 				AdminCredential: req.GetString("admin_password_credential", ""),
 				MemoryMB:        req.GetFloat("memory_mb", 0), CPUCount: req.GetFloat("cpu_count", 0),
 				DynamicMemory:    req.GetBool("dynamic_memory", false),

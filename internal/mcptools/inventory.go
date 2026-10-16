@@ -15,7 +15,7 @@ import (
 )
 
 func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool) {
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("register_node",
 			mcp.WithDescription("Register a machine in the node inventory by probing its agent."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Friendly node name")),
@@ -27,14 +27,14 @@ func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentc
 		registerNodeHandler(reg, pool),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("list_nodes",
 			mcp.WithDescription("List all registered nodes with status."),
 		),
 		listNodesHandler(reg, pool),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("remove_node",
 			mcp.WithDescription("Remove a node from the registry."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Node name to remove")),
@@ -42,7 +42,7 @@ func RegisterInventory(s *server.MCPServer, reg *registry.Registry, pool *agentc
 		removeNodeHandler(reg),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("rename_node",
 			mcp.WithDescription("Rename a node in the registry."),
 			mcp.WithString("old_name", mcp.Required(), mcp.Description("Current node name")),
@@ -89,6 +89,9 @@ func registerNodeHandler(reg *registry.Registry, pool *agentclient.Pool) server.
 		if err := reg.SetNode(node); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("save: %v", err)), nil
 		}
+		if hmon != nil {
+			hmon.RecordAuthenticatedProbeSuccess(node, info.AgentVersion)
+		}
 
 		result := fmt.Sprintf("Registered **%s** at %s\n- OS: %s/%s\n- CPUs: %d\n- Memory: %s\n- Agent: %s\n- Role: %s\n- Transport: %s",
 			name, address, info.Os, info.Arch, info.CpuCount,
@@ -109,26 +112,42 @@ func listNodesHandler(reg *registry.Registry, pool *agentclient.Pool) server.Too
 
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**Registered nodes** (%d)\n\n", len(nodes)))
-		sb.WriteString("| Name | Address | Transport | TLS Name | OS | Role | CPUs | Memory | Status |\n")
-		sb.WriteString("|------|---------|-----------|----------|----|----- |------|--------|--------|\n")
+		sb.WriteString("| Name | Address | Transport | TLS Name | OS | Role | CPUs | Memory | Status | Agent Version | Upgrade Recommended | Version Warning |\n")
+		sb.WriteString("|------|---------|-----------|----------|----|----- |------|--------|--------|---------------|---------------------|-----------------|\n")
 
 		for _, n := range nodes {
 			status := "offline"
+			agentVersion := ""
 			client, err := pool.GetClient(n.Address, n.TLSServerName)
 			if err == nil {
 				probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				if _, err := client.GetInfo(probeCtx, &pb.GetInfoRequest{}); err == nil {
+				if info, err := client.GetInfo(probeCtx, &pb.GetInfoRequest{}); err == nil {
 					status = "online"
+					agentVersion = info.AgentVersion
+					if hmon != nil {
+						hmon.RecordAuthenticatedProbeSuccess(n, info.AgentVersion)
+					}
 				}
 				cancel()
+			}
+			upgradeRecommended := false
+			versionWarning := ""
+			if hmon != nil {
+				state := hmon.GetStatus(n.Name)
+				if agentVersion == "" {
+					agentVersion = state.AgentVersion
+				}
+				upgradeRecommended = state.UpgradeRecommended
+				versionWarning = state.VersionWarning
 			}
 
 			transportMode := n.TransportMode
 			if transportMode == "" {
 				transportMode = string(security.TransportModeMTLS)
 			}
-			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s/%s | %s | %d | %s | %s |\n",
-				n.Name, n.Address, transportMode, n.TLSServerName, n.OS, n.Arch, n.Role, n.CPUCount, formatBytes(n.Memory), status))
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s/%s | %s | %d | %s | %s | %s | %t | %s |\n",
+				n.Name, n.Address, transportMode, n.TLSServerName, n.OS, n.Arch, n.Role, n.CPUCount,
+				formatBytes(n.Memory), status, agentVersion, upgradeRecommended, versionWarning))
 		}
 		return mcp.NewToolResultText(sb.String()), nil
 	}
