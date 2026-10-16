@@ -56,6 +56,7 @@ $binaries = @(
     @{ Name = 'lablink-agent';  Pkg = './cmd/lablink-agent';  LdflagKey = 'agentVersion';  Targets = @('windows','linux') }
     @{ Name = 'lablink-probe';  Pkg = './cmd/lablink-probe';  LdflagKey = 'probeVersion';  Targets = @('windows','linux') }
     @{ Name = 'lablink-ca';     Pkg = './cmd/lablink-ca';     LdflagKey = 'caVersion';     Targets = @('windows','linux') }
+    @{ Name = 'lablink-secret'; Pkg = './cmd/lablink-secret'; LdflagKey = 'secretVersion'; Targets = @('windows','linux') }
 )
 
 $sharedRoot = Join-Path $OutDir '.shared'

@@ -23,6 +23,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   once per node/version tuple, keep nodes online, and expose the observed agent
   version and upgrade recommendation through `list_nodes`.
 
+### Fixed
+
+- `save_secret` no longer calls MCP form elicitation with a sensitive value or
+  the unsupported `password` schema format. It now returns an exact local
+  command for the packaged `lablink-secret` helper.
+
+### Security
+
+- Added interactive masked secret ingestion through `lablink-secret`. The
+  helper requires terminal input, confirms the value, refuses pipes and
+  redirected files, and writes to the same encrypted store used by the server.
+
 ## [0.7.0-beta.1] - 2026-10-14
 
 ### Added

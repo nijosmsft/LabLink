@@ -60,7 +60,15 @@ func Open(filePath string) *Store {
 	return s
 }
 
-func validateName(name string) (string, error) {
+// Path returns the encrypted store file used by this Store.
+func (s *Store) Path() string {
+	if s == nil {
+		return ""
+	}
+	return s.filePath
+}
+
+func ValidateName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("secret name is required")
@@ -74,7 +82,7 @@ func validateName(name string) (string, error) {
 }
 
 func (s *Store) Set(name, value string) error {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return err
 	}
@@ -95,7 +103,7 @@ func (s *Store) Set(name, value string) error {
 }
 
 func (s *Store) Get(name string) (string, error) {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return "", err
 	}
@@ -120,7 +128,7 @@ func (s *Store) Get(name string) (string, error) {
 }
 
 func (s *Store) Delete(name string) error {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return err
 	}
