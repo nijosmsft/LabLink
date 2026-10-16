@@ -96,11 +96,23 @@ func TestResolveLinuxImagePlanRequiresValidWindowsBuilderBeforeMutation(t *testi
     "wrong":{"guest_os":"linux","target":"localhost"}
   }
 }`,
+		"builder is not marked builder-only": `{
+  "default_linux_profile":"ubuntu",
+  "profiles":{
+    "ubuntu":{"guest_os":"linux","target":"localhost","image_cache_root":"E:\\Images","image_builder_profile":"builder"},
+    "builder":{
+      "guest_os":"windows","target":"localhost","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "vswitch":"ext","admin_password_credential":"builder-admin",
+      "dynamic_memory":false,"expose_virtualization_extensions":true,
+      "virtualization_based_security_opt_out":true
+    }
+  }
+}`,
 		"builder incomplete": `{
   "default_linux_profile":"ubuntu",
   "profiles":{
     "ubuntu":{"guest_os":"linux","target":"localhost","image_cache_root":"E:\\Images","image_builder_profile":"builder"},
-    "builder":{"guest_os":"windows","target":"localhost","base_vhd":"E:\\base.vhdx"}
+    "builder":{"guest_os":"windows","profile_usage":"linux_image_builder","target":"localhost","base_vhd":"E:\\base.vhdx"}
   }
 }`,
 		"builder credential unavailable": `{
@@ -108,7 +120,7 @@ func TestResolveLinuxImagePlanRequiresValidWindowsBuilderBeforeMutation(t *testi
   "profiles":{
     "ubuntu":{"guest_os":"linux","target":"localhost","image_cache_root":"E:\\Images","image_builder_profile":"builder"},
     "builder":{
-      "guest_os":"windows","target":"localhost","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "guest_os":"windows","profile_usage":"linux_image_builder","target":"localhost","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
       "vswitch":"ext","admin_password_credential":"missing"
     }
   }
@@ -118,7 +130,7 @@ func TestResolveLinuxImagePlanRequiresValidWindowsBuilderBeforeMutation(t *testi
   "profiles":{
     "ubuntu":{"guest_os":"linux","target":"localhost","image_cache_root":"E:\\Images","image_builder_profile":"builder"},
     "builder":{
-      "guest_os":"windows","target":"other-host","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "guest_os":"windows","profile_usage":"linux_image_builder","target":"other-host","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
       "vswitch":"ext","admin_password_credential":"builder-admin"
     }
   }
@@ -128,7 +140,7 @@ func TestResolveLinuxImagePlanRequiresValidWindowsBuilderBeforeMutation(t *testi
   "profiles":{
     "ubuntu":{"guest_os":"linux","target":"localhost","image_cache_root":"E:\\Images","image_builder_profile":"builder"},
     "builder":{
-      "guest_os":"windows","target":"localhost","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "guest_os":"windows","profile_usage":"linux_image_builder","target":"localhost","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
       "vswitch":"ext","admin_password_credential":"builder-admin",
       "dynamic_memory":false,"expose_virtualization_extensions":true
     }
@@ -415,7 +427,7 @@ func validBuilderConfig(deleteBuilder bool) string {
       "delete_builder_after_prepare":` + deleteValue + `
     },
     "builder":{
-      "guest_os":"windows","target":"localhost","base_vhd":"E:\\Windows\\base.vhdx",
+      "guest_os":"windows","profile_usage":"linux_image_builder","target":"localhost","base_vhd":"E:\\Windows\\base.vhdx",
       "vm_root":"E:\\VM","vswitch":"extswitch","admin_password_credential":"builder-admin",
       "memory_mb":8192,"cpu_count":4,"register_with_lablink":true,
       "dynamic_memory":false,"expose_virtualization_extensions":true,
@@ -423,6 +435,21 @@ func validBuilderConfig(deleteBuilder bool) string {
     }
   }
 }`
+}
+
+func TestResolveLinuxImagePlanAcceptsLegacyReferencedBuilderUsage(t *testing.T) {
+	config := strings.Replace(validBuilderConfig(false), `"profile_usage":"linux_image_builder",`, "", 1)
+	store, creds := linuxBuilderStores(t, config)
+	plan, _, err := resolveLinuxImagePlan(
+		reqNoToken(map[string]any{"profile": "ubuntu"}),
+		newRebootTestRegistry(t, nil), store, creds,
+	)
+	if err != nil {
+		t.Fatalf("legacy referenced builder was rejected: %v", err)
+	}
+	if plan.ImageBuilderProfile != "builder" {
+		t.Fatalf("resolved builder = %q", plan.ImageBuilderProfile)
+	}
 }
 
 func linuxBuilderStores(t *testing.T, data string) (*vmconfig.Store, *credentials.Store) {

@@ -160,7 +160,7 @@ func main() {
 	}
 
 	// Health monitor — background keepalive for all nodes.
-	monitor := healthmon.New(reg, pool)
+	monitor := healthmon.New(reg, pool, serverVersion)
 	monitor.Start()
 	defer monitor.Stop()
 	mcptools.SetHealthMonitor(monitor)

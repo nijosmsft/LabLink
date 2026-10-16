@@ -298,7 +298,7 @@ func verifyEnrolledVMWithOptions(ctx context.Context, plan windowsVMPlan, info s
 					}
 				}
 				if hmon != nil {
-					hmon.RecordAuthenticatedProbeSuccess(verifiedNode)
+					hmon.RecordAuthenticatedProbeSuccess(verifiedNode, live.AgentVersion)
 				}
 				return nil
 			}

@@ -22,6 +22,7 @@ import (
 
 type windowsVMPlan struct {
 	Profile                           string  `json:"profile,omitempty"`
+	ProfileUsage                      string  `json:"profile_usage"`
 	Target                            string  `json:"target"`
 	Name                              string  `json:"name"`
 	Hostname                          string  `json:"hostname"`
@@ -51,9 +52,12 @@ type windowsVMPlan struct {
 	State                             string  `json:"state,omitempty"`
 	MinHostReservePct                 float64 `json:"min_host_reserve_pct"`
 	AllowHostResourcePressure         bool    `json:"allow_host_resource_pressure"`
+	CleanupOnFailure                  bool    `json:"cleanup_on_failure"`
 	ExposeVirtualizationExtensions    bool    `json:"expose_virtualization_extensions"`
 	VirtualizationBasedSecurityOptOut bool    `json:"virtualization_based_security_opt_out"`
 	ResourceSafety                    any     `json:"resource_safety,omitempty"`
+	CreationOwnershipMarker           string  `json:"-"`
+	CreationOwnershipPath             string  `json:"-"`
 	ManagedMetadata                   string  `json:"-"`
 }
 
@@ -109,7 +113,7 @@ func resolveWindowsVMPlan(
 	defaults *vmconfig.Store,
 ) (windowsVMPlan, error) {
 	requestedTarget := req.GetString("target", "")
-	profile, profileName, err := defaults.ResolveWindowsForTarget(req.GetString("profile", ""), requestedTarget)
+	profile, profileName, err := defaults.ResolveOrdinaryWindowsForTarget(req.GetString("profile", ""), requestedTarget)
 	if err != nil {
 		return windowsVMPlan{}, err
 	}
@@ -201,6 +205,10 @@ func resolveWindowsVMPlan(
 }
 
 func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
+	usage, err := p.EffectiveProfileUsage()
+	if err != nil {
+		usage = ""
+	}
 	secureBoot := true
 	if p.SecureBoot != nil {
 		secureBoot = *p.SecureBoot
@@ -218,7 +226,7 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		locale = "en-US"
 	}
 	return windowsVMPlan{
-		Profile: name, Target: p.Target, BaseVHD: p.BaseVHD, VSwitch: p.VSwitch,
+		Profile: name, ProfileUsage: usage, Target: p.Target, BaseVHD: p.BaseVHD, VSwitch: p.VSwitch,
 		AdminPasswordCredential: p.AdminCredential, MemoryMB: memory, CPUCount: cpu,
 		DynamicMemory: p.DynamicMemory, DynamicMinMB: p.DynamicMinMB,
 		DynamicMaxMB: p.DynamicMaxMB, DynamicBufferPct: p.DynamicBufferPct,
@@ -267,6 +275,7 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	applyBoolArg(args, "obfuscate_password", &plan.ObfuscatePassword)
 	applyBoolArg(args, "register_with_lablink", &plan.RegisterWithLabLink)
 	applyBoolArg(args, "allow_host_resource_pressure", &plan.AllowHostResourcePressure)
+	applyBoolArg(args, "cleanup_on_failure", &plan.CleanupOnFailure)
 	applyBoolArg(args, "expose_virtualization_extensions", &plan.ExposeVirtualizationExtensions)
 	applyBoolArg(args, "virtualization_based_security_opt_out", &plan.VirtualizationBasedSecurityOptOut)
 	if value, ok := numericArgument(args["lablink_port"]); ok {
@@ -410,6 +419,14 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 	if err != nil || provisioned == nil || provisioned.IsError {
 		return provisioned, err
 	}
+	if plan.CleanupOnFailure {
+		if err := newWindowsVMCreationOwnership(&plan); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if err := prepareWindowsVMCreationOwnership(ctx, plan, reg, pool); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+	}
 
 	createReq := mcp.CallToolRequest{}
 	createReq.Params.Arguments = map[string]any{
@@ -422,13 +439,14 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		"allow_host_resource_pressure":          plan.AllowHostResourcePressure,
 		"expose_virtualization_extensions":      plan.ExposeVirtualizationExtensions,
 		"virtualization_based_security_opt_out": plan.VirtualizationBasedSecurityOptOut,
+		"creation_ownership_marker":             plan.CreationOwnershipMarker,
 		"managed_metadata":                      plan.ManagedMetadata,
 	}
 	created, err := createVMHandler(reg, pool, auditLog)(ctx, createReq)
 	if err != nil || created == nil || created.IsError {
-		cleanupProvisionedVHD(ctx, plan, reg, pool)
-		return created, err
+		return windowsVMCreateFailureResult(ctx, plan, created, err, reg, pool, creds), nil
 	}
+	removeWindowsVMCreationOwnership(ctx, plan, reg, pool)
 	if plan.RegisterWithLabLink {
 		started, err := startVMAndDiscoverIP(ctx, plan, reg, pool)
 		if err != nil {
@@ -441,15 +459,6 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		plan.State = started.State
 	}
 	return vmResult(fmt.Sprintf("**Windows VM `%s` created on `%s`**", plan.Name, plan.Target), marshalPlan(plan)), nil
-}
-
-func cleanupProvisionedVHD(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool) {
-	target, err := resolvePlanTarget(plan.Target, reg)
-	if err != nil {
-		return
-	}
-	script := fmt.Sprintf(`$p=%s; if (-not (Get-VM | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object Path -eq $p)) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }`, hyperv.PSLit(plan.VHDPath))
-	_, _, _ = runPS(ctx, reg, pool, target, script, vmDefaultTimeoutSec)
 }
 
 func resolvePlanTarget(name string, reg *registry.Registry) (Target, error) {

@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Backward-compatible `profile_usage` classification for VM profiles.
+  `ordinary` remains the default; `linux_image_builder` profiles are accepted
+  only by internal Linux image preparation and are rejected by public
+  `create_windows_vm` resolution before host mutation. Existing Windows
+  profiles referenced by a Linux `image_builder_profile` are inferred as
+  builder-only even when the new field is omitted.
+- `cleanup_on_failure` for `create_windows_vm`, defaulting to false. Create or
+  post-create configuration failures now return exact-name partial VM
+  diagnostics and retain the provisioned child VHD by default. Explicit
+  cleanup uses per-request ownership markers and fails closed on any identity
+  or path mismatch.
+- Non-blocking server/agent version-skew reporting. Authenticated probes warn
+  once per node/version tuple, keep nodes online, and expose the observed agent
+  version and upgrade recommendation through `list_nodes`.
+
 ## [0.7.0-beta.1] - 2026-10-14
 
 ### Added

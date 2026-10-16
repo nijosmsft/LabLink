@@ -33,6 +33,7 @@ type CreateVMParams struct {
 	AllowHostResourcePressure         bool
 	ExposeVirtualizationExtensions    bool
 	VirtualizationBasedSecurityOptOut bool
+	CreationOwnershipMarker           string
 	ManagedMetadata                   string
 }
 
@@ -89,6 +90,7 @@ func BuildCreateVMScript(p CreateVMParams) (string, error) {
 	fmt.Fprintf(&b, "$secureBootTemplate = %s\n", PSLit(sbTemplate))
 	fmt.Fprintf(&b, "$exposeVirtualizationExtensions = %s\n", PSBool(p.ExposeVirtualizationExtensions))
 	fmt.Fprintf(&b, "$virtualizationBasedSecurityOptOut = %s\n", PSBool(p.VirtualizationBasedSecurityOptOut))
+	fmt.Fprintf(&b, "$creationOwnershipMarker = %s\n", PSLit(p.CreationOwnershipMarker))
 	fmt.Fprintf(&b, "$managedMetadata = %s\n", PSLit(p.ManagedMetadata))
 	fmt.Fprintf(&b, "$requiredFreeGB = %d\n", int64(p.RequiredFreeSpaceGB))
 
@@ -157,6 +159,11 @@ if ($vhdPath)    { $vmArgs.VHDPath = $vhdPath }
 else             { $vmArgs.NewVHDPath = $newVhdPath; $vmArgs.NewVHDSizeBytes = $newVhdSizeBytes }
 if ($vswitch)    { $vmArgs.SwitchName = $vswitch }
 New-VM @vmArgs | Out-Null
+if ($creationOwnershipMarker) {
+    Set-VM -Name $name -Notes $creationOwnershipMarker
+} elseif ($managedMetadata) {
+    Set-VM -Name $name -Notes $managedMetadata
+}
 
 $virtualizationBasedSecurityOptOutApplied = $false
 if ($virtualizationBasedSecurityOptOut) {
@@ -174,7 +181,6 @@ if ($virtualizationBasedSecurityOptOut) {
     }
 }
 
-if ($managedMetadata) { Set-VM -Name $name -Notes $managedMetadata }
 if ($exposeVirtualizationExtensions) {
     Set-VMProcessor -VMName $name -Count $cpuCount -ExposeVirtualizationExtensions $true
 } else {
@@ -208,6 +214,10 @@ if ($isoPath) {
 }
 
 $vm = Get-VM -Name $name
+if ($creationOwnershipMarker) {
+    Set-VM -Name $name -Notes $managedMetadata
+    $vm = Get-VM -Name $name
+}
 $disk = ($vm | Get-VMHardDiskDrive | Select-Object -First 1).Path
 [pscustomobject]@{
     target     = 'self'

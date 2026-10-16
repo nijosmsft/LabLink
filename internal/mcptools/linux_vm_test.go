@@ -87,7 +87,7 @@ func TestCreateLinuxVMImageNotReadyCreatesNoVM(t *testing.T) {
     "image_builder_profile":"builder"
   },
   "builder":{
-    "guest_os":"windows","target":"node1","base_vhd":"E:\\Windows\\base.vhdx",
+    "guest_os":"windows","profile_usage":"linux_image_builder","target":"node1","base_vhd":"E:\\Windows\\base.vhdx",
     "vm_root":"E:\\VM","vswitch":"ext","admin_password_credential":"builder-admin",
     "dynamic_memory":false,"expose_virtualization_extensions":true,
     "virtualization_based_security_opt_out":true

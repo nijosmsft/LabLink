@@ -206,12 +206,19 @@ LabLink exposes the following MCP tools. Names are stable; argument schemas are 
 | Tool | What it does |
 |------|--------------|
 | `register_node` | Register a node in the inventory. Probes the agent for OS, CPU, and memory. |
-| `list_nodes` | List registered nodes with status and metadata. |
+| `list_nodes` | List registered nodes with status, agent version, and any non-blocking upgrade recommendation. |
 | `remove_node` | Remove a node from the registry. |
 | `rename_node` | Rename a node, preserving context and topology references. |
 | `register_topology` | Define a named group of nodes with role assignments (e.g. `server`, `client`). |
 | `set_node_context` | Persist a default working directory and environment for a node. |
 | `import_nodes` / `export_nodes` | Round-trip the registry to a YAML file. |
+
+Authenticated health probes compare nonempty server and agent version strings.
+An exact mismatch logs `agent upgrade recommended` once per node/version tuple
+for the lifetime of the server process and is surfaced by `list_nodes`.
+Version skew alone never marks a node unhealthy, cancels its context, or blocks
+an operation; unsupported/missing RPCs still fail naturally when invoked.
+Agent upgrades occur only through an explicit deployment/update request.
 
 ### Execution
 | Tool | What it does |
@@ -304,6 +311,16 @@ request or complete profile runs without prompting; a partial request overrides
 the profile and prompts only for what remains missing. Use `dry_run:true` to
 inspect the resolved plan without modifying the host.
 
+Profiles accept `profile_usage:"ordinary"` (the default, including an omitted
+field) or `profile_usage:"linux_image_builder"`. Builder-only profiles are
+accepted only by the internal Linux image-preparation flow. Public
+`create_windows_vm` requests, including dry runs, reject them before any host
+probe or mutation and point to an ordinary target/global default when one is
+configured. For backward compatibility, a Windows profile referenced by any
+Linux profile's `image_builder_profile` is also inferred to be builder-only
+when the explicit usage field is absent. Unknown usage values fail closed.
+Save builder profiles with `set_as_target_default:false`.
+
 `save_vm_template(..., set_as_target_default:true)` records the template under
 `target_defaults`, so a request such as “create a VM on RR1N4406-30” selects
 that host's template automatically.
@@ -319,6 +336,15 @@ threshold. They cannot disable it: bypass requires an explicit
 `allow_host_resource_pressure:true` on the individual creation request.
 `dry_run:true` performs the same live check and returns the measured totals,
 projected values, thresholds, and safe/unsafe flags.
+
+Failed Windows VM creation preserves evidence by default. The exact
+provisioned child VHD remains in place, and LabLink performs a read-only,
+exact-name VM probe and returns structured partial-VM identity, state, status,
+disk, and configuration-path diagnostics together with the original error.
+Set `cleanup_on_failure:true` only when rollback is desired. Opt-in cleanup
+uses a per-request opaque ownership marker and removes only the exact same-name
+VM, requested OS VHD, and VM location below the managed root. Missing or
+mismatched identity fails cleanup closed and retains the artifacts.
 
 When `register_with_lablink:true`, `create_windows_vm` also:
 
@@ -392,8 +418,10 @@ continues to mean Windows, and existing `default_profile` / `target_defaults`
 behavior is unchanged. Linux image preparation additionally requires
 `image_builder_profile`, which must name a complete Windows profile for the
 same target. Builder profiles must explicitly expose virtualization
-extensions, use static memory, and opt out of virtualization-based security;
-validation rejects an unsafe or incomplete builder before host mutation.
+extensions, use static memory, opt out of virtualization-based security, and
+set `profile_usage:"linux_image_builder"`; validation rejects an unsafe,
+ordinary, or incomplete builder before host mutation. Public
+`create_windows_vm` cannot use that profile.
 Example:
 
 ```json
@@ -405,6 +433,7 @@ Example:
   "profiles": {
     "linux-image-builder": {
       "guest_os": "windows",
+      "profile_usage": "linux_image_builder",
       "target": "hyperv-host-1",
       "base_vhd": "E:\\Images\\windows-base.vhdx",
       "vm_root": "E:\\VM",

@@ -635,6 +635,13 @@ func resolveLinuxImagePlan(req mcp.CallToolRequest, reg *registry.Registry, defa
 	if guestOS, guestErr := builderProfile.EffectiveGuestOS(); guestErr != nil || guestOS != vmconfig.GuestOSWindows {
 		return linuxImagePlan{}, Target{}, fmt.Errorf("image_builder_profile %q must reference a Windows profile", builderProfileName)
 	}
+	builderOnly, usageErr := defaults.IsLinuxImageBuilderProfile(resolvedBuilderName)
+	if usageErr != nil || !builderOnly {
+		return linuxImagePlan{}, Target{}, fmt.Errorf(
+			"image_builder_profile %q must set profile_usage=%q or be referenced by a Linux profile",
+			builderProfileName, vmconfig.ProfileUsageLinuxImageBuilder,
+		)
+	}
 	if builderProfile.Target != "" && !strings.EqualFold(builderProfile.Target, targetName) {
 		return linuxImagePlan{}, Target{}, fmt.Errorf("image_builder_profile %q targets %q, not Linux image host %q", builderProfileName, builderProfile.Target, targetName)
 	}

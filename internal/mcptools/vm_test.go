@@ -8,7 +8,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc"
 )
@@ -42,6 +45,38 @@ type vmRoutingMockAgent struct {
 type dhcpReleaseMockAgent struct {
 	pb.UnimplementedNodeAgentServer
 	command string
+}
+
+type vmFailureMockAgent struct {
+	pb.UnimplementedNodeAgentServer
+	mu               sync.Mutex
+	diagnosticJSON   string
+	cleanupJSON      string
+	diagnosticCalls  int
+	cleanupCalls     int
+	diagnosticScript string
+	cleanupScript    string
+	ownershipScript  string
+}
+
+func (a *vmFailureMockAgent) ExecuteScript(req *pb.ExecuteScriptRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
+	a.mu.Lock()
+	payload := a.diagnosticJSON
+	if strings.Contains(req.ScriptBody, "cleanup_succeeded") {
+		a.cleanupCalls++
+		a.cleanupScript = req.ScriptBody
+		payload = a.cleanupJSON
+	} else if strings.Contains(req.ScriptBody, "UNSAFE_OWNER_PATH") {
+		a.ownershipScript = req.ScriptBody
+	} else {
+		a.diagnosticCalls++
+		a.diagnosticScript = req.ScriptBody
+	}
+	a.mu.Unlock()
+	if err := stream.Send(&pb.ExecuteResponse{Pid: 1, Data: []byte(payload)}); err != nil {
+		return err
+	}
+	return stream.Send(&pb.ExecuteResponse{Done: true, ExitCode: 0})
 }
 
 func (a *dhcpReleaseMockAgent) Execute(req *pb.ExecuteRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
@@ -297,6 +332,7 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	}
 	text := toolResultText(res)
 	for _, want := range []string{
+		`"profile_usage": "ordinary"`,
 		`"target": "node1"`,
 		`"name": "vm-one"`,
 		`"vhd_path": "E:\\VM\\vm-one\\vm-one.vhdx"`,
@@ -304,6 +340,7 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 		`"memory_mb": 12288`,
 		`"cpu_count": 4`,
 		`"virtualization_based_security_opt_out": true`,
+		`"cleanup_on_failure": false`,
 		`"minimum_free_pct": 10`,
 	} {
 		if !strings.Contains(text, want) {
@@ -313,6 +350,209 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 
 	if strings.Contains(text, "secret") {
 		t.Fatal("credential value leaked into VM plan")
+	}
+}
+
+func TestCreateWindowsVMRejectsBuilderOnlyProfileBeforeHostMutation(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile": "ordinary",
+  "target_defaults": {"node1": "ordinary"},
+  "profiles": {
+    "ordinary": {
+      "target":"node1","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "vswitch":"extswitch","admin_password_credential":"labadmin"
+    },
+    "builder": {
+      "guest_os":"windows","profile_usage":"linux_image_builder",
+      "target":"node1","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+      "vswitch":"extswitch","admin_password_credential":"labadmin"
+    }
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &vmRoutingMockAgent{payload: `{"minimum_free_pct":10,"safe":true}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+
+	res, err := h(context.Background(), reqNoToken(map[string]any{
+		"profile": "builder", "name": "vm-one", "dry_run": true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := toolResultText(res)
+	if !res.IsError || !strings.Contains(text, "reserved for internal Linux image preparation") ||
+		!strings.Contains(text, `ordinary profile "ordinary"`) ||
+		!strings.Contains(text, "target default") {
+		t.Fatalf("unexpected builder-only rejection: %s", text)
+	}
+	if agent.gotScript != "" {
+		t.Fatalf("builder-only public request reached host mutation: %s", agent.gotScript)
+	}
+}
+
+func TestWindowsVMCreateFailurePreservesDiagnosticsAndRedactsByDefault(t *testing.T) {
+	const password = "credential-secret"
+	const firstBoot = "first-boot-secret"
+	agent := &vmFailureMockAgent{
+		diagnosticJSON: `{"partial_vm_created":false,"vhd_paths":[]}`,
+		cleanupJSON:    `{"cleanup_succeeded":true,"cleanup_error":""}`,
+	}
+	addr := startNodeAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	creds := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: password}); err != nil {
+		t.Fatal(err)
+	}
+	plan := windowsVMPlan{
+		Target: "node1", Name: "vm-one", VMRoot: `E:\VM`,
+		VMLocation: `E:\VM\vm-one`, VHDPath: `E:\VM\vm-one\vm-one.vhdx`,
+		AdminPasswordCredential: "labadmin", FirstBootScript: firstBoot,
+	}
+	created := mcp.NewToolResultError("create failed: " + password + " " + firstBoot)
+	result := windowsVMCreateFailureResult(context.Background(), plan, created, nil, reg, pool, creds)
+	text := toolResultText(result)
+	if !result.IsError || !strings.Contains(text, `"partial_vm_created": false`) ||
+		!strings.Contains(text, `"failure_phase": "create_or_configure_vm"`) ||
+		!strings.Contains(text, `"cleanup_on_failure": false`) ||
+		!strings.Contains(text, `"cleanup_attempted": false`) ||
+		!strings.Contains(text, `"requested_vhd_path": "E:\\VM\\vm-one\\vm-one.vhdx"`) {
+		t.Fatalf("unexpected failure diagnostics:\n%s", text)
+	}
+	if strings.Contains(text, password) || strings.Contains(text, firstBoot) || !strings.Contains(text, passwordMask) {
+		t.Fatalf("failure diagnostics leaked a secret:\n%s", text)
+	}
+	if agent.diagnosticCalls != 1 || agent.cleanupCalls != 0 {
+		t.Fatalf("default retention calls: diagnostics=%d cleanup=%d", agent.diagnosticCalls, agent.cleanupCalls)
+	}
+}
+
+func TestWindowsVMCreateFailureExplicitCleanupReportsSuccessAndMismatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		cleanupJSON   string
+		wantSucceeded string
+		wantError     string
+	}{
+		{
+			name:          "exact ownership succeeds",
+			cleanupJSON:   `{"cleanup_succeeded":true,"cleanup_error":""}`,
+			wantSucceeded: `"cleanup_succeeded": true`,
+		},
+		{
+			name:          "ownership mismatch fails closed",
+			cleanupJSON:   `{"cleanup_succeeded":false,"cleanup_error":"OWNERSHIP_NOT_PROVEN: marker mismatch"}`,
+			wantSucceeded: `"cleanup_succeeded": false`,
+			wantError:     "OWNERSHIP_NOT_PROVEN",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			agent := &vmFailureMockAgent{
+				diagnosticJSON: `{
+  "partial_vm_created":true,"observed_name":"vm-one","vm_id":"vm-id",
+  "state":"Off","status":"Operating normally",
+  "vhd_paths":["E:\\VM\\vm-one\\vm-one.vhdx"],
+  "vm_location":"E:\\VM\\vm-one","vm_config_path":"E:\\VM\\vm-one"
+}`,
+				cleanupJSON: test.cleanupJSON,
+			}
+			addr := startNodeAgent(t, agent)
+			reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+			pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+			defer pool.Close()
+			creds := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.json"))
+			plan := windowsVMPlan{
+				Target: "node1", Name: "vm-one", VMRoot: `E:\VM`,
+				VMLocation: `E:\VM\vm-one`, VHDPath: `E:\VM\vm-one\vm-one.vhdx`,
+				CleanupOnFailure: true, CreationOwnershipMarker: "owner",
+				CreationOwnershipPath: `E:\VM\vm-one\.owner`,
+			}
+			result := windowsVMCreateFailureResult(
+				context.Background(), plan, mcp.NewToolResultError("create failed"), nil, reg, pool, creds,
+			)
+			text := toolResultText(result)
+			if !strings.Contains(text, `"partial_vm_created": true`) ||
+				!strings.Contains(text, `"cleanup_attempted": true`) ||
+				!strings.Contains(text, test.wantSucceeded) ||
+				(test.wantError != "" && !strings.Contains(text, test.wantError)) {
+				t.Fatalf("unexpected explicit cleanup result:\n%s", text)
+			}
+			if agent.diagnosticCalls != 1 || agent.cleanupCalls != 1 {
+				t.Fatalf("explicit cleanup calls: diagnostics=%d cleanup=%d", agent.diagnosticCalls, agent.cleanupCalls)
+			}
+			for _, want := range []string{
+				"same-name VM does not carry the exact request marker",
+				"same-name VM does not carry only the exact requested OS VHD",
+				"Remove-VM -VM $vm",
+				"Remove-Item -LiteralPath $diskPath",
+				"$remainingEntries.Count -eq 0",
+			} {
+				if !strings.Contains(agent.cleanupScript, want) {
+					t.Fatalf("cleanup script missing %q:\n%s", want, agent.cleanupScript)
+				}
+			}
+			if strings.Contains(agent.cleanupScript, "Remove-Item -LiteralPath $locationPath -Recurse") {
+				t.Fatalf("cleanup recursively deletes the VM location without owning every entry:\n%s", agent.cleanupScript)
+			}
+		})
+	}
+}
+
+func TestWindowsVMFailureScriptsParseInPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows PowerShell parser validation is Windows-specific")
+	}
+	agent := &vmFailureMockAgent{
+		diagnosticJSON: `{"partial_vm_created":false,"vhd_paths":[]}`,
+		cleanupJSON:    `{"cleanup_succeeded":true,"cleanup_error":""}`,
+	}
+	addr := startNodeAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	plan := windowsVMPlan{
+		Target: "node1", Name: "vm-one", VMRoot: `E:\VM`,
+		VMLocation: `E:\VM\vm-one`, VHDPath: `E:\VM\vm-one\vm-one.vhdx`,
+		CleanupOnFailure: true, CreationOwnershipMarker: "owner",
+		CreationOwnershipPath: `E:\VM\vm-one\.owner`,
+	}
+	if err := prepareWindowsVMCreationOwnership(context.Background(), plan, reg, pool); err != nil {
+		t.Fatal(err)
+	}
+	windowsVMCreateFailureResult(
+		context.Background(), plan, mcp.NewToolResultError("create failed"), nil,
+		reg, pool, credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.json")),
+	)
+	command := `$text=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; ` +
+		`[Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors) | Out-Null; ` +
+		`if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }`
+	for name, script := range map[string]string{
+		"diagnostic": agent.diagnosticScript,
+		"cleanup":    agent.cleanupScript,
+		"ownership":  agent.ownershipScript,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command)
+			cmd.Stdin = strings.NewReader(script)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("PowerShell parse failed: %v\n%s", err, output)
+			}
+		})
 	}
 }
 

@@ -18,14 +18,21 @@ The Windows builder profile must set all three host-side requirements:
 
 ```json
 {
+  "profile_usage": "linux_image_builder",
   "dynamic_memory": false,
   "expose_virtualization_extensions": true,
   "virtualization_based_security_opt_out": true
 }
 ```
 
-Dynamic memory is rejected. Both boolean opt-ins must be explicitly true, so
-an older profile cannot silently create an incompatible builder.
+Dynamic memory is rejected and both boolean opt-ins must be explicit. New
+builder profiles should set the usage marker. For compatibility, a Windows
+profile referenced by a Linux profile's `image_builder_profile` is inferred to
+be builder-only even when its older configuration omits `profile_usage`.
+Public `create_windows_vm`, including dry runs, rejects explicit and inferred
+builder-only profiles before host mutation; only the internal
+image-preparation path resolves them. Save a builder template with
+`set_as_target_default:false`.
 
 The builder is created through the normal Windows VM orchestrator, enrolled
 with role `linux-image-builder`, and given a unique managed identity in Hyper-V
