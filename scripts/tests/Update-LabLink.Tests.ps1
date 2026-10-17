@@ -38,6 +38,13 @@ function Assert-Equal {
 $productionScript = Join-Path $PSScriptRoot ".." "Update-LabLink.ps1"
 . $productionScript
 
+if ($ManagedBinaries -notcontains 'lablink-secret.exe') {
+    Write-Host "FAIL: updater manages lablink-secret.exe" -ForegroundColor Red
+    $script:ErrorCount++
+} else {
+    Write-Host "PASS: updater manages lablink-secret.exe" -ForegroundColor Green
+}
+
 # ---------------------------------------------------------------------------
 # Test scaffolding helpers
 # ---------------------------------------------------------------------------

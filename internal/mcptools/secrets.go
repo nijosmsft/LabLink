@@ -2,8 +2,8 @@ package mcptools
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -11,53 +11,15 @@ import (
 	"github.com/nijosmsft/lablink/internal/secretstore"
 )
 
-// RegisterSecrets exposes secret metadata and an elicitation-only write path.
-// Secret values never appear in tool arguments, results, ops, or audit logs.
-func RegisterSecrets(s *server.MCPServer, store *secretstore.Store) {
+// RegisterSecrets exposes secret metadata and safe local-ingestion guidance.
+// Secret values never appear in MCP requests, results, ops, or audit logs.
+func RegisterSecrets(s *server.MCPServer, store *secretstore.Store, helperPath string) {
 	s.AddTool(
 		mcp.NewTool("save_secret",
-			mcp.WithDescription("Save or replace an encrypted arbitrary secret. The value is requested through MCP elicitation and is never accepted as a tool argument or returned."),
+			mcp.WithDescription("Open a local masked terminal prompt to save or replace an encrypted arbitrary secret. Secret values never pass through MCP."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Secret name used by secret_env references")),
 		),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			name := strings.TrimSpace(req.GetString("name", ""))
-			result, err := s.RequestElicitation(ctx, mcp.ElicitationRequest{
-				Params: mcp.ElicitationParams{
-					Message: fmt.Sprintf("Enter the value for LabLink secret %q. It will be encrypted locally and never returned.", name),
-					RequestedSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"value": map[string]any{
-								"type":        "string",
-								"title":       "Secret value",
-								"description": "Sensitive value; do not include it in any other field.",
-								"format":      "password",
-							},
-						},
-						"required":             []string{"value"},
-						"additionalProperties": false,
-					},
-				},
-			})
-			if err != nil {
-				if errors.Is(err, server.ErrElicitationNotSupported) {
-					return mcp.NewToolResultError("the MCP client does not support secure secret elicitation"), nil
-				}
-				return mcp.NewToolResultError(fmt.Sprintf("secret elicitation failed: %v", err)), nil
-			}
-			if result.Action != mcp.ElicitationResponseActionAccept {
-				return mcp.NewToolResultError("secret save cancelled or declined"), nil
-			}
-			content, ok := result.Content.(map[string]any)
-			if !ok {
-				return mcp.NewToolResultError("secret elicitation returned invalid content"), nil
-			}
-			value, _ := content["value"].(string)
-			if err := store.Set(name, value); err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			return mcp.NewToolResultText(fmt.Sprintf("Secret `%s` saved securely.", name)), nil
-		},
+		saveSecretHandler(store, helperPath, launchSecretPrompt),
 	)
 
 	s.AddTool(
@@ -94,4 +56,29 @@ func RegisterSecrets(s *server.MCPServer, store *secretstore.Store) {
 			return mcp.NewToolResultText(fmt.Sprintf("Secret `%s` deleted.", name)), nil
 		},
 	)
+}
+
+type secretPromptLauncher func(context.Context, string, string, string) error
+
+func saveSecretHandler(store *secretstore.Store, helperPath string, launch secretPromptLauncher) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name, err := secretstore.ValidateName(req.GetString("name", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		storePath, err := filepath.Abs(store.Path())
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("resolve secret store path: %v", err)), nil
+		}
+		if err := launch(ctx, helperPath, storePath, name); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("secret prompt failed: %v", err)), nil
+		}
+		if err := store.Reload(); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("reload secret store after prompt: %v", err)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf(
+			"Secret `%s` saved securely through a local masked terminal. The value did not pass through MCP.",
+			name,
+		)), nil
+	}
 }

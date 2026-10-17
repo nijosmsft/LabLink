@@ -236,9 +236,19 @@ Agent upgrades occur only through an explicit deployment/update request.
 
 | Tool | What it does |
 |------|--------------|
-| `save_secret` | Prompt for and encrypt an arbitrary secret locally. The value is never accepted as a normal tool argument or returned. |
+| `save_secret` | Open a local masked terminal prompt for saving or replacing an arbitrary secret. The value never passes through MCP. |
 | `list_secrets` | List secret names only. |
 | `delete_secret` | Delete a saved secret. |
+
+On Windows, `save_secret` opens the packaged helper in a new local console,
+waits for masked entry and confirmation, then reloads the encrypted store so
+the secret is immediately available through `secret_env`. The helper runs as
+the same OS account as the LabLink server because DPAPI encryption is
+user-scoped.
+
+The packaged `lablink-secret` CLI remains available for direct local
+administration. It requires an interactive terminal and refuses redirected
+input.
 
 Reference saved secrets by environment variable name:
 

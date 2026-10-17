@@ -23,44 +23,39 @@ type storeData struct {
 
 // Store persists arbitrary named secrets encrypted at rest.
 type Store struct {
-	mu        sync.RWMutex
-	filePath  string
-	protector protector
-	secrets   map[string]string
-	loadErr   error
+	mu           sync.RWMutex
+	filePath     string
+	protector    protector
+	protectorErr error
+	secrets      map[string]string
+	loadErr      error
 }
 
 func Open(filePath string) *Store {
 	p, err := newProtector(filepath.Dir(filePath))
 	s := &Store{
-		filePath:  filePath,
-		protector: p,
-		secrets:   map[string]string{},
-		loadErr:   err,
+		filePath:     filePath,
+		protector:    p,
+		protectorErr: err,
+		secrets:      map[string]string{},
+		loadErr:      err,
 	}
 	if err != nil {
 		return s
 	}
-	data, err := os.ReadFile(filePath)
-	if os.IsNotExist(err) {
-		return s
-	}
-	if err != nil {
-		s.loadErr = fmt.Errorf("read secret store: %w", err)
-		return s
-	}
-	var stored storeData
-	if err := json.Unmarshal(data, &stored); err != nil {
-		s.loadErr = fmt.Errorf("parse secret store: %w", err)
-		return s
-	}
-	if stored.Secrets != nil {
-		s.secrets = stored.Secrets
-	}
+	s.loadErr = s.reloadLocked()
 	return s
 }
 
-func validateName(name string) (string, error) {
+// Path returns the encrypted store file used by this Store.
+func (s *Store) Path() string {
+	if s == nil {
+		return ""
+	}
+	return s.filePath
+}
+
+func ValidateName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("secret name is required")
@@ -73,8 +68,16 @@ func validateName(name string) (string, error) {
 	return name, nil
 }
 
+// Reload refreshes the in-memory view after another process updates the store.
+func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadErr = s.reloadLocked()
+	return s.loadErr
+}
+
 func (s *Store) Set(name, value string) error {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return err
 	}
@@ -95,7 +98,7 @@ func (s *Store) Set(name, value string) error {
 }
 
 func (s *Store) Get(name string) (string, error) {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return "", err
 	}
@@ -120,7 +123,7 @@ func (s *Store) Get(name string) (string, error) {
 }
 
 func (s *Store) Delete(name string) error {
-	name, err := validateName(name)
+	name, err := ValidateName(name)
 	if err != nil {
 		return err
 	}
@@ -148,6 +151,29 @@ func (s *Store) List() ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+func (s *Store) reloadLocked() error {
+	if s.protectorErr != nil {
+		return s.protectorErr
+	}
+	data, err := os.ReadFile(s.filePath)
+	if os.IsNotExist(err) {
+		s.secrets = map[string]string{}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read secret store: %w", err)
+	}
+	var stored storeData
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return fmt.Errorf("parse secret store: %w", err)
+	}
+	s.secrets = stored.Secrets
+	if s.secrets == nil {
+		s.secrets = map[string]string{}
+	}
+	return nil
 }
 
 func (s *Store) saveLocked() error {

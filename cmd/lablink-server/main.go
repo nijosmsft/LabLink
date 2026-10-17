@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -143,7 +144,11 @@ func main() {
 	// Credential store.
 	credsFile := filepath.Join(configDir, "credentials.json")
 	creds := credentials.LoadStore(credsFile)
-	secrets := secretstore.Open(filepath.Join(configDir, "secrets.json"))
+	secretsFile := security.FirstPresentEnv("LABLINK_SECRETS_FILE")
+	if secretsFile == "" {
+		secretsFile = filepath.Join(configDir, "secrets.json")
+	}
+	secrets := secretstore.Open(secretsFile)
 	vmDefaultsFile := security.FirstPresentEnv("LABLINK_VM_DEFAULTS_FILE")
 	if vmDefaultsFile == "" {
 		vmDefaultsFile = filepath.Join(configDir, "vm-defaults.json")
@@ -241,7 +246,11 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterPortal(s)
 	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
-	mcptools.RegisterSecrets(s, secrets)
+	secretHelper := filepath.Join(installRoot, "bin", "lablink-secret")
+	if runtime.GOOS == "windows" {
+		secretHelper += ".exe"
+	}
+	mcptools.RegisterSecrets(s, secrets, secretHelper)
 	mcptools.RegisterVM(s, reg, pool, creds, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 
 	// Run with stdio transport.

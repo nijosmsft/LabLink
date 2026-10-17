@@ -48,6 +48,7 @@ $linuxEntries = @(Get-Entries $linux)
 foreach ($required in @(
     'bin/lablink-server.exe',
     'bin/lablink-agent.exe',
+    'bin/lablink-secret.exe',
     'bin/linux-amd64/lablink-agent',
     'configs/vm-defaults.example.json',
     'docs/linux-vm.md'
@@ -59,6 +60,7 @@ foreach ($required in @(
 foreach ($required in @(
     'bin/lablink-server',
     'bin/lablink-agent',
+    'bin/lablink-secret',
     'bin/lablink-probe',
     'bin/lablink-ca',
     'configs/vm-defaults.example.json',
@@ -95,11 +97,13 @@ foreach ($check in @(
     @{ Archive=$windows; Entry='bin/lablink-agent.exe' },
     @{ Archive=$windows; Entry='bin/lablink-probe.exe' },
     @{ Archive=$windows; Entry='bin/lablink-ca.exe' },
+    @{ Archive=$windows; Entry='bin/lablink-secret.exe' },
     @{ Archive=$windows; Entry='bin/linux-amd64/lablink-agent' },
     @{ Archive=$linux; Entry='bin/lablink-server' },
     @{ Archive=$linux; Entry='bin/lablink-agent' },
     @{ Archive=$linux; Entry='bin/lablink-probe' },
-    @{ Archive=$linux; Entry='bin/lablink-ca' }
+    @{ Archive=$linux; Entry='bin/lablink-ca' },
+    @{ Archive=$linux; Entry='bin/lablink-secret' }
 )) {
     $bytes = Get-EntryBytes $check.Archive $check.Entry
     if (-not (Test-ContainsBytes $bytes $versionBytes)) {

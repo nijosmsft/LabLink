@@ -103,7 +103,7 @@ $Repo            = 'nijosmsft/LabLink'
 $McpConfigPath   = Join-Path $env:USERPROFILE '.copilot\mcp-config.json'
 $DefaultInstall  = Join-Path $env:LOCALAPPDATA 'lablink\bin'
 $ServerBinary    = 'lablink-server.exe'
-$ManagedBinaries = @('lablink-server.exe', 'lablink-agent.exe', 'lablink-probe.exe', 'lablink-ca.exe')
+$ManagedBinaries = @('lablink-server.exe', 'lablink-agent.exe', 'lablink-probe.exe', 'lablink-ca.exe', 'lablink-secret.exe')
 $ServiceName = 'LabLink Agent'
 
 # Tracks whether Stop-LabLinkProcesses shut down the Windows service so the
