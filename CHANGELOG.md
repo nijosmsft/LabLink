@@ -22,6 +22,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Non-blocking server/agent version-skew reporting. Authenticated probes warn
   once per node/version tuple, keep nodes online, and expose the observed agent
   version and upgrade recommendation through `list_nodes`.
+- Windows-only Active Directory joining through `join_windows_domain` and an
+  optional `domain_join` VM-profile object. Passwords are referenced by saved
+  secret name, injected only for `Add-Computer`, followed by authenticated
+  reboot recovery and Netlogon secure-channel verification.
 
 ### Fixed
 

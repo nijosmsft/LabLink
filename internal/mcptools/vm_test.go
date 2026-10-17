@@ -20,6 +20,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	internalsec "github.com/nijosmsft/lablink/internal/security"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
@@ -321,7 +322,7 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
 	defer pool.Close()
 	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
-	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+	h := createWindowsVMHandler(s, reg, pool, creds, nil, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqNoToken(map[string]any{
 		"name": "vm-one", "memory_mb": float64(12288),
@@ -350,6 +351,109 @@ func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 
 	if strings.Contains(text, "secret") {
 		t.Fatal("credential value leaked into VM plan")
+	}
+}
+
+func TestCreateWindowsVMDryRunValidatesInheritedDomainJoinSecret(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile":"domain",
+  "profiles":{"domain":{
+    "target":"node1","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+    "vswitch":"extswitch","admin_password_credential":"labadmin",
+    "register_with_lablink":true,
+    "domain_join":{
+      "domain":"cfdev.nttest.microsoft.com",
+      "username":"cfdev\\netcdev",
+      "password_secret":"domain-password"
+    }
+  }}
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "local-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	secrets := secretstore.Open(filepath.Join(root, "secrets.json"))
+	if err := secrets.Set("domain-password", "domain-secret-value"); err != nil {
+		t.Fatal(err)
+	}
+	agent := &vmRoutingMockAgent{payload: `{"minimum_free_pct":10,"safe":true}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(
+		s, reg, pool, creds, secrets, vmconfig.Load(defaultsPath),
+		audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{},
+	)
+
+	result, err := h(context.Background(), reqNoToken(map[string]any{
+		"name": "domain-vm", "dry_run": true,
+	}))
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("domain join dry run = %#v, %v", result, err)
+	}
+	text := toolResultText(result)
+	for _, want := range []string{
+		`"domain_join": {`,
+		`"domain": "cfdev.nttest.microsoft.com"`,
+		`"username": "cfdev\\netcdev"`,
+		`"password_secret": "domain-password"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("domain join dry run missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "domain-secret-value") || strings.Contains(text, "local-secret") {
+		t.Fatal("secret value leaked into domain join dry run")
+	}
+}
+
+func TestCreateWindowsVMCanSkipInheritedDomainJoinBeforeSecretResolution(t *testing.T) {
+	root := t.TempDir()
+	defaultsPath := filepath.Join(root, "vm-defaults.json")
+	if err := os.WriteFile(defaultsPath, []byte(`{
+  "default_profile":"domain",
+  "profiles":{"domain":{
+    "target":"node1","base_vhd":"E:\\base.vhdx","vm_root":"E:\\VM",
+    "vswitch":"extswitch","admin_password_credential":"labadmin",
+    "register_with_lablink":true,
+    "domain_join":{
+      "domain":"cfdev.nttest.microsoft.com",
+      "username":"cfdev\\netcdev",
+      "password_secret":"missing-secret"
+    }
+  }}
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	creds := credentials.LoadStore(filepath.Join(root, "credentials.json"))
+	if err := creds.Set(&credentials.Profile{Name: "labadmin", Password: "local-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &vmRoutingMockAgent{payload: `{"minimum_free_pct":10,"safe":true}`}
+	addr := startVMMockAgent(t, agent)
+	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
+	h := createWindowsVMHandler(
+		s, reg, pool, creds, secretstore.Open(filepath.Join(root, "secrets.json")),
+		vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{},
+	)
+
+	result, err := h(context.Background(), reqNoToken(map[string]any{
+		"name": "workgroup-vm", "skip_domain_join": true, "dry_run": true,
+	}))
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("skip inherited domain join = %#v, %v", result, err)
+	}
+	if strings.Contains(toolResultText(result), `"domain_join"`) {
+		t.Fatalf("skipped domain join remained in plan: %s", toolResultText(result))
 	}
 }
 
@@ -383,7 +487,7 @@ func TestCreateWindowsVMRejectsBuilderOnlyProfileBeforeHostMutation(t *testing.T
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
 	defer pool.Close()
 	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
-	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+	h := createWindowsVMHandler(s, reg, pool, creds, nil, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqNoToken(map[string]any{
 		"profile": "builder", "name": "vm-one", "dry_run": true,
@@ -695,7 +799,7 @@ func TestCreateWindowsVMRejectsInvalidExplicitHostnameBeforeMutation(t *testing.
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
 	defer pool.Close()
 	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
-	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+	h := createWindowsVMHandler(s, reg, pool, creds, nil, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqNoToken(map[string]any{
 		"name": "perf-investigation", "hostname": "perf-investigation",
@@ -744,7 +848,7 @@ func TestCreateWindowsVMDryRunEmitsHeartbeat(t *testing.T) {
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
 	defer pool.Close()
 	s := server.NewMCPServer("test", "1.0", server.WithElicitation())
-	h := createWindowsVMHandler(s, reg, pool, creds, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
+	h := createWindowsVMHandler(s, reg, pool, creds, nil, vmconfig.Load(defaultsPath), audit.NewLog(root), VMEnrollmentConfig{}, LeaseGateConfig{})
 
 	res, err := h(context.Background(), reqWithToken(map[string]any{
 		"name": "vm-one", "dry_run": true,
@@ -814,6 +918,28 @@ func TestWindowsProfileCarriesNestedVirtualizationWithoutChangingDefault(t *test
 	ordinary := planFromProfile(vmconfig.Profile{}, "ordinary")
 	if ordinary.ExposeVirtualizationExtensions || ordinary.VirtualizationBasedSecurityOptOut {
 		t.Fatal("ordinary Windows profiles must preserve false virtualization defaults")
+	}
+}
+
+func TestWindowsVMPlanCarriesDomainJoinAndSupportsExplicitSkip(t *testing.T) {
+	enabled := true
+	profile := vmconfig.Profile{
+		RegisterLabLink: &enabled,
+		DomainJoin: &vmconfig.WindowsDomainJoin{
+			Domain: "cfdev.nttest.microsoft.com", Username: `cfdev\netcdev`,
+			PasswordSecret: "domain-password",
+		},
+	}
+	plan := planFromProfile(profile, "domain")
+	if plan.DomainJoin == nil || plan.DomainJoin.PasswordSecret != "domain-password" {
+		t.Fatalf("domain join plan = %+v", plan.DomainJoin)
+	}
+	req := reqNoToken(map[string]any{"skip_domain_join": true})
+	if err := applyPlanArguments(&plan, req); err != nil {
+		t.Fatal(err)
+	}
+	if plan.DomainJoin != nil {
+		t.Fatalf("skip_domain_join retained config: %+v", plan.DomainJoin)
 	}
 }
 

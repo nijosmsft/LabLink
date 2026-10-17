@@ -39,6 +39,7 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 			mcp.WithNumber("min_host_reserve_pct", mcp.Description("Minimum projected free host RAM and target-volume capacity percentage (default 10)")),
 			mcp.WithBoolean("expose_virtualization_extensions", mcp.Description("Expose nested virtualization extensions to the Windows guest before first start")),
 			mcp.WithBoolean("virtualization_based_security_opt_out", mcp.Description("Opt the Windows VM out of virtualization-based security before first start")),
+			windowsDomainJoinSchema("domain_join", "Optional Windows-only Active Directory join performed after LabLink enrollment"),
 			mcp.WithString("distribution", mcp.Description("Linux distribution (MVP: ubuntu)")),
 			mcp.WithString("release", mcp.Description("Linux release (MVP: 24.04)")),
 			mcp.WithString("architecture", mcp.Description("Linux architecture (MVP: amd64)")),
@@ -77,6 +78,10 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 			if value, ok := req.GetArguments()["delete_builder_after_prepare"].(bool); ok {
 				deleteBuilderAfterPrepare = &value
 			}
+			domainJoin, err := parseWindowsDomainJoinArgument(req.GetArguments()["domain_join"])
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			profile := vmconfig.Profile{
 				Target: req.GetString("target", ""), BaseVHD: req.GetString("base_vhd", ""),
 				GuestOS: req.GetString("guest_os", ""), ProfileUsage: req.GetString("profile_usage", ""),
@@ -110,6 +115,7 @@ func registerVMTemplateTools(s *server.MCPServer, store *vmconfig.Store) {
 				ImageBuilderProfile:               req.GetString("image_builder_profile", ""),
 				BuilderVMName:                     req.GetString("builder_vm_name", ""),
 				DeleteBuilderAfterPrepare:         deleteBuilderAfterPrepare,
+				DomainJoin:                        domainJoin,
 			}
 			name := req.GetString("name", "")
 			if err := store.Set(name, profile, req.GetBool("set_as_target_default", true)); err != nil {

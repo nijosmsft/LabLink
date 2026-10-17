@@ -251,7 +251,7 @@ ANTI-PATTERNS — DO NOT do these things:
 		secretHelper += ".exe"
 	}
 	mcptools.RegisterSecrets(s, secrets, secretHelper)
-	mcptools.RegisterVM(s, reg, pool, creds, vmDefaults, auditLog, vmEnrollment, leaseCfg)
+	mcptools.RegisterVM(s, reg, pool, creds, secrets, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

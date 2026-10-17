@@ -17,48 +17,51 @@ import (
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
 
 type windowsVMPlan struct {
-	Profile                           string  `json:"profile,omitempty"`
-	ProfileUsage                      string  `json:"profile_usage"`
-	Target                            string  `json:"target"`
-	Name                              string  `json:"name"`
-	Hostname                          string  `json:"hostname"`
-	BaseVHD                           string  `json:"base_vhd"`
-	VMRoot                            string  `json:"vm_root,omitempty"`
-	VHDPath                           string  `json:"vhd_path"`
-	VMLocation                        string  `json:"vm_location"`
-	VSwitch                           string  `json:"vswitch"`
-	AdminPasswordCredential           string  `json:"admin_password_credential"`
-	MemoryMB                          float64 `json:"memory_mb"`
-	CPUCount                          float64 `json:"cpu_count"`
-	DynamicMemory                     bool    `json:"dynamic_memory"`
-	DynamicMinMB                      float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB                      float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct                  float64 `json:"dynamic_buffer_pct,omitempty"`
-	SecureBoot                        bool    `json:"secure_boot"`
-	Locale                            string  `json:"locale"`
-	TimeZone                          string  `json:"timezone,omitempty"`
-	FirstBootScript                   string  `json:"-"`
-	AutoLogon                         bool    `json:"auto_logon"`
-	ObfuscatePassword                 bool    `json:"obfuscate_password"`
-	RegisterWithLabLink               bool    `json:"register_with_lablink"`
-	LabLinkNodeName                   string  `json:"lablink_node_name,omitempty"`
-	LabLinkRole                       string  `json:"lablink_role,omitempty"`
-	LabLinkPort                       int     `json:"lablink_port,omitempty"`
-	LabLinkAddress                    string  `json:"lablink_address,omitempty"`
-	State                             string  `json:"state,omitempty"`
-	MinHostReservePct                 float64 `json:"min_host_reserve_pct"`
-	AllowHostResourcePressure         bool    `json:"allow_host_resource_pressure"`
-	CleanupOnFailure                  bool    `json:"cleanup_on_failure"`
-	ExposeVirtualizationExtensions    bool    `json:"expose_virtualization_extensions"`
-	VirtualizationBasedSecurityOptOut bool    `json:"virtualization_based_security_opt_out"`
-	ResourceSafety                    any     `json:"resource_safety,omitempty"`
-	CreationOwnershipMarker           string  `json:"-"`
-	CreationOwnershipPath             string  `json:"-"`
-	ManagedMetadata                   string  `json:"-"`
+	Profile                           string                      `json:"profile,omitempty"`
+	ProfileUsage                      string                      `json:"profile_usage"`
+	Target                            string                      `json:"target"`
+	Name                              string                      `json:"name"`
+	Hostname                          string                      `json:"hostname"`
+	BaseVHD                           string                      `json:"base_vhd"`
+	VMRoot                            string                      `json:"vm_root,omitempty"`
+	VHDPath                           string                      `json:"vhd_path"`
+	VMLocation                        string                      `json:"vm_location"`
+	VSwitch                           string                      `json:"vswitch"`
+	AdminPasswordCredential           string                      `json:"admin_password_credential"`
+	MemoryMB                          float64                     `json:"memory_mb"`
+	CPUCount                          float64                     `json:"cpu_count"`
+	DynamicMemory                     bool                        `json:"dynamic_memory"`
+	DynamicMinMB                      float64                     `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB                      float64                     `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct                  float64                     `json:"dynamic_buffer_pct,omitempty"`
+	SecureBoot                        bool                        `json:"secure_boot"`
+	Locale                            string                      `json:"locale"`
+	TimeZone                          string                      `json:"timezone,omitempty"`
+	FirstBootScript                   string                      `json:"-"`
+	AutoLogon                         bool                        `json:"auto_logon"`
+	ObfuscatePassword                 bool                        `json:"obfuscate_password"`
+	RegisterWithLabLink               bool                        `json:"register_with_lablink"`
+	LabLinkNodeName                   string                      `json:"lablink_node_name,omitempty"`
+	LabLinkRole                       string                      `json:"lablink_role,omitempty"`
+	LabLinkPort                       int                         `json:"lablink_port,omitempty"`
+	LabLinkAddress                    string                      `json:"lablink_address,omitempty"`
+	State                             string                      `json:"state,omitempty"`
+	MinHostReservePct                 float64                     `json:"min_host_reserve_pct"`
+	AllowHostResourcePressure         bool                        `json:"allow_host_resource_pressure"`
+	CleanupOnFailure                  bool                        `json:"cleanup_on_failure"`
+	ExposeVirtualizationExtensions    bool                        `json:"expose_virtualization_extensions"`
+	VirtualizationBasedSecurityOptOut bool                        `json:"virtualization_based_security_opt_out"`
+	DomainJoin                        *vmconfig.WindowsDomainJoin `json:"domain_join,omitempty"`
+	DomainJoinResult                  *windowsDomainJoinResult    `json:"domain_join_result,omitempty"`
+	ResourceSafety                    any                         `json:"resource_safety,omitempty"`
+	CreationOwnershipMarker           string                      `json:"-"`
+	CreationOwnershipPath             string                      `json:"-"`
+	ManagedMetadata                   string                      `json:"-"`
 }
 
 func createWindowsVMHandler(
@@ -66,13 +69,14 @@ func createWindowsVMHandler(
 	reg *registry.Registry,
 	pool *agentclient.Pool,
 	creds *credentials.Store,
+	secrets *secretstore.Store,
 	defaults *vmconfig.Store,
 	auditLog *audit.Log,
 	enrollment VMEnrollmentConfig,
 	leaseCfg LeaseGateConfig,
 ) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		plan, err := resolveWindowsVMPlan(ctx, s, req, reg, pool, creds, defaults)
+		plan, err := resolveWindowsVMPlan(ctx, s, req, reg, pool, creds, secrets, defaults)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -97,7 +101,7 @@ func createWindowsVMHandler(
 		gatedReq.Params.Name = "create_windows_vm"
 
 		execute := func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return executeWindowsVMPlan(ctx, plan, reg, pool, creds, auditLog, enrollment)
+			return executeWindowsVMPlan(ctx, plan, reg, pool, creds, secrets, auditLog, enrollment)
 		}
 		return LeaseGate(leaseCfg, extractTarget("target"), execute)(ctx, gatedReq)
 	}
@@ -110,6 +114,7 @@ func resolveWindowsVMPlan(
 	reg *registry.Registry,
 	pool *agentclient.Pool,
 	creds *credentials.Store,
+	secrets *secretstore.Store,
 	defaults *vmconfig.Store,
 ) (windowsVMPlan, error) {
 	requestedTarget := req.GetString("target", "")
@@ -118,7 +123,9 @@ func resolveWindowsVMPlan(
 		return windowsVMPlan{}, err
 	}
 	plan := planFromProfile(profile, profileName)
-	applyPlanArguments(&plan, req)
+	if err := applyPlanArguments(&plan, req); err != nil {
+		return windowsVMPlan{}, err
+	}
 
 	firstMissing := missingPlanFields(plan, false)
 	if len(firstMissing) > 0 {
@@ -201,6 +208,20 @@ func resolveWindowsVMPlan(
 	if _, err := creds.Get(plan.AdminPasswordCredential); err != nil {
 		return windowsVMPlan{}, err
 	}
+	if plan.DomainJoin != nil {
+		if !plan.RegisterWithLabLink {
+			return windowsVMPlan{}, fmt.Errorf("domain_join requires register_with_lablink=true so the enrolled guest can be joined and verified")
+		}
+		if err := plan.DomainJoin.Validate(); err != nil {
+			return windowsVMPlan{}, err
+		}
+		if secrets == nil {
+			return windowsVMPlan{}, fmt.Errorf("domain_join requires a configured secret store")
+		}
+		if _, err := secrets.Get(plan.DomainJoin.PasswordSecret); err != nil {
+			return windowsVMPlan{}, fmt.Errorf("resolve domain_join.password_secret %q: %w", plan.DomainJoin.PasswordSecret, err)
+		}
+	}
 	return plan, nil
 }
 
@@ -237,7 +258,24 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		MinHostReservePct:                 p.MinHostReservePct,
 		ExposeVirtualizationExtensions:    boolValue(p.ExposeVirtualizationExtensions, false),
 		VirtualizationBasedSecurityOptOut: boolValue(p.VirtualizationBasedSecurityOptOut, false),
+		DomainJoin:                        cloneWindowsDomainJoin(p.DomainJoin),
 	}
+}
+
+func cloneWindowsDomainJoin(config *vmconfig.WindowsDomainJoin) *vmconfig.WindowsDomainJoin {
+	if config == nil {
+		return nil
+	}
+	cloned := *config
+	if config.Reboot != nil {
+		value := *config.Reboot
+		cloned.Reboot = &value
+	}
+	if config.VerifySecureChannel != nil {
+		value := *config.VerifySecureChannel
+		cloned.VerifySecureChannel = &value
+	}
+	return &cloned
 }
 
 func boolValue(value *bool, fallback bool) bool {
@@ -247,7 +285,7 @@ func boolValue(value *bool, fallback bool) bool {
 	return *value
 }
 
-func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
+func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) error {
 	args := req.GetArguments()
 	applyStringArg(args, "target", &plan.Target)
 	applyStringArg(args, "name", &plan.Name)
@@ -281,6 +319,17 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) {
 	if value, ok := numericArgument(args["lablink_port"]); ok {
 		plan.LabLinkPort = int(value)
 	}
+	if value, ok := args["domain_join"]; ok {
+		config, err := parseWindowsDomainJoinArgument(value)
+		if err != nil {
+			return err
+		}
+		plan.DomainJoin = config
+	}
+	if value, ok := args["skip_domain_join"].(bool); ok && value {
+		plan.DomainJoin = nil
+	}
+	return nil
 }
 
 func missingPlanFields(plan windowsVMPlan, final bool) []string {
@@ -386,7 +435,7 @@ func validateVMPathName(name string) error {
 	return nil
 }
 
-func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig) (*mcp.CallToolResult, error) {
+func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, secrets *secretstore.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig) (*mcp.CallToolResult, error) {
 	safety, err := checkWindowsVMResources(ctx, plan, reg, pool)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -457,6 +506,25 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		}
 		plan.LabLinkAddress = fmt.Sprintf("%s:%d", started.IPAddress, plan.LabLinkPort)
 		plan.State = started.State
+	}
+	if plan.DomainJoin != nil {
+		result, err := executeWindowsDomainJoin(
+			ctx,
+			plan.LabLinkNodeName,
+			*plan.DomainJoin,
+			180,
+			reg,
+			pool,
+			secrets,
+			auditLog,
+		)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"VM %q was created and enrolled, but Windows domain join failed; the VM was retained for diagnosis: %v",
+				plan.Name, err,
+			)), nil
+		}
+		plan.DomainJoinResult = &result
 	}
 	return vmResult(fmt.Sprintf("**Windows VM `%s` created on `%s`**", plan.Name, plan.Target), marshalPlan(plan)), nil
 }

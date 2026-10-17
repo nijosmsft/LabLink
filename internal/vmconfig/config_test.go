@@ -268,3 +268,64 @@ func TestMalformedConfigIsSurfaced(t *testing.T) {
 		t.Fatal("expected malformed config error")
 	}
 }
+
+func TestWindowsDomainJoinProfileRoundTripAndDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_profile":"domain",
+  "profiles":{"domain":{
+    "guest_os":"windows",
+    "target":"node1",
+    "domain_join":{
+      "domain":"cfdev.nttest.microsoft.com",
+      "username":"cfdev\\netcdev",
+      "password_secret":"cfdev-domain-password",
+      "ou_path":"OU=Lab,DC=cfdev,DC=nttest,DC=microsoft,DC=com"
+    }
+  }}
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profile, _, err := Load(path).ResolveWindows("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.DomainJoin == nil ||
+		profile.DomainJoin.Domain != "cfdev.nttest.microsoft.com" ||
+		profile.DomainJoin.Username != `cfdev\netcdev` ||
+		!profile.DomainJoin.EffectiveReboot() ||
+		!profile.DomainJoin.EffectiveVerifySecureChannel() {
+		t.Fatalf("domain join profile = %+v", profile.DomainJoin)
+	}
+}
+
+func TestDomainJoinRejectedForLinuxProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_linux_profile":"ubuntu",
+  "profiles":{"ubuntu":{
+    "guest_os":"linux",
+    "domain_join":{
+      "domain":"cfdev.nttest.microsoft.com",
+      "username":"cfdev\\netcdev",
+      "password_secret":"cfdev-domain-password"
+    }
+  }}
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path).List(); err == nil || !strings.Contains(err.Error(), "supported only for Windows") {
+		t.Fatalf("Linux domain join validation = %v", err)
+	}
+}
+
+func TestDomainJoinVerificationRequiresReboot(t *testing.T) {
+	disabled := false
+	config := WindowsDomainJoin{
+		Domain: "cfdev.nttest.microsoft.com", Username: `cfdev\netcdev`,
+		PasswordSecret: "cfdev-domain-password", Reboot: &disabled,
+	}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "requires domain_join.reboot=true") {
+		t.Fatalf("domain join reboot validation = %v", err)
+	}
+}

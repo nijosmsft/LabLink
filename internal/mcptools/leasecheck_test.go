@@ -495,11 +495,11 @@ func TestExtractSyncTimeNodes_Topology(t *testing.T) {
 //
 // This is the integration-level safety net: we boot the server-side tool
 // registry just like cmd/lablink-server/main.go does and confirm the
-// expected 27 tool names are present and respond with a "lease required"
+// expected 28 tool names are present and respond with a "lease required"
 // error when an unprivileged caller invokes them with an unrelated lease.
 
-func TestLeaseGate_AllTwentySevenToolsAreRegisteredAndGated(t *testing.T) {
-	// Names of the 27 mutating tools that must be lease-gated.
+func TestLeaseGate_AllTwentyEightToolsAreRegisteredAndGated(t *testing.T) {
+	// Names of the 28 mutating tools that must be lease-gated.
 	want := []string{
 		"execute_command", "execute_script",
 		"execute_on_role", "run_script_on_role",
@@ -513,12 +513,14 @@ func TestLeaseGate_AllTwentySevenToolsAreRegisteredAndGated(t *testing.T) {
 		"set_node_context",
 		"schedule_command",
 		"cancel_job", "delete_job",
-		// Phase-1 Hyper-V VM-management mutating tools (RegisterVM), lease-gated
-		// on the resolved target via LeaseGate(extractTarget("target"), ...).
+		// Phase-1 Hyper-V VM-management mutating tools (RegisterVM). Host
+		// mutations use extractTarget("target"); guest domain join uses
+		// extractSingleNode("node").
 		"create_vswitch", "create_vm", "provision_unattend",
+		"join_windows_domain",
 	}
-	if len(want) != 27 {
-		t.Fatalf("expected 27 names in the list, got %d", len(want))
+	if len(want) != 28 {
+		t.Fatalf("expected 28 names in the list, got %d", len(want))
 	}
 	// We can't introspect the MCP server's internal tool list directly from
 	// this package, but we DO observe that the file-level handler refactor
