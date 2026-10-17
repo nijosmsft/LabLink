@@ -24,44 +24,109 @@ const (
 // AdminCredential is a credential-store profile name, never a password.
 // GuestOS is backward-compatible: empty means Windows.
 type Profile struct {
-	Target                            string  `json:"target,omitempty"`
-	GuestOS                           string  `json:"guest_os,omitempty"`
-	ProfileUsage                      string  `json:"profile_usage,omitempty"`
-	BaseVHD                           string  `json:"base_vhd,omitempty"`
-	VMRoot                            string  `json:"vm_root,omitempty"`
-	VSwitch                           string  `json:"vswitch,omitempty"`
-	AdminCredential                   string  `json:"admin_password_credential,omitempty"`
-	MemoryMB                          float64 `json:"memory_mb,omitempty"`
-	CPUCount                          float64 `json:"cpu_count,omitempty"`
-	DynamicMemory                     bool    `json:"dynamic_memory,omitempty"`
-	DynamicMinMB                      float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB                      float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct                  float64 `json:"dynamic_buffer_pct,omitempty"`
-	SecureBoot                        *bool   `json:"secure_boot,omitempty"`
-	Locale                            string  `json:"locale,omitempty"`
-	TimeZone                          string  `json:"timezone,omitempty"`
-	AutoLogon                         bool    `json:"auto_logon,omitempty"`
-	ObfuscatePassword                 bool    `json:"obfuscate_password,omitempty"`
-	RegisterLabLink                   *bool   `json:"register_with_lablink,omitempty"`
-	LabLinkRole                       string  `json:"lablink_role,omitempty"`
-	LabLinkPort                       int     `json:"lablink_port,omitempty"`
-	MinHostReservePct                 float64 `json:"min_host_reserve_pct,omitempty"`
-	ExposeVirtualizationExtensions    *bool   `json:"expose_virtualization_extensions,omitempty"`
-	VirtualizationBasedSecurityOptOut *bool   `json:"virtualization_based_security_opt_out,omitempty"`
-	Distribution                      string  `json:"distribution,omitempty"`
-	Release                           string  `json:"release,omitempty"`
-	Architecture                      string  `json:"architecture,omitempty"`
-	ImageCacheRoot                    string  `json:"image_cache_root,omitempty"`
-	LinuxUsername                     string  `json:"linux_username,omitempty"`
-	SSHPublicKey                      string  `json:"ssh_public_key,omitempty"`
-	SSHPublicKeyFile                  string  `json:"ssh_public_key_file,omitempty"`
-	LinuxPasswordCredential           string  `json:"linux_password_credential,omitempty"`
-	AllowSSHPasswordAuth              *bool   `json:"allow_ssh_password_auth,omitempty"`
-	NetworkConfig                     string  `json:"network_config,omitempty"`
-	DiskSizeGB                        float64 `json:"disk_size_gb,omitempty"`
-	ImageBuilderProfile               string  `json:"image_builder_profile,omitempty"`
-	BuilderVMName                     string  `json:"builder_vm_name,omitempty"`
-	DeleteBuilderAfterPrepare         *bool   `json:"delete_builder_after_prepare,omitempty"`
+	Target                            string             `json:"target,omitempty"`
+	GuestOS                           string             `json:"guest_os,omitempty"`
+	ProfileUsage                      string             `json:"profile_usage,omitempty"`
+	BaseVHD                           string             `json:"base_vhd,omitempty"`
+	VMRoot                            string             `json:"vm_root,omitempty"`
+	VSwitch                           string             `json:"vswitch,omitempty"`
+	AdminCredential                   string             `json:"admin_password_credential,omitempty"`
+	MemoryMB                          float64            `json:"memory_mb,omitempty"`
+	CPUCount                          float64            `json:"cpu_count,omitempty"`
+	DynamicMemory                     bool               `json:"dynamic_memory,omitempty"`
+	DynamicMinMB                      float64            `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB                      float64            `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct                  float64            `json:"dynamic_buffer_pct,omitempty"`
+	SecureBoot                        *bool              `json:"secure_boot,omitempty"`
+	Locale                            string             `json:"locale,omitempty"`
+	TimeZone                          string             `json:"timezone,omitempty"`
+	AutoLogon                         bool               `json:"auto_logon,omitempty"`
+	ObfuscatePassword                 bool               `json:"obfuscate_password,omitempty"`
+	RegisterLabLink                   *bool              `json:"register_with_lablink,omitempty"`
+	LabLinkRole                       string             `json:"lablink_role,omitempty"`
+	LabLinkPort                       int                `json:"lablink_port,omitempty"`
+	MinHostReservePct                 float64            `json:"min_host_reserve_pct,omitempty"`
+	ExposeVirtualizationExtensions    *bool              `json:"expose_virtualization_extensions,omitempty"`
+	VirtualizationBasedSecurityOptOut *bool              `json:"virtualization_based_security_opt_out,omitempty"`
+	Distribution                      string             `json:"distribution,omitempty"`
+	Release                           string             `json:"release,omitempty"`
+	Architecture                      string             `json:"architecture,omitempty"`
+	ImageCacheRoot                    string             `json:"image_cache_root,omitempty"`
+	LinuxUsername                     string             `json:"linux_username,omitempty"`
+	SSHPublicKey                      string             `json:"ssh_public_key,omitempty"`
+	SSHPublicKeyFile                  string             `json:"ssh_public_key_file,omitempty"`
+	LinuxPasswordCredential           string             `json:"linux_password_credential,omitempty"`
+	AllowSSHPasswordAuth              *bool              `json:"allow_ssh_password_auth,omitempty"`
+	NetworkConfig                     string             `json:"network_config,omitempty"`
+	DiskSizeGB                        float64            `json:"disk_size_gb,omitempty"`
+	ImageBuilderProfile               string             `json:"image_builder_profile,omitempty"`
+	BuilderVMName                     string             `json:"builder_vm_name,omitempty"`
+	DeleteBuilderAfterPrepare         *bool              `json:"delete_builder_after_prepare,omitempty"`
+	DomainJoin                        *WindowsDomainJoin `json:"domain_join,omitempty"`
+}
+
+// WindowsDomainJoin contains non-secret defaults for joining a Windows guest
+// after LabLink enrollment. PasswordSecret is a secret-store name, never a
+// password value.
+type WindowsDomainJoin struct {
+	Domain              string `json:"domain"`
+	Username            string `json:"username"`
+	PasswordSecret      string `json:"password_secret"`
+	OUPath              string `json:"ou_path,omitempty"`
+	Reboot              *bool  `json:"reboot,omitempty"`
+	VerifySecureChannel *bool  `json:"verify_secure_channel,omitempty"`
+}
+
+func (c WindowsDomainJoin) EffectiveReboot() bool {
+	return c.Reboot == nil || *c.Reboot
+}
+
+func (c WindowsDomainJoin) EffectiveVerifySecureChannel() bool {
+	return c.VerifySecureChannel == nil || *c.VerifySecureChannel
+}
+
+func (c WindowsDomainJoin) Validate() error {
+	c.Domain = strings.TrimSpace(c.Domain)
+	c.Username = strings.TrimSpace(c.Username)
+	c.PasswordSecret = strings.TrimSpace(c.PasswordSecret)
+	c.OUPath = strings.TrimSpace(c.OUPath)
+	if c.Domain == "" {
+		return fmt.Errorf("domain_join.domain is required")
+	}
+	if len(c.Domain) > 253 {
+		return fmt.Errorf("domain_join.domain is too long")
+	}
+	for _, label := range strings.Split(c.Domain, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("domain_join.domain %q is not a valid DNS domain", c.Domain)
+		}
+		for _, r := range label {
+			if !(r == '-' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
+				return fmt.Errorf("domain_join.domain %q is not a valid DNS domain", c.Domain)
+			}
+		}
+	}
+	if c.Username == "" {
+		return fmt.Errorf("domain_join.username is required")
+	}
+	if strings.ContainsAny(c.Username, "\r\n\x00") {
+		return fmt.Errorf("domain_join.username contains invalid control characters")
+	}
+	if c.PasswordSecret == "" {
+		return fmt.Errorf("domain_join.password_secret is required")
+	}
+	for _, r := range c.PasswordSecret {
+		if !(r == '-' || r == '_' || r == '.' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z') {
+			return fmt.Errorf("domain_join.password_secret %q contains invalid character %q", c.PasswordSecret, r)
+		}
+	}
+	if strings.ContainsAny(c.OUPath, "\r\n\x00") {
+		return fmt.Errorf("domain_join.ou_path contains invalid control characters")
+	}
+	if c.EffectiveVerifySecureChannel() && !c.EffectiveReboot() {
+		return fmt.Errorf("domain_join.verify_secure_channel requires domain_join.reboot=true")
+	}
+	return nil
 }
 
 // Config is loaded from ~/.lablink/vm-defaults.json by default.
@@ -119,11 +184,20 @@ func (s *Store) load() (Config, error) {
 		config.LinuxTargetDefaults = map[string]string{}
 	}
 	for name, profile := range config.Profiles {
-		if _, err := profile.EffectiveGuestOS(); err != nil {
+		guestOS, err := profile.EffectiveGuestOS()
+		if err != nil {
 			return config, fmt.Errorf("VM defaults profile %q: %w", name, err)
 		}
 		if _, err := profile.EffectiveProfileUsage(); err != nil {
 			return config, fmt.Errorf("VM defaults profile %q: %w", name, err)
+		}
+		if profile.DomainJoin != nil {
+			if guestOS != GuestOSWindows {
+				return config, fmt.Errorf("VM defaults profile %q: domain_join is supported only for Windows profiles", name)
+			}
+			if err := profile.DomainJoin.Validate(); err != nil {
+				return config, fmt.Errorf("VM defaults profile %q: %w", name, err)
+			}
 		}
 	}
 	return config, nil
@@ -368,6 +442,14 @@ func (s *Store) Set(name string, profile Profile, targetDefault bool) error {
 	usage, err := profile.EffectiveProfileUsage()
 	if err != nil {
 		return err
+	}
+	if profile.DomainJoin != nil {
+		if guestOS != GuestOSWindows {
+			return fmt.Errorf("domain_join is supported only for Windows profiles")
+		}
+		if err := profile.DomainJoin.Validate(); err != nil {
+			return err
+		}
 	}
 	if targetDefault && usage == ProfileUsageLinuxImageBuilder {
 		return fmt.Errorf("profile_usage %q cannot be an ordinary target default; save it with set_as_target_default=false", usage)

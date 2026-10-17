@@ -282,6 +282,7 @@ AES-GCM key stored with restrictive permissions in `~/.lablink/secrets.key`.
 | `create_vm` | Low-level Gen2 VM primitive. |
 | `provision_unattend` | Create/inject a differencing Windows OS disk using a saved administrator credential profile. |
 | `create_windows_vm` | High-level safe composition of provisioning plus VM creation. |
+| `join_windows_domain` | Join an existing Windows node with a saved password secret, reboot, and verify its Netlogon secure channel. |
 | `save_vm_template` / `list_vm_templates` / `delete_vm_template` | Manage persistent, non-secret VM defaults and per-host template selection. |
 | `delete_vm` | Dry-run-first VM deletion with optional safe child-storage, registry, and issued-identity cleanup. |
 
@@ -366,6 +367,37 @@ When `register_with_lablink:true`, `create_windows_vm` also:
    staged secret copies.
 4. Starts the VM, discovers its IPv4 address, verifies the agent over mTLS, and
    registers the guest in `nodes.json`.
+
+Windows profiles may include an optional `domain_join` object:
+
+```json
+{
+  "register_with_lablink": true,
+  "domain_join": {
+    "domain": "corp.example.com",
+    "username": "CORP\\vmjoin",
+    "password_secret": "corp-domain-join",
+    "ou_path": "OU=Lab,DC=corp,DC=example,DC=com",
+    "reboot": true,
+    "verify_secure_channel": true
+  }
+}
+```
+
+Save the password first with `save_secret`; profiles store only its name.
+Domain join is Windows-only and requires LabLink enrollment. The VM is created,
+started, and authenticated over mTLS before LabLink resolves the password
+server-side, discovers a domain controller, calls `Add-Computer`, reboots once,
+and verifies both domain membership and `nltest /sc_verify`. Use
+`skip_domain_join:true` to bypass an inherited profile setting for one
+creation.
+
+The LabLink agent remains LocalSystem after joining. A domain password is
+injected only for the join operation and is never written into unattend,
+first-boot scripts, command lines, audit entries, or tool output. Domain-join
+failure retains the created VM for diagnosis. VM deletion does not remove the
+Active Directory computer object; directory cleanup is a separate explicit
+administrative action.
 
 The tool emits MCP progress notifications during long provisioning and
 enrollment waits. If Hyper-V cannot start the guest—for example because the

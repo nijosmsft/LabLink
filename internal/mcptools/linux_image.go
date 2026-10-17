@@ -769,7 +769,7 @@ func ensureLinuxImageBuilder(
 		return Target{}, fmt.Errorf("parse builder inspection: %w", err)
 	}
 	if !inspected.Exists {
-		result, err := executeWindowsVMPlan(ctx, plan.Builder, reg, pool, creds, auditLog, enrollment)
+		result, err := executeWindowsVMPlan(ctx, plan.Builder, reg, pool, creds, nil, auditLog, enrollment)
 		if err != nil {
 			return Target{}, err
 		}

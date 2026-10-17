@@ -15,6 +15,24 @@
       "vswitch": "extswitch",
       "admin_password_credential": "lab-admin"
     },
+    "windows-domain-lab": {
+      "guest_os": "windows",
+      "target": "hyperv-host-1",
+      "base_vhd": "E:\\Images\\windows-base.vhdx",
+      "vm_root": "E:\\VM",
+      "vswitch": "extswitch",
+      "admin_password_credential": "lab-admin",
+      "register_with_lablink": true,
+      "lablink_role": "domain-vm",
+      "domain_join": {
+        "domain": "corp.example.com",
+        "username": "CORP\\vmjoin",
+        "password_secret": "corp-domain-join",
+        "ou_path": "OU=Lab,DC=corp,DC=example,DC=com",
+        "reboot": true,
+        "verify_secure_channel": true
+      }
+    },
     "linux-image-builder": {
       "guest_os": "windows",
       "profile_usage": "linux_image_builder",

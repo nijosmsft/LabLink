@@ -16,6 +16,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/hyperv/unattend"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
 
@@ -33,8 +34,9 @@ const passwordMask = "***"
 // tools are ungated; mutating tools are lease-gated on the resolved target
 // (local target => no lease; remote node => lease required). The orchestrator
 // create_windows_vm is deliberately DEFERRED (primitives-first, OQ-5).
-func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig, leaseCfg LeaseGateConfig) {
+func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, secrets *secretstore.Store, vmDefaults *vmconfig.Store, auditLog *audit.Log, enrollment VMEnrollmentConfig, leaseCfg LeaseGateConfig) {
 	registerVMTemplateTools(s, vmDefaults)
+	registerWindowsDomainJoinTool(s, reg, pool, secrets, auditLog, leaseCfg)
 	registerLinuxImageTools(s, reg, pool, vmDefaults, creds, auditLog, enrollment, leaseCfg)
 	registerCreateLinuxVMTool(s, reg, pool, vmDefaults, creds, auditLog, enrollment, leaseCfg)
 
@@ -173,9 +175,11 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithBoolean("cleanup_on_failure", mcp.Description("Delete only exactly owned partial VM artifacts after create/configuration failure (default false; diagnostics are preserved otherwise)")),
 			mcp.WithBoolean("expose_virtualization_extensions", mcp.Description("Expose nested virtualization extensions to the guest before its first start")),
 			mcp.WithBoolean("virtualization_based_security_opt_out", mcp.Description("Opt the VM out of virtualization-based security immediately after creation while it is Off")),
+			windowsDomainJoinSchema("domain_join", "Optional Windows-only Active Directory join performed after LabLink enrollment"),
+			mcp.WithBoolean("skip_domain_join", mcp.Description("Do not apply domain_join inherited from the selected profile")),
 			mcp.WithBoolean("dry_run", mcp.Description("Resolve and return configuration without creating anything")),
 		),
-		createWindowsVMHandler(s, reg, pool, creds, vmDefaults, auditLog, enrollment, leaseCfg),
+		createWindowsVMHandler(s, reg, pool, creds, secrets, vmDefaults, auditLog, enrollment, leaseCfg),
 	)
 }
 
