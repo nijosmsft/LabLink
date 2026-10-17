@@ -26,14 +26,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `save_secret` no longer calls MCP form elicitation with a sensitive value or
-  the unsupported `password` schema format. It now returns an exact local
-  command for the packaged `lablink-secret` helper.
+  the unsupported `password` schema format. On Windows it now launches the
+  packaged `lablink-secret` helper in a separate masked local terminal and
+  waits for completion.
 
 ### Security
 
 - Added interactive masked secret ingestion through `lablink-secret`. The
   helper requires terminal input, confirms the value, refuses pipes and
   redirected files, and writes to the same encrypted store used by the server.
+  The server reloads the store after helper completion so newly entered values
+  are immediately available through `secret_env`.
 
 ## [0.7.0-beta.1] - 2026-10-14
 

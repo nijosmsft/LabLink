@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,5 +74,23 @@ func TestListDeleteAndVersion(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), secretVersion) {
 		t.Fatalf("version output = %q", stdout.String())
+	}
+}
+
+func TestWriteSecretStatusContainsOnlyOutcome(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "status.json")
+	t.Setenv(secretStatusFileEnv, path)
+	writeSecretStatus(errors.New("prompt canceled"))
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status secretStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.OK || status.Error != "prompt canceled" {
+		t.Fatalf("status = %#v", status)
 	}
 }

@@ -236,22 +236,19 @@ Agent upgrades occur only through an explicit deployment/update request.
 
 | Tool | What it does |
 |------|--------------|
-| `save_secret` | Return the exact local `lablink-secret` command for saving or replacing an arbitrary secret through masked terminal input. The value is never requested through MCP. |
+| `save_secret` | Open a local masked terminal prompt for saving or replacing an arbitrary secret. The value never passes through MCP. |
 | `list_secrets` | List secret names only. |
 | `delete_secret` | Delete a saved secret. |
 
-Run the command returned by `save_secret`, or invoke the packaged helper
-directly when LabLink uses its default secret store:
+On Windows, `save_secret` opens the packaged helper in a new local console,
+waits for masked entry and confirmation, then reloads the encrypted store so
+the secret is immediately available through `secret_env`. The helper runs as
+the same OS account as the LabLink server because DPAPI encryption is
+user-scoped.
 
-```powershell
-.\bin\lablink-secret.exe set msrc-archive-password
-```
-
-The helper requires an interactive terminal, masks and confirms the value, and
-refuses redirected input. Run it as the same OS account that runs the LabLink
-server because Windows DPAPI encryption is user-scoped. When
-`LABLINK_SECRETS_FILE` selects a non-default store, use the exact `--store`
-command returned by `save_secret`.
+The packaged `lablink-secret` CLI remains available for direct local
+administration. It requires an interactive terminal and refuses redirected
+input.
 
 Reference saved secrets by environment variable name:
 

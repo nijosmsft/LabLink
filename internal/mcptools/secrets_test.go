@@ -3,15 +3,14 @@ package mcptools
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/nijosmsft/lablink/internal/secretstore"
 )
 
-func TestSaveSecretReturnsLocalInstructionsWithoutSaving(t *testing.T) {
-	storePath := filepath.Join(".testdata", t.Name(), "secrets.json")
+func TestSaveSecretLaunchesMaskedPromptAndReloadsStore(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "secrets.json")
 	absoluteStorePath, err := filepath.Abs(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -19,37 +18,37 @@ func TestSaveSecretReturnsLocalInstructionsWithoutSaving(t *testing.T) {
 	store := secretstore.Open(storePath)
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"name": "archive"}
-	result, err := saveSecretInstructionsHandler(store, `C:\LabLink\bin\lablink-secret.exe`)(context.Background(), req)
+	helperPath := `C:\LabLink\bin\lablink-secret.exe`
+	launched := false
+	launcher := func(_ context.Context, helper, path, name string) error {
+		launched = true
+		if helper != helperPath || path != absoluteStorePath || name != "archive" {
+			t.Fatalf("launch args = %q, %q, %q", helper, path, name)
+		}
+		return secretstore.Open(path).Set(name, "sensitive-value")
+	}
+	result, err := saveSecretHandler(store, helperPath, launcher)(context.Background(), req)
 	if err != nil || result == nil || result.IsError {
 		t.Fatalf("handler = %#v, %v", result, err)
 	}
-	text := toolResultText(result)
-	for _, want := range []string{
-		"was not requested or saved through MCP",
-		"lablink-secret.exe",
-		"--store",
-		absoluteStorePath,
-		"masked terminal",
-		"`secret_env`",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("instructions missing %q:\n%s", want, text)
-		}
+	if !launched {
+		t.Fatal("secret prompt was not launched")
 	}
-	if names, err := store.List(); err != nil || len(names) != 0 {
-		t.Fatalf("save instructions mutated store: %v, %v", names, err)
+	value, err := store.Get("archive")
+	if err != nil || value != "sensitive-value" {
+		t.Fatalf("reloaded secret = %q, %v", value, err)
 	}
 }
 
-func TestFormatSecretCommandQuotesShellMetacharacters(t *testing.T) {
-	shell, command := formatSecretCommand(`C:\Program Files\Lab'Link\lablink-secret.exe`, `C:\Users\Test User\secret's.json`, "archive", "windows")
-	if shell != "powershell" || command != `& 'C:\Program Files\Lab''Link\lablink-secret.exe' set --store 'C:\Users\Test User\secret''s.json' 'archive'` {
-		t.Fatalf("PowerShell command = %q, %q", shell, command)
-	}
-
-	shell, command = formatSecretCommand("/opt/lab'link/lablink-secret", "/home/test user/secret's.json", "archive", "linux")
-	if shell != "sh" || command != `'/opt/lab'"'"'link/lablink-secret' set --store '/home/test user/secret'"'"'s.json' 'archive'` {
-		t.Fatalf("POSIX command = %q, %q", shell, command)
+func TestSaveSecretReturnsPromptFailure(t *testing.T) {
+	store := secretstore.Open(filepath.Join(t.TempDir(), "secrets.json"))
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"name": "archive"}
+	result, err := saveSecretHandler(store, "lablink-secret", func(context.Context, string, string, string) error {
+		return context.Canceled
+	})(context.Background(), req)
+	if err != nil || result == nil || !result.IsError {
+		t.Fatalf("prompt failure result = %#v, %v", result, err)
 	}
 }
 
@@ -57,7 +56,7 @@ func TestSaveSecretRejectsInvalidName(t *testing.T) {
 	store := secretstore.Open(filepath.Join(t.TempDir(), "secrets.json"))
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]any{"name": "bad name"}
-	result, err := saveSecretInstructionsHandler(store, "lablink-secret")(context.Background(), req)
+	result, err := saveSecretHandler(store, "lablink-secret", nil)(context.Background(), req)
 	if err != nil || result == nil || !result.IsError {
 		t.Fatalf("invalid name result = %#v, %v", result, err)
 	}

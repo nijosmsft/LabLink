@@ -19,10 +19,22 @@ var secretVersion = "dev"
 type secretReader func(prompt string) ([]byte, error)
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, os.Stderr, readMaskedSecret); err != nil {
+	err := runMain()
+	writeSecretStatus(err)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func runMain() error {
+	cleanup, err := prepareConsoleIO()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	return run(os.Args[1:], os.Stdout, os.Stderr, readMaskedSecret)
 }
 
 func readMaskedSecret(prompt string) ([]byte, error) {
