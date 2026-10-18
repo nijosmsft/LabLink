@@ -33,6 +33,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the unsupported `password` schema format. On Windows it now launches the
   packaged `lablink-secret` helper in a separate masked local terminal and
   waits for completion.
+- Masked local secret prompts now display one `*` per typed character and erase
+  the marker on backspace, providing input feedback without exposing values.
 
 ### Security
 

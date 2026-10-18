@@ -247,8 +247,9 @@ the same OS account as the LabLink server because DPAPI encryption is
 user-scoped.
 
 The packaged `lablink-secret` CLI remains available for direct local
-administration. It requires an interactive terminal and refuses redirected
-input.
+administration. It requires an interactive terminal, displays `*` feedback for
+each typed character, supports visible backspace correction, and refuses
+redirected input.
 
 Reference saved secrets by environment variable name:
 

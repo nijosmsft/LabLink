@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"crypto/subtle"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/security"
@@ -17,6 +20,8 @@ import (
 var secretVersion = "dev"
 
 type secretReader func(prompt string) ([]byte, error)
+
+var errSecretInputCanceled = errors.New("secret input canceled")
 
 func main() {
 	err := runMain()
@@ -42,13 +47,58 @@ func readMaskedSecret(prompt string) ([]byte, error) {
 	if !term.IsTerminal(fd) {
 		return nil, fmt.Errorf("standard input is not a terminal; refusing to read a secret from a pipe or redirected file")
 	}
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return nil, fmt.Errorf("enable masked terminal input: %w", err)
+	}
+	defer term.Restore(fd, state)
+
 	fmt.Fprint(os.Stderr, prompt)
-	value, err := term.ReadPassword(fd)
+	value, err := readSecretWithFeedback(os.Stdin, os.Stderr)
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
 		return nil, fmt.Errorf("read masked secret: %w", err)
 	}
 	return value, nil
+}
+
+func readSecretWithFeedback(input io.Reader, output io.Writer) ([]byte, error) {
+	reader := bufio.NewReader(input)
+	value := make([]rune, 0, 32)
+	defer func() {
+		for i := range value {
+			value[i] = 0
+		}
+	}()
+	for {
+		key, _, err := reader.ReadRune()
+		if err != nil {
+			return nil, err
+		}
+		switch key {
+		case '\r', '\n':
+			return []byte(string(value)), nil
+		case '\b', '\x7f':
+			if len(value) == 0 {
+				continue
+			}
+			value[len(value)-1] = 0
+			value = value[:len(value)-1]
+			if _, err := io.WriteString(output, "\b \b"); err != nil {
+				return nil, err
+			}
+		case '\x03':
+			return nil, errSecretInputCanceled
+		default:
+			if unicode.IsControl(key) {
+				continue
+			}
+			value = append(value, key)
+			if _, err := io.WriteString(output, "*"); err != nil {
+				return nil, err
+			}
+		}
+	}
 }
 
 func run(args []string, stdout, stderr io.Writer, readSecret secretReader) error {
