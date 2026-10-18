@@ -94,3 +94,42 @@ func TestWriteSecretStatusContainsOnlyOutcome(t *testing.T) {
 		t.Fatalf("status = %#v", status)
 	}
 }
+
+func TestReadSecretWithFeedbackMasksCharactersAndHandlesBackspace(t *testing.T) {
+	var output bytes.Buffer
+	value, err := readSecretWithFeedback(strings.NewReader("ab\bcd\r"), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(value) != "acd" {
+		t.Fatalf("value = %q", value)
+	}
+	if output.String() != "**\b \b**" {
+		t.Fatalf("feedback = %q", output.String())
+	}
+	if strings.Contains(output.String(), string(value)) {
+		t.Fatal("secret value appeared in feedback")
+	}
+}
+
+func TestReadSecretWithFeedbackUsesOneMarkerPerUnicodeCharacter(t *testing.T) {
+	var output bytes.Buffer
+	value, err := readSecretWithFeedback(strings.NewReader("päss\r"), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(value) != "päss" || output.String() != "****" {
+		t.Fatalf("value = %q, feedback = %q", value, output.String())
+	}
+}
+
+func TestReadSecretWithFeedbackHandlesCancelAndIgnoresControls(t *testing.T) {
+	var output bytes.Buffer
+	_, err := readSecretWithFeedback(strings.NewReader("\tA\x03"), &output)
+	if !errors.Is(err, errSecretInputCanceled) {
+		t.Fatalf("cancel error = %v", err)
+	}
+	if output.String() != "*" {
+		t.Fatalf("feedback = %q", output.String())
+	}
+}
