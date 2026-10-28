@@ -889,7 +889,9 @@ func TestStartVMAndDiscoverIPUsesTerminatingStartErrors(t *testing.T) {
 }
 
 func TestGuestEnrollmentScriptUsesSecretFilesNotArguments(t *testing.T) {
-	script := guestEnrollmentScript(windowsVMPlan{LabLinkPort: 9091})
+	script := guestEnrollmentScript(windowsVMPlan{
+		LabLinkPort: 9091, DefenderExcludeLabLinkAgent: true,
+	})
 	for _, want := range []string{
 		"--auth-token-file",
 		"agent.token",
@@ -903,6 +905,25 @@ func TestGuestEnrollmentScriptUsesSecretFilesNotArguments(t *testing.T) {
 	}
 	if strings.Contains(script, "temporary-secret") {
 		t.Fatal("enrollment script unexpectedly embeds a secret value")
+	}
+	if strings.Contains(script, `Join-Path $payload 'lablink-agent.exe'`) {
+		t.Fatal("enrollment script must not copy the agent from a temporary payload")
+	}
+	if !strings.Contains(script, `lablink-agent binary not found at final path`) {
+		t.Fatal("enrollment script must require the agent at its final path")
+	}
+	for _, want := range []string{
+		`Add-MpPreference -ExclusionPath $exe`,
+		`Get-MpPreference`,
+		`Microsoft Defender exclusion was not applied`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("enrollment script missing Defender check %q", want)
+		}
+	}
+	withoutExclusion := guestEnrollmentScript(windowsVMPlan{LabLinkPort: 9091})
+	if strings.Contains(withoutExclusion, "Add-MpPreference") {
+		t.Fatal("enrollment script must omit Defender changes when disabled")
 	}
 }
 

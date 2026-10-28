@@ -46,6 +46,7 @@ type windowsVMPlan struct {
 	AutoLogon                         bool                        `json:"auto_logon"`
 	ObfuscatePassword                 bool                        `json:"obfuscate_password"`
 	RegisterWithLabLink               bool                        `json:"register_with_lablink"`
+	DefenderExcludeLabLinkAgent       bool                        `json:"defender_exclude_lablink_agent"`
 	LabLinkNodeName                   string                      `json:"lablink_node_name,omitempty"`
 	LabLinkRole                       string                      `json:"lablink_role,omitempty"`
 	LabLinkPort                       int                         `json:"lablink_port,omitempty"`
@@ -254,7 +255,8 @@ func planFromProfile(p vmconfig.Profile, name string) windowsVMPlan {
 		SecureBoot: secureBoot, Locale: locale, TimeZone: p.TimeZone,
 		AutoLogon: p.AutoLogon, ObfuscatePassword: p.ObfuscatePassword,
 		RegisterWithLabLink: boolValue(p.RegisterLabLink, false), LabLinkRole: p.LabLinkRole,
-		LabLinkPort: p.LabLinkPort, VMRoot: p.VMRoot,
+		DefenderExcludeLabLinkAgent: true,
+		LabLinkPort:                 p.LabLinkPort, VMRoot: p.VMRoot,
 		MinHostReservePct:                 p.MinHostReservePct,
 		ExposeVirtualizationExtensions:    boolValue(p.ExposeVirtualizationExtensions, false),
 		VirtualizationBasedSecurityOptOut: boolValue(p.VirtualizationBasedSecurityOptOut, false),
@@ -312,6 +314,7 @@ func applyPlanArguments(plan *windowsVMPlan, req mcp.CallToolRequest) error {
 	applyBoolArg(args, "auto_logon", &plan.AutoLogon)
 	applyBoolArg(args, "obfuscate_password", &plan.ObfuscatePassword)
 	applyBoolArg(args, "register_with_lablink", &plan.RegisterWithLabLink)
+	applyBoolArg(args, "defender_exclude_lablink_agent", &plan.DefenderExcludeLabLinkAgent)
 	applyBoolArg(args, "allow_host_resource_pressure", &plan.AllowHostResourcePressure)
 	applyBoolArg(args, "cleanup_on_failure", &plan.CleanupOnFailure)
 	applyBoolArg(args, "expose_virtualization_extensions", &plan.ExposeVirtualizationExtensions)
@@ -462,7 +465,8 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		"locale":                    plan.Locale, "timezone": plan.TimeZone,
 		"first_boot_script": firstBootScript, "auto_logon": autoLogon,
 		"obfuscate_password": plan.ObfuscatePassword, "injection_method": "mount-vhd",
-		"payload_remote_dir": payload.RemoteDir,
+		"payload_remote_dir": payload.RemoteDir, "agent_binary_remote": payload.AgentBinaryRemote,
+		"defender_exclude_lablink_agent": plan.RegisterWithLabLink && plan.DefenderExcludeLabLinkAgent,
 	}
 	provisioned, err := provisionUnattendHandler(reg, pool, creds, auditLog)(ctx, provisionReq)
 	if err != nil || provisioned == nil || provisioned.IsError {

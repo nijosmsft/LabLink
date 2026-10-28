@@ -25,8 +25,9 @@ type VMEnrollmentConfig struct {
 }
 
 type enrollmentPayload struct {
-	RemoteDir string
-	Cleanup   func()
+	RemoteDir         string
+	AgentBinaryRemote string
+	Cleanup           func()
 }
 
 func prepareEnrollmentPayload(
@@ -55,8 +56,39 @@ func prepareEnrollmentPayload(
 		return enrollmentPayload{}, fmt.Errorf("read LabLink CA bundle: %w", err)
 	}
 
+	target, err := resolvePlanTarget(plan.Target, reg)
+	if err != nil {
+		return enrollmentPayload{}, err
+	}
+	stageID, err := newRemoteStageID()
+	if err != nil {
+		return enrollmentPayload{}, err
+	}
+	remoteRoot := `C:\LabLink\VMEnrollment\` + stageID
+	remoteDir := remoteRoot + `\payload`
+	remoteAgent := remoteRoot + `\lablink-agent.exe`
+	cleanupRemote := func() {
+		script := fmt.Sprintf(`Remove-Item -LiteralPath %s -Recurse -Force -ErrorAction SilentlyContinue`, hyperv.PSLit(remoteRoot))
+		_, _, _ = runPS(context.Background(), reg, pool, target, script, vmDefaultTimeoutSec)
+	}
+	prepareStage := fmt.Sprintf(`
+$root = %s
+$payload = %s
+New-Item -ItemType Directory -Force -Path $root,$payload | Out-Null
+icacls $root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+`, hyperv.PSLit(remoteRoot), hyperv.PSLit(remoteDir))
+	if _, _, err := runPS(ctx, reg, pool, target, prepareStage, vmDefaultTimeoutSec); err != nil {
+		cleanupRemote()
+		return enrollmentPayload{}, fmt.Errorf("prepare enrollment staging: %w", err)
+	}
+	if err := pushToTarget(ctx, reg, pool, target, config.AgentBinary, remoteAgent); err != nil {
+		cleanupRemote()
+		return enrollmentPayload{}, fmt.Errorf("stage enrollment agent binary: %w", err)
+	}
+
 	localDir, err := os.MkdirTemp("", "lablink-vm-enroll-*")
 	if err != nil {
+		cleanupRemote()
 		return enrollmentPayload{}, err
 	}
 	cleanupLocal := func() { _ = os.RemoveAll(localDir) }
@@ -66,28 +98,6 @@ func prepareEnrollmentPayload(
 		"server.key":          keyPEM,
 		"agent.token":         []byte(config.AuthToken),
 		"Install-LabLink.ps1": []byte(guestEnrollmentScript(plan)),
-	}
-	agentData, err := os.ReadFile(config.AgentBinary)
-	if err != nil {
-		cleanupLocal()
-		return enrollmentPayload{}, err
-	}
-	files["lablink-agent.exe"] = agentData
-
-	target, err := resolvePlanTarget(plan.Target, reg)
-	if err != nil {
-		cleanupLocal()
-		return enrollmentPayload{}, err
-	}
-	stageID, err := newRemoteStageID()
-	if err != nil {
-		cleanupLocal()
-		return enrollmentPayload{}, err
-	}
-	remoteDir := `C:\Windows\Temp\lablink-enroll-` + stageID
-	cleanupRemote := func() {
-		script := fmt.Sprintf(`Remove-Item -LiteralPath %s -Recurse -Force -ErrorAction SilentlyContinue`, hyperv.PSLit(remoteDir))
-		_, _, _ = runPS(context.Background(), reg, pool, target, script, vmDefaultTimeoutSec)
 	}
 	for name, data := range files {
 		localPath := filepath.Join(localDir, name)
@@ -107,7 +117,8 @@ func prepareEnrollmentPayload(
 		}
 	}
 	return enrollmentPayload{
-		RemoteDir: remoteDir,
+		RemoteDir:         remoteDir,
+		AgentBinaryRemote: remoteAgent,
 		Cleanup: func() {
 			cleanupRemote()
 			cleanupLocal()
@@ -161,12 +172,22 @@ func ensureGuestServerIdentity(pkiDir, nodeName string) ([]byte, []byte, error) 
 }
 
 func guestEnrollmentScript(plan windowsVMPlan) string {
+	defenderExclusion := ""
+	if plan.DefenderExcludeLabLinkAgent {
+		defenderExclusion = `
+$mpPreference = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+if ($mpPreference) {
+    Add-MpPreference -ExclusionPath $exe
+    $configuredExclusions = @((Get-MpPreference).ExclusionPath)
+    if ($configuredExclusions -notcontains $exe) { throw "Microsoft Defender exclusion was not applied for $exe" }
+}
+`
+	}
 	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $payload = $PSScriptRoot
 $dest = 'C:\LabLink'
 $tls = Join-Path $dest 'tls'
 New-Item -ItemType Directory -Force -Path $dest,$tls | Out-Null
-Copy-Item (Join-Path $payload 'lablink-agent.exe') (Join-Path $dest 'lablink-agent.exe') -Force
 Copy-Item (Join-Path $payload 'agent.token') (Join-Path $dest 'agent.token') -Force
 Copy-Item (Join-Path $payload 'ca.crt') (Join-Path $tls 'ca.crt') -Force
 Copy-Item (Join-Path $payload 'server.crt') (Join-Path $tls 'server.crt') -Force
@@ -176,6 +197,8 @@ icacls (Join-Path $tls 'server.key') /inheritance:r /grant:r 'SYSTEM:F' 'Adminis
 Remove-Item (Join-Path $payload 'agent.token') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $payload 'server.key') -Force -ErrorAction SilentlyContinue
 $exe = Join-Path $dest 'lablink-agent.exe'
+if (-not (Test-Path -LiteralPath $exe)) { throw "lablink-agent binary not found at final path: $exe" }
+%s
 $installArgs = @('--install','--listen',':%d','--transport','mtls','--auth-token-file',(Join-Path $dest 'agent.token'),'--tls-ca',(Join-Path $tls 'ca.crt'),'--tls-cert',(Join-Path $tls 'server.crt'),'--tls-key',(Join-Path $tls 'server.key'))
 $install = Start-Process -FilePath $exe -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
 if ($install.ExitCode -ne 0) { throw "lablink-agent install failed: $($install.ExitCode)" }
@@ -185,7 +208,7 @@ if (-not (Get-NetFirewallRule -DisplayName 'LabLink Agent' -ErrorAction Silently
 Start-Service -Name 'LabLink Agent'
 Set-Location $env:TEMP
 Remove-Item -LiteralPath $payload -Recurse -Force -ErrorAction SilentlyContinue
-`, plan.LabLinkPort, plan.LabLinkPort)
+`, defenderExclusion, plan.LabLinkPort, plan.LabLinkPort)
 }
 
 func enrollmentFirstBootScript(userScript string) string {

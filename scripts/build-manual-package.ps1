@@ -96,7 +96,9 @@ param(
 
     [switch]$NoZip,
 
-    [switch]$NoRegister
+    [switch]$NoRegister,
+
+    [bool]$AddDefenderExclusion = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -254,6 +256,7 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
             tls_server_name = $tls
             role            = $Role
             generated_at    = (Get-Date).ToString('o')
+            defender_exclude_agent = $AddDefenderExclusion
         }
         $metadata | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $packageDir 'metadata.json') -Encoding utf8
 
@@ -284,6 +287,7 @@ if (-not (Test-Path $metaPath)) {
 }
 $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
 if (-not $Port) { $Port = [int]$meta.port }
+$addDefenderExclusion = if ($null -ne $meta.defender_exclude_agent) { [bool]$meta.defender_exclude_agent } else { $true }
 
 # Mirror the bundled assets into AgentDir so install-agent.ps1 (which expects
 # C:\LabLink\... by default) finds them where it expects them.
@@ -291,7 +295,24 @@ if (-not (Test-Path $AgentDir)) { New-Item -ItemType Directory -Path $AgentDir -
 $tlsDest = Join-Path $AgentDir 'tls'
 if (-not (Test-Path $tlsDest)) { New-Item -ItemType Directory -Path $tlsDest -Force | Out-Null }
 
-Copy-Item (Join-Path $pkgRoot 'lablink-agent.exe') (Join-Path $AgentDir 'lablink-agent.exe') -Force
+$agentDest = Join-Path $AgentDir 'lablink-agent.exe'
+$agentSource = Join-Path $pkgRoot 'lablink-agent.exe'
+if ($addDefenderExclusion) {
+    $mpPreference = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+    if ($mpPreference) {
+        Add-MpPreference -ExclusionPath @($agentSource, $agentDest)
+        $configuredExclusions = @((Get-MpPreference).ExclusionPath)
+        foreach ($requiredExclusion in @($agentSource, $agentDest)) {
+            if ($configuredExclusions -notcontains $requiredExclusion) {
+                throw "Microsoft Defender exclusion was not applied for $requiredExclusion"
+            }
+        }
+    }
+}
+Copy-Item $agentSource $agentDest -Force
+if ($addDefenderExclusion -and $agentSource -ne $agentDest -and (Get-Command Remove-MpPreference -ErrorAction SilentlyContinue)) {
+    Remove-MpPreference -ExclusionPath $agentSource -ErrorAction SilentlyContinue
+}
 $updateSrc = Join-Path $pkgRoot 'Update-LabLink.ps1'
 if (Test-Path $updateSrc) {
     Copy-Item $updateSrc (Join-Path $AgentDir 'Update-LabLink.ps1') -Force
@@ -313,7 +334,8 @@ if ([string]::IsNullOrWhiteSpace($token)) { throw "agent.token is empty." }
     -Transport mtls `
     -TlsCA (Join-Path $tlsDest 'ca.crt') `
     -TlsCert (Join-Path $tlsDest 'server.crt') `
-    -TlsKey (Join-Path $tlsDest 'server.key')
+    -TlsKey (Join-Path $tlsDest 'server.key') `
+    -AddDefenderExclusion:$addDefenderExclusion
 
 if ($LASTEXITCODE -ne 0) { throw "install-agent.ps1 failed (exit $LASTEXITCODE)" }
 
@@ -346,15 +368,20 @@ Generated:       $($metadata.generated_at)
 
 How to install (run on the remote machine, as Administrator):
 
-  1. Extract this archive somewhere with write access (e.g. C:\Temp\lablink).
-  2. Open an elevated PowerShell prompt in that directory.
-  3. Run:  .\install.ps1
+  1. Create C:\LabLink\InstallPackage.
+  2. Before extracting, add an exact-file exclusion for the packaged binary:
+       Add-MpPreference -ExclusionPath C:\LabLink\InstallPackage\lablink-agent.exe
+  3. Extract this archive into C:\LabLink\InstallPackage.
+  4. Open an elevated PowerShell prompt in that directory.
+  5. Run:  .\install.ps1
      - Use -AgentDir <path> to install somewhere other than C:\LabLink.
      - Use -Port <n>           to override the bundled port ($Port).
 
 The script copies lablink-agent.exe + the TLS material into AgentDir, writes
-the auth token with restricted ACLs, installs the Windows service, opens the
-firewall, and starts it. After it succeeds, tell the operator; they can
+the auth token with restricted ACLs, adds an exact-file Microsoft Defender
+exclusion for the installed agent, installs the Windows service, opens the
+firewall, starts it, and removes the package-path exclusion. After it succeeds,
+tell the operator; they can
 verify with lablink-probe.exe and the node will already be registered in
 their nodes.json.
 

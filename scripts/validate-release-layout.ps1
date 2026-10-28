@@ -6,13 +6,70 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ReleaseDir = (Resolve-Path $ReleaseDir).Path
-$windows = Join-Path $ReleaseDir "lablink-$Version-windows-amd64.zip"
+$windowsProtected = Join-Path $ReleaseDir "lablink-$Version-windows-amd64.zip.enc"
 $linux = Join-Path $ReleaseDir "lablink-$Version-linux-amd64.zip"
-foreach ($archive in @($windows, $linux)) {
+foreach ($archive in @($windowsProtected, $linux, (Join-Path $ReleaseDir 'install.ps1'))) {
     if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
         throw "missing release archive: $archive"
     }
 }
+
+function Test-FixedTimeEqual([byte[]]$left, [byte[]]$right) {
+    if ($left.Length -ne $right.Length) { return $false }
+    $difference = 0
+    for ($i = 0; $i -lt $left.Length; $i++) {
+        $difference = $difference -bor ($left[$i] -bxor $right[$i])
+    }
+    return $difference -eq 0
+}
+
+function Expand-ProtectedPackage([string]$inputPath, [string]$outputPath) {
+    $magicExpected = [Text.Encoding]::ASCII.GetBytes('LLPKG001')
+    $container = [IO.File]::ReadAllBytes($inputPath)
+    $offset = 0
+    $magic = New-Object byte[] $magicExpected.Length
+    [Buffer]::BlockCopy($container, $offset, $magic, 0, $magic.Length)
+    $offset += $magic.Length
+    if (-not (Test-FixedTimeEqual $magic $magicExpected)) { throw 'invalid protected package header' }
+    $salt = New-Object byte[] 16
+    $iv = New-Object byte[] 16
+    [Buffer]::BlockCopy($container, $offset, $salt, 0, 16); $offset += 16
+    [Buffer]::BlockCopy($container, $offset, $iv, 0, 16); $offset += 16
+    $cipherLength = $container.Length - $offset - 32
+    $ciphertext = New-Object byte[] $cipherLength
+    $tag = New-Object byte[] 32
+    [Buffer]::BlockCopy($container, $offset, $ciphertext, 0, $cipherLength)
+    [Buffer]::BlockCopy($container, $offset + $cipherLength, $tag, 0, 32)
+    $derive = [Security.Cryptography.Rfc2898DeriveBytes]::new(
+        'lablink', $salt, 100000, [Security.Cryptography.HashAlgorithmName]::SHA256
+    )
+    try {
+        $key = $derive.GetBytes(32)
+        $macKey = $derive.GetBytes(32)
+    } finally { $derive.Dispose() }
+    $authenticated = New-Object byte[] ($container.Length - 32)
+    [Buffer]::BlockCopy($container, 0, $authenticated, 0, $authenticated.Length)
+    $hmac = [Security.Cryptography.HMACSHA256]::new($macKey)
+    try { $computedTag = $hmac.ComputeHash($authenticated) } finally { $hmac.Dispose() }
+    if (-not (Test-FixedTimeEqual $tag $computedTag)) { throw 'protected package authentication failed' }
+    $aes = [Security.Cryptography.Aes]::Create()
+    try {
+        $aes.Key = $key
+        $aes.IV = $iv
+        $aes.Mode = [Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+        $decryptor = $aes.CreateDecryptor()
+        try { $plain = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length) }
+        finally { $decryptor.Dispose() }
+    } finally { $aes.Dispose() }
+    [IO.File]::WriteAllBytes($outputPath, $plain)
+}
+
+$validationDir = Join-Path $ReleaseDir '.validation'
+if (Test-Path $validationDir) { Remove-Item -LiteralPath $validationDir -Recurse -Force }
+New-Item -ItemType Directory -Path $validationDir | Out-Null
+$windows = Join-Path $validationDir "lablink-$Version-windows-amd64.zip"
+Expand-ProtectedPackage $windowsProtected $windows
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Get-Entries([string]$path) {
@@ -111,11 +168,17 @@ foreach ($check in @(
     }
 }
 
-[pscustomobject]@{
-    status = 'ok'
-    windows_archive = $windows
-    linux_archive = $linux
-    windows_linux_agent = 'bin/linux-amd64/lablink-agent'
-    linux_agent_sha256 = $linuxNativeHash
-    version = $Version
-} | ConvertTo-Json -Compress
+try {
+    [pscustomobject]@{
+        status = 'ok'
+        windows_archive = $windowsProtected
+        linux_archive = $linux
+        installer = (Join-Path $ReleaseDir 'install.ps1')
+        windows_linux_agent = 'bin/linux-amd64/lablink-agent'
+        linux_agent_sha256 = $linuxNativeHash
+        version = $Version
+    } | ConvertTo-Json -Compress
+}
+finally {
+    Remove-Item -LiteralPath $validationDir -Recurse -Force -ErrorAction SilentlyContinue
+}

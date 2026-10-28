@@ -69,6 +69,18 @@ foreach ($path in @($ServerBinary, $CaBinary)) {
     }
 }
 
+$serverCommand = [IO.Path]::GetFullPath($ServerBinary)
+$packageRoot = Split-Path -Parent $PSScriptRoot
+$installRoot = Split-Path -Parent $packageRoot
+$currentServer = Join-Path $installRoot 'current\bin\lablink-server.exe'
+if (Test-Path -LiteralPath $currentServer) {
+    $requestedHash = (Get-FileHash -LiteralPath $ServerBinary -Algorithm SHA256).Hash
+    $currentHash = (Get-FileHash -LiteralPath $currentServer -Algorithm SHA256).Hash
+    if ($requestedHash -eq $currentHash) {
+        $serverCommand = $currentServer
+    }
+}
+
 foreach ($path in @($HomeDir, $PkiDir, $clientDir, (Split-Path -Parent $TokenFile), (Split-Path -Parent $McpConfigOut))) {
     if ($path -and -not (Test-Path $path)) {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
@@ -101,7 +113,7 @@ $mcpConfig = [ordered]@{
     mcpServers = [ordered]@{
         lablink = [ordered]@{
             type = 'stdio'
-            command = (Resolve-Path $ServerBinary).Path
+            command = $serverCommand
             env = [ordered]@{
                 LABLINK_AGENT_TOKEN_FILE = (Resolve-Path $TokenFile).Path
                 LABLINK_TRANSPORT = 'mtls'

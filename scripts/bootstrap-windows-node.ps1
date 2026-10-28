@@ -71,7 +71,9 @@ param(
 
     [string]$ManualOutDir,
 
-    [switch]$ManualNoZip
+    [switch]$ManualNoZip,
+
+    [bool]$AddDefenderExclusion = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -122,6 +124,7 @@ if ($Manual) {
         NodesFile  = $NodesFile
         AgentBinary = $AgentBinary
         CaBinary    = $CaBinary
+        AddDefenderExclusion = $AddDefenderExclusion
     }
     if ($IPv4Address)   { $builderArgs.IPv4Address   = $IPv4Address }
     if ($NodeName)      { $builderArgs.NodeName      = $NodeName }
@@ -273,7 +276,8 @@ for ($i = 0; $i -lt $Machine.Count; $i++) {
             -Transport mtls `
             -TlsCA $caBundle `
             -TlsCert $serverCert `
-            -TlsKey $serverKey
+            -TlsKey $serverKey `
+            -AddDefenderExclusion:$AddDefenderExclusion
         if ($LASTEXITCODE -ne 0) { throw "deploy-agent failed (exit $LASTEXITCODE)" }
 
         $resolvedAddress = if ($ipv4 -match ':\d+$') { $ipv4 } else { "${ipv4}:$Port" }

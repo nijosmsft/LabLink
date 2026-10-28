@@ -53,6 +53,7 @@ jobs:
           tag_name: ${{ steps.ver.outputs.version }}
           generate_release_notes: true
           files: |
-            release/lablink-*-windows-amd64.zip
+            release/lablink-*-windows-amd64.zip.enc
             release/lablink-*-linux-amd64.zip
+            release/install.ps1
             release/SHA256SUMS.txt

@@ -29,29 +29,31 @@ var tmpl = template.Must(template.New("unattend").Parse(answerTemplate))
 // call time (ideally from the credentials store) and never persisted in the
 // template file.
 type Params struct {
-	Hostname        string
-	AdminPassword   string
-	Locale          string // default en-US
-	TimeZone        string
-	ProductKey      string
-	FirstBootScript string // inline PowerShell run once at first logon
-	AutoLogon       bool
-	Architecture    string // amd64 (default) | x86 | arm64
-	Obfuscate       bool   // base64-obfuscate the password (NOT encryption)
+	Hostname                    string
+	AdminPassword               string
+	Locale                      string // default en-US
+	TimeZone                    string
+	ProductKey                  string
+	FirstBootScript             string // inline PowerShell run once at first logon
+	AutoLogon                   bool
+	Architecture                string // amd64 (default) | x86 | arm64
+	Obfuscate                   bool   // base64-obfuscate the password (NOT encryption)
+	DefenderExcludeLabLinkAgent bool
 }
 
 // templateData is the escaped/derived view handed to the template.
 type templateData struct {
-	Hostname               string
-	Locale                 string
-	TimeZone               string
-	ProductKey             string
-	Architecture           string
-	AutoLogon              bool
-	HasFirstBootScript     bool
-	AdminPasswordValue     string
-	AdminPasswordPlainText string
-	AutoLogonPasswordValue string
+	Hostname                    string
+	Locale                      string
+	TimeZone                    string
+	ProductKey                  string
+	Architecture                string
+	AutoLogon                   bool
+	HasFirstBootScript          bool
+	DefenderExcludeLabLinkAgent bool
+	AdminPasswordValue          string
+	AdminPasswordPlainText      string
+	AutoLogonPasswordValue      string
 }
 
 // Render produces the answer-file XML for p. All caller-supplied values are
@@ -71,13 +73,14 @@ func Render(p Params) (string, error) {
 	}
 
 	data := templateData{
-		Hostname:           xmlEscape(p.Hostname),
-		Locale:             xmlEscape(locale),
-		TimeZone:           xmlEscape(strings.TrimSpace(p.TimeZone)),
-		ProductKey:         xmlEscape(strings.TrimSpace(p.ProductKey)),
-		Architecture:       xmlEscape(arch),
-		AutoLogon:          p.AutoLogon,
-		HasFirstBootScript: strings.TrimSpace(p.FirstBootScript) != "",
+		Hostname:                    xmlEscape(p.Hostname),
+		Locale:                      xmlEscape(locale),
+		TimeZone:                    xmlEscape(strings.TrimSpace(p.TimeZone)),
+		ProductKey:                  xmlEscape(strings.TrimSpace(p.ProductKey)),
+		Architecture:                xmlEscape(arch),
+		AutoLogon:                   p.AutoLogon,
+		HasFirstBootScript:          strings.TrimSpace(p.FirstBootScript) != "",
+		DefenderExcludeLabLinkAgent: p.DefenderExcludeLabLinkAgent,
 	}
 	if p.Obfuscate {
 		data.AdminPasswordValue = xmlEscape(obfuscatePassword(p.AdminPassword, "AdministratorPassword"))

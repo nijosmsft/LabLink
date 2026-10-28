@@ -34,6 +34,10 @@
 .PARAMETER AllowInsecure
     Explicitly opt into the plaintext fallback transport when Transport=insecure.
 
+.PARAMETER AddDefenderExclusion
+    Add and verify an exact-file Microsoft Defender exclusion for lablink-agent.exe.
+    Defaults to true.
+
 .EXAMPLE
     .\install-agent.ps1 -Token "my-secret-token" -Transport mtls -TlsCA C:\LabLink\tls\ca.crt -TlsCert C:\LabLink\tls\server.crt -TlsKey C:\LabLink\tls\server.key
 
@@ -59,7 +63,9 @@ param(
 
     [string]$TlsKey = 'C:\LabLink\tls\server.key',
 
-    [switch]$AllowInsecure
+    [switch]$AllowInsecure,
+
+    [bool]$AddDefenderExclusion = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,6 +80,19 @@ function Protect-LabLinkSecretFile {
 
     $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
     icacls $Path /inheritance:r /grant:r "${currentUser}:F" 'Administrators:F' 'SYSTEM:F' | Out-Null
+}
+
+if ($AddDefenderExclusion) {
+    $mpPreference = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+    if ($mpPreference) {
+        Write-Host "Configuring exact-file Microsoft Defender exclusion..." -ForegroundColor Cyan
+        Add-MpPreference -ExclusionPath $exe
+        $configuredExclusions = @((Get-MpPreference).ExclusionPath)
+        if ($configuredExclusions -notcontains $exe) {
+            throw "Microsoft Defender exclusion was not applied for $exe"
+        }
+        Write-Host "  Excluded $exe" -ForegroundColor DarkGray
+    }
 }
 
 if (-not (Test-Path $exe)) {

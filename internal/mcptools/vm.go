@@ -167,6 +167,7 @@ func RegisterVM(s *server.MCPServer, reg *registry.Registry, pool *agentclient.P
 			mcp.WithBoolean("auto_logon", mcp.Description("Enable one-time AutoLogon")),
 			mcp.WithBoolean("obfuscate_password", mcp.Description("Use answer-file base64 obfuscation (not encryption)")),
 			mcp.WithBoolean("register_with_lablink", mcp.Description("Enroll the guest as a LabLink node, start it, discover its IP, and verify mTLS")),
+			mcp.WithBoolean("defender_exclude_lablink_agent", mcp.Description("Add an exact-file Microsoft Defender exclusion for C:\\LabLink\\lablink-agent.exe before enrollment (default true; applies only with register_with_lablink)")),
 			mcp.WithString("lablink_node_name", mcp.Description("LabLink registry name; defaults to hostname")),
 			mcp.WithString("lablink_role", mcp.Description("LabLink role for the enrolled guest")),
 			mcp.WithNumber("lablink_port", mcp.Description("Guest LabLink agent port (default 9091)")),
@@ -414,14 +415,15 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 
 		// Render the answer file (password lives only in memory + the staged file).
 		xml, rerr := unattend.Render(unattend.Params{
-			Hostname:        hostname,
-			AdminPassword:   password,
-			Locale:          req.GetString("locale", "en-US"),
-			TimeZone:        req.GetString("timezone", ""),
-			ProductKey:      req.GetString("product_key", ""),
-			FirstBootScript: req.GetString("first_boot_script", ""),
-			AutoLogon:       req.GetBool("auto_logon", false),
-			Obfuscate:       req.GetBool("obfuscate_password", false),
+			Hostname:                    hostname,
+			AdminPassword:               password,
+			Locale:                      req.GetString("locale", "en-US"),
+			TimeZone:                    req.GetString("timezone", ""),
+			ProductKey:                  req.GetString("product_key", ""),
+			FirstBootScript:             req.GetString("first_boot_script", ""),
+			AutoLogon:                   req.GetBool("auto_logon", false),
+			Obfuscate:                   req.GetBool("obfuscate_password", false),
+			DefenderExcludeLabLinkAgent: req.GetBool("defender_exclude_lablink_agent", false),
 		})
 		if rerr != nil {
 			opErr = rerr
@@ -481,11 +483,12 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		}
 
 		script, berr := unattend.BuildMountInjectScript(unattend.MountInjectParams{
-			VHDPath:         vhdPath,
-			BaseVHD:         baseVhd,
-			UnattendRemote:  remoteUnattend,
-			FirstBootRemote: remoteFirstBoot,
-			PayloadRemote:   req.GetString("payload_remote_dir", ""),
+			VHDPath:           vhdPath,
+			BaseVHD:           baseVhd,
+			UnattendRemote:    remoteUnattend,
+			FirstBootRemote:   remoteFirstBoot,
+			PayloadRemote:     req.GetString("payload_remote_dir", ""),
+			AgentBinaryRemote: req.GetString("agent_binary_remote", ""),
 		})
 		if berr != nil {
 			opErr = berr

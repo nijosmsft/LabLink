@@ -82,10 +82,89 @@ $bundleFiles = @(
     'scripts/bootstrap-operator.ps1',
     'scripts/bootstrap-windows-node.ps1',
     'scripts/build-manual-package.ps1',
+    'scripts/install.ps1',
     'scripts/install-agent.ps1',
     'scripts/deploy-agent.ps1',
     'scripts/Update-LabLink.ps1'
 )
+
+function Join-ByteArrays {
+    param([Parameter(Mandatory)][byte[][]]$Arrays)
+
+    $length = 0
+    foreach ($array in $Arrays) { $length += $array.Length }
+    $result = New-Object byte[] $length
+    $offset = 0
+    foreach ($array in $Arrays) {
+        [Buffer]::BlockCopy($array, 0, $result, $offset, $array.Length)
+        $offset += $array.Length
+    }
+    return $result
+}
+
+function Protect-LabLinkPackage {
+    param(
+        [Parameter(Mandatory)][string]$InputZip,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [Parameter(Mandatory)][string]$Password
+    )
+
+    $magic = [Text.Encoding]::ASCII.GetBytes('LLPKG001')
+    $salt = New-Object byte[] 16
+    $iv = New-Object byte[] 16
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($salt)
+        $rng.GetBytes($iv)
+    }
+    finally {
+        $rng.Dispose()
+    }
+
+    $derive = [Security.Cryptography.Rfc2898DeriveBytes]::new(
+        $Password,
+        $salt,
+        100000,
+        [Security.Cryptography.HashAlgorithmName]::SHA256
+    )
+    try {
+        $encryptionKey = $derive.GetBytes(32)
+        $macKey = $derive.GetBytes(32)
+    }
+    finally {
+        $derive.Dispose()
+    }
+
+    $plaintext = [IO.File]::ReadAllBytes($InputZip)
+    $aes = [Security.Cryptography.Aes]::Create()
+    try {
+        $aes.KeySize = 256
+        $aes.Mode = [Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+        $aes.Key = $encryptionKey
+        $aes.IV = $iv
+        $encryptor = $aes.CreateEncryptor()
+        try {
+            $ciphertext = $encryptor.TransformFinalBlock($plaintext, 0, $plaintext.Length)
+        }
+        finally {
+            $encryptor.Dispose()
+        }
+    }
+    finally {
+        $aes.Dispose()
+    }
+
+    $authenticated = Join-ByteArrays -Arrays @($magic, $salt, $iv, $ciphertext)
+    $hmac = [Security.Cryptography.HMACSHA256]::new($macKey)
+    try {
+        $tag = $hmac.ComputeHash($authenticated)
+    }
+    finally {
+        $hmac.Dispose()
+    }
+    [IO.File]::WriteAllBytes($OutputPath, (Join-ByteArrays -Arrays @($authenticated, $tag)))
+}
 
 function Build-Target {
     param([string]$Os, [string]$Arch, [string]$Stage)
@@ -162,13 +241,29 @@ foreach ($plat in $Platforms.Split(',')) {
     $zipPath = Join-Path $OutDir $zipName
     if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath
-    Write-Host "  packaged $zipName"
 
-    $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
-    $sums += "$hash  $zipName"
+    $artifactName = $zipName
+    $artifactPath = $zipPath
+    if ($os -eq 'windows') {
+        $artifactName = "$zipName.enc"
+        $artifactPath = Join-Path $OutDir $artifactName
+        if (Test-Path $artifactPath) { Remove-Item -Force $artifactPath }
+        Protect-LabLinkPackage -InputZip $zipPath -OutputPath $artifactPath -Password 'lablink'
+        Remove-Item -LiteralPath $zipPath -Force
+    }
+    Write-Host "  packaged $artifactName"
+
+    $hash = (Get-FileHash $artifactPath -Algorithm SHA256).Hash.ToLower()
+    $sums += "$hash  $artifactName"
 
     Remove-Item -Recurse -Force $stageRoot
 }
+
+$installerSource = Join-Path $repoRoot 'scripts\install.ps1'
+$installerOut = Join-Path $OutDir 'install.ps1'
+Copy-Item -LiteralPath $installerSource -Destination $installerOut -Force
+$installerHash = (Get-FileHash $installerOut -Algorithm SHA256).Hash.ToLower()
+$sums += "$installerHash  install.ps1"
 
 $sumsFile = Join-Path $OutDir 'SHA256SUMS.txt'
 $sums | Set-Content -Encoding ASCII $sumsFile
