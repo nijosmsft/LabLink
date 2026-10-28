@@ -358,9 +358,20 @@ try {
     $mcpSnippet = Get-Content -LiteralPath $mcpSnippetPath -Raw
     $promptPath = Join-Path $InstallRoot 'configure-mcp-prompt.txt'
     $prompt = @"
-Configure the LabLink MCP server in my AI client's MCP configuration using the
-following generated entry. Preserve the command path exactly so future LabLink
-upgrades follow C:\LabLink\current. Then restart or reload the MCP client.
+Update my AI client's MCP JSON configuration using the generated LabLink entry
+below. Inspect the existing MCP JSON first:
+
+- If mcpServers.lablink already exists, treat this as an upgrade and replace
+  only that entry.
+- If it does not exist, treat this as a new installation and add the entry.
+- Preserve every unrelated MCP server and setting.
+- Preserve the LabLink command path exactly as generated so upgrades continue
+  through C:\LabLink\current.
+- Do not try to hot-load LabLink, reload MCP servers, restart processes, or
+  validate LabLink in this session.
+
+After updating the JSON, tell me whether this was a new installation or an
+upgrade, and ask me to restart the entire AI session.
 
 $mcpSnippet
 "@
