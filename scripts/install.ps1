@@ -372,6 +372,8 @@ $mcpSnippet
     Write-Host "  MCP snippet:    $mcpSnippetPath"
     Write-Host "  AI prompt:      $promptPath"
     Write-Host ""
+    Write-Host "Copy and paste the prompt below into your AI agent to finish bootstrapping LabLink:" -ForegroundColor Yellow
+    Write-Host ""
     Write-Host $prompt -ForegroundColor Cyan
 }
 finally {
