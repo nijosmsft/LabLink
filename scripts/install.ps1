@@ -139,14 +139,65 @@ function Expand-ProtectedLabLinkPackage {
     [IO.File]::WriteAllBytes($OutputZip, $plaintext)
 }
 
+function Invoke-GitHubApi {
+    param([Parameter(Mandatory)][string]$Uri)
+
+    $headers = @{ 'User-Agent' = 'LabLink-Installer' }
+    $token = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
+    if ($token) {
+        $headers.Authorization = "Bearer $token"
+    }
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            return Invoke-RestMethod -Headers $headers -Uri $Uri
+        }
+        catch {
+            $response = $_.Exception.Response
+            $statusCode = if ($response) { [int]$response.StatusCode } else { 0 }
+            $rateLimited = $statusCode -eq 403 -or $statusCode -eq 429 -or
+                $_.Exception.Message -match 'rate limit'
+            if (-not $rateLimited) {
+                throw "GitHub release query failed: $($_.Exception.Message)"
+            }
+
+            $resetText = ''
+            if ($response -and $response.Headers) {
+                $resetValue = $response.Headers['X-RateLimit-Reset']
+                if ($resetValue) {
+                    try {
+                        $resetTime = [DateTimeOffset]::FromUnixTimeSeconds([int64]$resetValue).ToLocalTime()
+                        $resetText = " The limit is expected to reset at $($resetTime.ToString('yyyy-MM-dd HH:mm:ss zzz'))."
+                    }
+                    catch {}
+                }
+            }
+            if ($attempt -lt 3) {
+                $delay = 5 * $attempt
+                Write-Warning "GitHub API rate limit reached; retrying in $delay seconds ($attempt/3).$resetText"
+                Start-Sleep -Seconds $delay
+                continue
+            }
+
+            throw @"
+GitHub API rate limit reached after 3 attempts.$resetText
+Wait for the limit to reset, set GH_TOKEN to an authenticated GitHub token, or
+download the protected Windows package and SHA256SUMS.txt from
+https://github.com/$Repo/releases and run:
+
+  .\install.ps1 -PackagePath <path-to-lablink-version-windows-amd64.zip.enc>
+"@
+        }
+    }
+}
+
 function Get-LabLinkRelease {
     param([switch]$IncludePrerelease)
 
-    $headers = @{ 'User-Agent' = 'LabLink-Installer' }
     if (-not $IncludePrerelease) {
-        return Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repo/releases/latest"
+        return Invoke-GitHubApi -Uri "https://api.github.com/repos/$Repo/releases/latest"
     }
-    $releases = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$Repo/releases?per_page=100"
+    $releases = Invoke-GitHubApi -Uri "https://api.github.com/repos/$Repo/releases?per_page=100"
     $release = $releases | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1
     if (-not $release) { throw "No LabLink prerelease is available in $Repo." }
     return $release
@@ -240,6 +291,14 @@ try {
         $packageName = "lablink-$version-windows-amd64.zip.enc"
         $packageAsset = $release.assets | Where-Object { $_.name -eq $packageName } | Select-Object -First 1
         $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
+        if ((-not $packageAsset -or -not $sumsAsset) -and -not $Prerelease) {
+            Write-Warning "Latest stable release $version predates the protected Windows package; selecting the newest compatible prerelease."
+            $release = Get-LabLinkRelease -IncludePrerelease
+            $version = [string]$release.tag_name
+            $packageName = "lablink-$version-windows-amd64.zip.enc"
+            $packageAsset = $release.assets | Where-Object { $_.name -eq $packageName } | Select-Object -First 1
+            $sumsAsset = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
+        }
         if (-not $packageAsset -or -not $sumsAsset) {
             throw "Release $version does not contain $packageName and SHA256SUMS.txt."
         }
