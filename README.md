@@ -711,7 +711,20 @@ See [SECURITY.md](SECURITY.md) for the full posture and threat model.
 
 ## Going further
 
-To update LabLink binaries on the operator machine or on a lab node, run:
+To update an existing Windows or Linux node to the running server's bundled
+agent version, use the MCP tool:
+
+```json
+{
+  "node": "lab-node-3"
+}
+```
+
+`update_agent` pushes the local payload over mTLS, launches a detached atomic
+replacement with rollback, waits for the node to reconnect, and verifies its
+reported version. Nodes do not need internet access.
+
+To update LabLink binaries on the operator machine directly, run:
 
 ```powershell
 .\scripts\Update-LabLink.ps1
@@ -729,7 +742,7 @@ workstations where the service is known not to exist. `Update-LabLink.ps1`
 ships in the protected package (`scripts\Update-LabLink.ps1`) and at
 `C:\LabLink\Update-LabLink.ps1` on every agent install.
 
-- [Fleet update pattern](docs/fleet-update.md) — composing `execute_script` + `wait_for_node` to update every node from the operator workstation.
+- [Fleet update pattern](docs/fleet-update.md) — `update_agent` and the legacy detached-script fallback.
 - [`docs/quickstart.md`](docs/quickstart.md) — manual mTLS setup without the bootstrap scripts.
 - [`docs/Project.md`](docs/Project.md) — architecture and design notes.
 - [`docs/mtls-self-managed-cert-plan.md`](docs/mtls-self-managed-cert-plan.md) — PKI design and rationale.

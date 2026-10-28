@@ -106,9 +106,15 @@ practical benefit unless your fleet is large.
 
 ## Future: built-in update_nodes MCP tool
 
-A built-in `update_nodes` tool that handles the loop, the expected service-down
-window, polling, and a per-node result table is tracked as a follow-up. Until it
-lands, the pattern above is the recommended approach.
+The built-in `update_agent` MCP tool is the recommended single-node path. It
+selects the Windows or Linux agent bundled beside the running server, verifies
+that the payload contains the server version, pushes it over the existing mTLS
+connection, launches an OS-specific detached atomic replacement, waits through
+the expected disconnect, and verifies the authenticated agent reports the
+server version. Clients never download from GitHub and need no internet access.
+
+Use the explicit `push_file` + `execute_script -Detach` pattern above only when
+working with an older LabLink server that does not expose `update_agent`.
 
 ## See also
 

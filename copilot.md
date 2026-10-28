@@ -182,6 +182,11 @@ To add a new tool:
   ZIPs and extracted binaries under `C:\LabLink`, use versioned directories
   behind `C:\LabLink\current`, and keep generated MCP commands pinned to
   `C:\LabLink\current\bin\lablink-server.exe`.
+- Update existing nodes with the `update_agent` MCP tool. It always pushes the
+  running server's bundled Windows or Linux amd64 agent over mTLS, performs a
+  detached atomic replacement with rollback, and verifies the node reports the
+  server version. Never make clients download release assets or accept an
+  independently selected version.
 
 ## Running locally during development
 
