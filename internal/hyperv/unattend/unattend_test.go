@@ -104,9 +104,32 @@ func TestRender_FirstBootScriptToggle(t *testing.T) {
 	if strings.Contains(without, "LabLink first-boot script") {
 		t.Errorf("first-boot command should be absent when no script")
 	}
-
 	if _, err := Render(Params{AdminPassword: "x"}); err == nil {
 		t.Errorf("expected error when hostname empty")
+	}
+}
+
+func TestRender_DefenderAgentExclusionToggle(t *testing.T) {
+	with, err := Render(Params{
+		Hostname: "h", AdminPassword: "x", DefenderExcludeLabLinkAgent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`name="Microsoft-Windows-Deployment"`,
+		`Add-MpPreference -ExclusionPath 'C:\LabLink\lablink-agent.exe'`,
+	} {
+		if !strings.Contains(with, want) {
+			t.Errorf("Defender exclusion configuration missing %q", want)
+		}
+	}
+	without, err := Render(Params{Hostname: "h", AdminPassword: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(without, "Add-MpPreference") {
+		t.Fatal("Defender exclusion must be omitted when disabled")
 	}
 }
 
@@ -144,9 +167,10 @@ func TestBuildMountInjectScript_MethodA(t *testing.T) {
 
 func TestBuildMountInjectScript_EnrollmentPayload(t *testing.T) {
 	s, err := BuildMountInjectScript(MountInjectParams{
-		VHDPath:        `D:\VMs\win01.vhdx`,
-		UnattendRemote: `C:\Windows\Temp\u.xml`,
-		PayloadRemote:  `C:\Windows\Temp\lablink-enroll`,
+		VHDPath:           `D:\VMs\win01.vhdx`,
+		UnattendRemote:    `C:\Windows\Temp\u.xml`,
+		PayloadRemote:     `C:\LabLink\VMEnrollment\stage\payload`,
+		AgentBinaryRemote: `C:\LabLink\VMEnrollment\stage\lablink-agent.exe`,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,10 +178,16 @@ func TestBuildMountInjectScript_EnrollmentPayload(t *testing.T) {
 	for _, want := range []string{
 		`Windows\Setup\Scripts\LabLinkPayload`,
 		`Copy-Item (Join-Path $payloadSrc '*') $payloadDst -Recurse -Force`,
+		`$agentDst = "$winDrive\LabLink\lablink-agent.exe"`,
+		`Copy-Item -LiteralPath $agentSrc -Destination $agentDst -Force`,
 		`Remove-Item $payloadSrc -Recurse -Force`,
+		`Remove-Item $agentSrc -Force`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("enrollment script missing %q", want)
+		}
+		if strings.Contains(s, `Windows\Setup\Scripts\LabLinkPayload\lablink-agent.exe`) {
+			t.Fatal("agent binary must not be injected through the Setup payload")
 		}
 	}
 }

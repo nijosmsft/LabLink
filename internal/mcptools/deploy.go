@@ -33,6 +33,7 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 			mcp.WithString("tls_key", mcp.Description("Server private key PEM path (mtls)")),
 			mcp.WithBoolean("allow_insecure", mcp.Description("Confirm insecure transport")),
 			mcp.WithBoolean("no_service", mcp.Description("Skip service install; run detached")),
+			mcp.WithBoolean("defender_exclude_agent", mcp.Description("Add an exact-file Microsoft Defender exclusion for C:\\LabLink\\lablink-agent.exe before deployment (default true)")),
 		),
 		deployAgentHandler(reg, pool, creds, agentToken),
 	)
@@ -69,6 +70,7 @@ func deployAgentHandler(reg *registry.Registry, pool *agentclient.Pool, creds *c
 		tlsKey := strings.TrimSpace(request.GetString("tls_key", ""))
 		allowInsecure := request.GetBool("allow_insecure", false)
 		noService := request.GetBool("no_service", false)
+		defenderExcludeAgent := request.GetBool("defender_exclude_agent", true)
 
 		switch transportMode {
 		case "", string(security.TransportModeMTLS):
@@ -101,6 +103,10 @@ func deployAgentHandler(reg *registry.Registry, pool *agentclient.Pool, creds *c
 		if noService {
 			noSvcFlag = " -NoService"
 		}
+		defenderFlag := " -AddDefenderExclusion:$true"
+		if !defenderExcludeAgent {
+			defenderFlag = " -AddDefenderExclusion:$false"
+		}
 		transportFlag := fmt.Sprintf(" -Transport '%s'", escapePSString(transportMode))
 		transportArgs := ""
 		if transportMode == string(security.TransportModeMTLS) {
@@ -115,7 +121,7 @@ func deployAgentHandler(reg *registry.Registry, pool *agentclient.Pool, creds *c
 
 		psScript := fmt.Sprintf(`
 $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText -Force))
-& '%s' -Machines '%s' -AgentBinary '%s' -Token '%s' -Port %d -Credential $cred%s%s%s
+& '%s' -Machines '%s' -AgentBinary '%s' -Token '%s' -Port %d -Credential $cred%s%s%s%s
 `,
 			escapePSString(cred.Username),
 			escapePSString(cred.Password),
@@ -127,6 +133,7 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 			transportFlag,
 			transportArgs,
 			noSvcFlag,
+			defenderFlag,
 		)
 
 		cmd := exec.CommandContext(ctx, "pwsh", "-NoProfile", "-Command", psScript)

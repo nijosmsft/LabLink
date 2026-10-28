@@ -13,10 +13,12 @@
          $env:LOCALAPPDATA\lablink\bin\.
       3. Compares with the currently installed version and exits idempotently
          if already at the target.
-      4. Downloads the released windows-amd64 zip + SHA256SUMS.txt with
-         `gh release download` into a fresh temp directory.
-      5. Verifies the zip's SHA256 against the published sums file.
-      6. Extracts the zip and stops any running lablink-* processes (with
+      4. Downloads the protected windows-amd64 package + SHA256SUMS.txt with
+         `gh release download` into C:\LabLink\.update (or the selected
+         destination's .update directory).
+      5. Verifies the package SHA256 and authenticated container.
+      6. Decrypts/extracts under the LabLink directory and stops any running
+         lablink-* processes (with
          confirmation unless -Force).
       7. Atomically swaps each binary in place (renames existing -> .old,
          copies the new file, deletes .old on success or rolls back on
@@ -24,7 +26,7 @@
       8. If -UpdateMcpConfig, rewrites the lablink.command path in
          ~/.copilot/mcp-config.json (backing up the original first).
       9. Confirms the install by running lablink-server.exe --version.
-     10. Cleans up the temp directory and prints a one-block summary.
+     10. Cleans up the LabLink update staging directory and prints a one-block summary.
 
     Requires the `gh` CLI (https://cli.github.com/) authenticated against
     a github.com account with read access to nijosmsft/LabLink.
@@ -292,7 +294,7 @@ function Download-Release {
         [Parameter(Mandatory)][string]$TempDir
     )
 
-    $zipPattern  = "lablink-$Version-windows-amd64.zip"
+    $zipPattern  = "lablink-$Version-windows-amd64.zip.enc"
     $sumsPattern = 'SHA256SUMS.txt'
 
     Write-Step "Downloading $zipPattern + $sumsPattern from $Repo@$Version"
@@ -310,9 +312,67 @@ function Download-Release {
     if (-not (Test-Path $zipPath))  { throw "Expected $zipPath after download." }
     if (-not (Test-Path $sumsPath)) { throw "Expected $sumsPath after download." }
 
-    Write-Info "zip:  $zipPath"
+    Write-Info "protected package: $zipPath"
     Write-Info "sums: $sumsPath"
     return [pscustomobject]@{ Zip = $zipPath; Sums = $sumsPath }
+}
+
+function Test-FixedTimeEqual {
+    param([byte[]]$Left, [byte[]]$Right)
+    if ($Left.Length -ne $Right.Length) { return $false }
+    $difference = 0
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        $difference = $difference -bor ($Left[$i] -bxor $Right[$i])
+    }
+    return $difference -eq 0
+}
+
+function Expand-ProtectedLabLinkPackage {
+    param(
+        [Parameter(Mandatory)][string]$InputPath,
+        [Parameter(Mandatory)][string]$OutputZip
+    )
+
+    $magicExpected = [Text.Encoding]::ASCII.GetBytes('LLPKG001')
+    $container = [IO.File]::ReadAllBytes($InputPath)
+    $offset = 0
+    $magic = New-Object byte[] $magicExpected.Length
+    [Buffer]::BlockCopy($container, $offset, $magic, 0, $magic.Length)
+    $offset += $magic.Length
+    if (-not (Test-FixedTimeEqual $magic $magicExpected)) { throw 'invalid protected package header' }
+    $salt = New-Object byte[] 16
+    $iv = New-Object byte[] 16
+    [Buffer]::BlockCopy($container, $offset, $salt, 0, 16); $offset += 16
+    [Buffer]::BlockCopy($container, $offset, $iv, 0, 16); $offset += 16
+    $cipherLength = $container.Length - $offset - 32
+    if ($cipherLength -le 0) { throw 'protected package has no encrypted payload' }
+    $ciphertext = New-Object byte[] $cipherLength
+    $tag = New-Object byte[] 32
+    [Buffer]::BlockCopy($container, $offset, $ciphertext, 0, $cipherLength)
+    [Buffer]::BlockCopy($container, $offset + $cipherLength, $tag, 0, 32)
+    $derive = [Security.Cryptography.Rfc2898DeriveBytes]::new(
+        'lablink', $salt, 100000, [Security.Cryptography.HashAlgorithmName]::SHA256
+    )
+    try {
+        $key = $derive.GetBytes(32)
+        $macKey = $derive.GetBytes(32)
+    } finally { $derive.Dispose() }
+    $authenticated = New-Object byte[] ($container.Length - 32)
+    [Buffer]::BlockCopy($container, 0, $authenticated, 0, $authenticated.Length)
+    $hmac = [Security.Cryptography.HMACSHA256]::new($macKey)
+    try { $computedTag = $hmac.ComputeHash($authenticated) } finally { $hmac.Dispose() }
+    if (-not (Test-FixedTimeEqual $tag $computedTag)) { throw 'protected package authentication failed' }
+    $aes = [Security.Cryptography.Aes]::Create()
+    try {
+        $aes.Key = $key
+        $aes.IV = $iv
+        $aes.Mode = [Security.Cryptography.CipherMode]::CBC
+        $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+        $decryptor = $aes.CreateDecryptor()
+        try { $plain = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length) }
+        finally { $decryptor.Dispose() }
+    } finally { $aes.Dispose() }
+    [IO.File]::WriteAllBytes($OutputZip, $plain)
 }
 
 function Verify-Sha256 {
@@ -412,7 +472,7 @@ function Install-Binaries {
         foreach ($name in $ManagedBinaries) {
             $src = Join-Path $ExtractedBinDir $name
             if (-not (Test-Path $src)) {
-                Write-Warn "skip $name (not in release zip)"
+                Write-Warn "skip $name (not in release package)"
                 continue
             }
             $dst = Join-Path $DestinationDir $name
@@ -600,7 +660,12 @@ try {
     }
 
     $stamp   = (Get-Date).ToString('yyyyMMddHHmmss')
-    $tempDir = Join-Path $env:TEMP "lablink-update-$stamp"
+    $stagingRoot = if ($destination -match '^(?<root>[A-Za-z]:\\LabLink)(?:\\|$)') {
+        Join-Path $Matches.root '.update'
+    } else {
+        Join-Path $destination '.update'
+    }
+    $tempDir = Join-Path $stagingRoot "lablink-update-$stamp"
     if (Test-Path $tempDir) { Remove-Item -Recurse -Force $tempDir }
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
@@ -609,12 +674,16 @@ try {
         $downloaded = Download-Release -Version $Version -TempDir $tempDir
         Verify-Sha256 -ZipPath $downloaded.Zip -SumsPath $downloaded.Sums
 
+        $plainZip = Join-Path $tempDir 'package.zip'
+        Write-Step "Decrypting protected package inside the LabLink staging directory"
+        Expand-ProtectedLabLinkPackage -InputPath $downloaded.Zip -OutputZip $plainZip
+
         $extractDir = Join-Path $tempDir 'extracted'
         if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
         New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
 
         Write-Step "Extracting zip to $extractDir"
-        Expand-Archive -Path $downloaded.Zip -DestinationPath $extractDir -Force
+        Expand-Archive -Path $plainZip -DestinationPath $extractDir -Force
 
         $binDir = Join-Path $extractDir 'bin'
         if (-not (Test-Path $binDir)) {
@@ -725,7 +794,7 @@ try {
     } finally {
         if (Test-Path $tempDir) {
             try { Remove-Item -Recurse -Force $tempDir -ErrorAction Stop } catch {
-                Write-Warn "Could not remove temp dir ${tempDir}: $($_.Exception.Message)"
+                Write-Warn "Could not remove update staging dir ${tempDir}: $($_.Exception.Message)"
             }
         }
     }

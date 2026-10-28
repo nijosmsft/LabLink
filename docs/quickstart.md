@@ -4,8 +4,8 @@ This document describes the supported setup flow for connecting LabLink to an AI
 
 ## Recommended flow
 
-1. Download the latest release zip (see below).
-2. Run `scripts\bootstrap-operator.ps1`.
+1. Download and run `install.ps1` from the desired release.
+2. The installer runs `scripts\bootstrap-operator.ps1` automatically.
 3. Run `scripts\bootstrap-windows-node.ps1` for each Windows node.
 
 That path is the easiest way to get:
@@ -19,9 +19,21 @@ That path is the easiest way to get:
 
 ## Get the binaries
 
-Download `lablink-vX.Y.Z-windows-amd64.zip` from the [Releases page](https://github.com/nijosmsft/LabLink/releases/latest), verify its SHA256 against the published `SHA256SUMS.txt`, and unzip it somewhere stable like `C:\LabLink`. The archive bundles every binary, every bootstrap script, and the example MCP config — there's nothing extra to install.
+Download `install.ps1` from the desired entry on the
+[Releases page](https://github.com/nijosmsft/LabLink/releases), then run it
+from an elevated PowerShell prompt. It downloads the AES-protected Windows
+package, verifies it, installs to `C:\LabLink\<version>`, updates
+`C:\LabLink\current`, and bootstraps the operator configuration:
 
-If you'd rather build from source, run `make build-all` from a clone; the rest of this document applies unchanged.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Use `.\install.ps1 -Prerelease` for the newest prerelease or
+`.\install.ps1 -PackagePath <path-to-.zip.enc>` for an offline package.
+
+If you'd rather build from source, run `make build-all` from a clone; the rest
+of this document applies unchanged.
 
 ## Operator bootstrap
 

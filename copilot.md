@@ -170,6 +170,18 @@ To add a new tool:
   `os.WriteFile` secrets directly.
 - The portal binds **only to loopback** and requires a per-process access key.
   Do not add non-loopback listen paths.
+- Windows enrollment paths (`create_windows_vm`, `deploy_agent`, bootstrap,
+  and manual install) add only an exact-file Microsoft Defender exclusion for
+  `C:\LabLink\lablink-agent.exe` before copying or starting the agent. Keep it
+  enabled by default until the release binaries are Authenticode-signed; never
+  replace it with a directory, process, extension, or global Defender
+  exclusion. Do not stage LabLink executables under `%TEMP%` or
+  `C:\Windows\Temp`.
+- New operator installations must use the release `install.ps1` plus the
+  AES-protected `lablink-<version>-windows-amd64.zip.enc` asset. Keep decrypted
+  ZIPs and extracted binaries under `C:\LabLink`, use versioned directories
+  behind `C:\LabLink\current`, and keep generated MCP commands pinned to
+  `C:\LabLink\current\bin\lablink-server.exe`.
 
 ## Running locally during development
 

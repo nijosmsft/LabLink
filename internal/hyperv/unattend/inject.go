@@ -36,8 +36,13 @@ type MountInjectParams struct {
 	// PowerShell script was staged; it is copied to \Windows\Setup\Scripts.
 	FirstBootRemote string
 	// PayloadRemote, when set, is a staged directory copied into the guest for
-	// SetupComplete enrollment. It is removed from the target on every path.
+	// SetupComplete enrollment. It contains configuration only, never binaries,
+	// and is removed from the target on every path.
 	PayloadRemote string
+	// AgentBinaryRemote, when set, is the stable host-side LabLink agent path.
+	// It is injected directly into C:\LabLink in the guest, never through a
+	// temporary or Setup payload directory.
+	AgentBinaryRemote string
 }
 
 // BuildMountInjectScript builds the Method A injection script. Key safety
@@ -64,6 +69,7 @@ func BuildMountInjectScript(p MountInjectParams) (string, error) {
 	fmt.Fprintf(&b, "$unattendSrc = %s\n", hyperv.PSLit(p.UnattendRemote))
 	fmt.Fprintf(&b, "$firstBootSrc = %s\n", hyperv.PSLit(p.FirstBootRemote))
 	fmt.Fprintf(&b, "$payloadSrc = %s\n", hyperv.PSLit(p.PayloadRemote))
+	fmt.Fprintf(&b, "$agentSrc = %s\n", hyperv.PSLit(p.AgentBinaryRemote))
 
 	b.WriteString(`
 $mountedByUs = $false
@@ -121,6 +127,12 @@ try {
         New-Item -ItemType Directory -Force -Path $payloadDst | Out-Null
         Copy-Item (Join-Path $payloadSrc '*') $payloadDst -Recurse -Force
     }
+    if ($agentSrc) {
+        if (-not (Test-Path $agentSrc)) { throw "AGENT_BINARY_NOT_STAGED: '$agentSrc' not found on target" }
+        $agentDst = "$winDrive\LabLink\lablink-agent.exe"
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $agentDst) | Out-Null
+        Copy-Item -LiteralPath $agentSrc -Destination $agentDst -Force
+    }
 
     [pscustomobject]@{
         injected_to    = "$winDrive\Windows\Panther\unattend.xml"
@@ -140,6 +152,7 @@ finally {
     try { Remove-Item $unattendSrc -Force -ErrorAction SilentlyContinue } catch {}
     if ($firstBootSrc) { try { Remove-Item $firstBootSrc -Force -ErrorAction SilentlyContinue } catch {} }
     if ($payloadSrc) { try { Remove-Item $payloadSrc -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+    if ($agentSrc) { try { Remove-Item $agentSrc -Force -ErrorAction SilentlyContinue } catch {} }
     # Remove only drive letters we assigned.
     foreach ($a in $assignedLetters) {
         try { Remove-PartitionAccessPath -DiskNumber $a[0] -PartitionNumber $a[1] -AccessPath ($a[2] + ':\') -ErrorAction SilentlyContinue } catch {}

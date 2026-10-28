@@ -36,37 +36,45 @@ You'll need:
 - One or more Windows lab nodes. WinRM isn't mandatory, but having it enabled lets the bootstrap script deploy in a single command — the [No WinRM?](#no-winrm-build-a-hand-carry-install-package) flow below covers nodes where it's blocked.
 - PowerShell 5+ on both sides.
 
-### 1. Download the latest release
+### 1. Run the Windows installer
 
-Grab `lablink-vX.Y.Z-windows-amd64.zip` from the [Releases page](https://github.com/nijosmsft/LabLink/releases/latest), verify it against `SHA256SUMS.txt`, and extract:
-
-```powershell
-# Always pull the latest tag from GitHub (no manual bump needed).
-$ver = (Invoke-RestMethod 'https://api.github.com/repos/nijosmsft/LabLink/releases/latest').tag_name
-Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/lablink-$ver-windows-amd64.zip" -OutFile lablink.zip
-Invoke-WebRequest "https://github.com/nijosmsft/LabLink/releases/download/$ver/SHA256SUMS.txt"               -OutFile SHA256SUMS.txt
-# Select-String.ToString() prepends "<path>:<line>:"; use .Line to get just the matched text.
-$expected = ((Select-String -Path SHA256SUMS.txt -Pattern "lablink-$ver-windows-amd64.zip").Line -split '\s+')[0]
-$actual   = (Get-FileHash lablink.zip -Algorithm SHA256).Hash.ToLower()
-if ($expected -ne $actual) { throw "checksum mismatch: expected=$expected actual=$actual" }
-# Per-version directory keeps old installs around (cheap rollback) and avoids
-# Expand-Archive collisions on upgrade. Re-running the same version is idempotent
-# via -Force.
-$dest = "C:\LabLink\$ver"
-Expand-Archive lablink.zip -DestinationPath $dest -Force
-Remove-Item lablink.zip, SHA256SUMS.txt
-cd $dest
-```
-
-After this you have `C:\LabLink\$ver\bin\lablink-server.exe` (and friends). To always run the latest, point a junction at it:
+Download `install.ps1` from the desired entry on the
+[Releases page](https://github.com/nijosmsft/LabLink/releases), open an elevated
+PowerShell prompt, and run:
 
 ```powershell
-$current = 'C:\LabLink\current'
-if (Test-Path $current) { (Get-Item $current).Delete() }  # delete the junction, not the target
-New-Item -ItemType Junction -Path $current -Target $dest | Out-Null
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Then anything referencing `C:\LabLink\current\bin\lablink-server.exe` stays valid across upgrades.
+To install the newest prerelease instead of the latest stable release:
+
+```powershell
+.\install.ps1 -Prerelease
+```
+
+For an offline or previously downloaded package:
+
+```powershell
+.\install.ps1 -PackagePath .\lablink-vX.Y.Z-windows-amd64.zip.enc
+```
+
+The installer:
+
+1. Requires elevation.
+2. Adds Microsoft Defender exclusions for `C:\LabLink` and the stable
+   `C:\LabLink\current\bin\lablink-server.exe` process path.
+3. Downloads or copies the AES-protected Windows package under
+   `C:\LabLink\packages` and verifies its published SHA-256 when available.
+4. Decrypts it with the public packaging password `lablink` and extracts only
+   under the already excluded `C:\LabLink` tree.
+5. Installs to `C:\LabLink\<version>` and updates the
+   `C:\LabLink\current` junction.
+6. Runs `bootstrap-operator.ps1`.
+7. Writes `C:\LabLink\configure-mcp-prompt.txt`, containing the generated MCP
+   entry and a prompt that can be given to the AI client.
+
+The protected archive is a packaging workaround for Defender inspection, not a
+confidentiality boundary; its password is intentionally public.
 
 The archive contains:
 
@@ -81,13 +89,17 @@ The archive contains:
 
 > **Building from source instead?** See [Build from source](#build-from-source) at the bottom.
 
-### 2. Bootstrap your operator machine (one time)
+### 2. Bootstrap your operator machine (automatic)
 
 ```powershell
-.\scripts\bootstrap-operator.ps1
+C:\LabLink\current\scripts\bootstrap-operator.ps1
 ```
 
-This creates a local PKI, an operator client certificate, an auth token, and a ready-to-paste MCP snippet under `~\.lablink\`.
+The installer invokes this automatically. It creates a local PKI, an operator
+client certificate, an auth token, and a ready-to-paste MCP snippet under
+`~\.lablink\`. The generated command always uses
+`C:\LabLink\current\bin\lablink-server.exe`, so later junction updates do not
+require editing the MCP configuration.
 
 ### 3. Bootstrap each Windows node
 
@@ -103,7 +115,12 @@ You can also pass several machines at once. They share the same WinRM credential
 
 If a machine name resolves over DNS the IPv4 address is auto-detected; otherwise pass them positionally with `-IPv4Address 10.0.0.23,10.0.0.24,10.0.0.25`.
 
-The script issues a node-specific server certificate, deploys `lablink-agent.exe` over WinRM, installs the **LabLink Agent** Windows service, opens the firewall port, verifies the node with `lablink-probe.exe`, and registers it in `~\.lablink\nodes.json`.
+The script issues a node-specific server certificate, adds an exact-file
+Microsoft Defender exclusion for `C:\LabLink\lablink-agent.exe`, deploys the
+agent over WinRM, installs the **LabLink Agent** Windows service, opens the
+firewall port, verifies the node with `lablink-probe.exe`, and registers it in
+`~\.lablink\nodes.json`. Pass `-AddDefenderExclusion:$false` only when your
+environment already trusts the signed/hash-allowlisted binary.
 
 You'll be prompted for the node's WinRM credentials if you don't pass `-Credential`.
 
@@ -122,13 +139,21 @@ This delegates to `scripts\build-manual-package.ps1`, which (per machine):
 - zips it to `~\.lablink\manual\lablink-<node>.zip`, and
 - pre-registers the node in `~\.lablink\nodes.json` so the MCP server recognizes it as soon as the agent comes up.
 
-Hand the zip to the owner of the remote machine. They extract it and, from an elevated PowerShell:
+Hand the zip to the owner of the remote machine. Before extraction, they create
+`C:\LabLink\InstallPackage` and add an exact-file exclusion for
+`C:\LabLink\InstallPackage\lablink-agent.exe`; the generated `README.txt`
+contains the command. They then extract into that directory and, from an
+elevated PowerShell:
 
 ```powershell
 .\install.ps1
 ```
 
-That's the entire node-side procedure. `install.ps1` mirrors the bundled files into `C:\LabLink`, locks down the token + private key, installs the **LabLink Agent** Windows service, opens the firewall, starts it, and (by default) deletes the bundled token + key copies. Override `-AgentDir` or `-Port` if needed.
+That's the entire node-side procedure. `install.ps1` adds an exact-file
+Defender exclusion for the final agent path before copying it into
+`C:\LabLink`, locks down the token + private key, installs the **LabLink Agent**
+Windows service, opens the firewall, starts it, and (by default) deletes the
+bundled token + key copies. Override `-AgentDir` or `-Port` if needed.
 
 You can also call the package builder directly without going through `bootstrap-windows-node.ps1`:
 
@@ -692,7 +717,17 @@ To update LabLink binaries on the operator machine or on a lab node, run:
 .\scripts\Update-LabLink.ps1
 ```
 
-The script resolves the current install directory from your MCP config (or the per-user default), downloads the latest release zip, verifies the SHA256, stops any running `lablink-*` processes (prompting unless `-Force`), swaps the binaries atomically with rollback on failure, and confirms the new version. On lab nodes where the agent runs as a Windows service, the service is stopped before the swap and restarted after. The absence of the service is auto-detected; `-SkipServiceStop` is an optional flag for operator workstations where the service is known not to exist. `Update-LabLink.ps1` ships in both the release zip (`scripts\Update-LabLink.ps1`) and at `C:\LabLink\Update-LabLink.ps1` on every agent install.
+The script resolves the current install directory from your MCP config (or the
+per-user default), downloads the protected Windows release package, verifies
+its SHA256 and authenticated container, decrypts/extracts it under the LabLink
+installation tree, stops any running `lablink-*` processes (prompting unless
+`-Force`), swaps the binaries atomically with rollback on failure, and confirms
+the new version. On lab nodes where the agent runs as a Windows service, the
+service is stopped before the swap and restarted after. The absence of the
+service is auto-detected; `-SkipServiceStop` is an optional flag for operator
+workstations where the service is known not to exist. `Update-LabLink.ps1`
+ships in the protected package (`scripts\Update-LabLink.ps1`) and at
+`C:\LabLink\Update-LabLink.ps1` on every agent install.
 
 - [Fleet update pattern](docs/fleet-update.md) — composing `execute_script` + `wait_for_node` to update every node from the operator workstation.
 - [`docs/quickstart.md`](docs/quickstart.md) — manual mTLS setup without the bootstrap scripts.

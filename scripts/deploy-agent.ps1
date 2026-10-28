@@ -41,6 +41,10 @@
 
 .PARAMETER NoService
     Skip service installation; start the agent as a detached process instead.
+
+.PARAMETER AddDefenderExclusion
+    Add and verify an exact-file Microsoft Defender exclusion for the final
+    C:\LabLink\lablink-agent.exe path before copying the binary. Defaults to true.
 #>
 param(
     [Parameter(Mandatory)]
@@ -68,7 +72,9 @@ param(
 
     [switch]$AllowInsecure,
 
-    [switch]$NoService
+    [switch]$NoService,
+
+    [bool]$AddDefenderExclusion = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -102,9 +108,20 @@ foreach ($machine in $Machines) {
     $session = New-PSSession -ComputerName $machine -Credential $Credential
     try {
         Invoke-Command -Session $session -ScriptBlock {
-            param($dir, $tlsDir, $legacyDir, $svcName, $previousSvcName)
+            param($dir, $tlsDir, $legacyDir, $svcName, $previousSvcName, $agentExe, $addDefenderExclusion)
             if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
             if (-not (Test-Path $tlsDir)) { New-Item -ItemType Directory -Path $tlsDir -Force | Out-Null }
+
+            if ($addDefenderExclusion) {
+                $mpPreference = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+                if ($mpPreference) {
+                    Add-MpPreference -ExclusionPath $agentExe
+                    $configuredExclusions = @((Get-MpPreference).ExclusionPath)
+                    if ($configuredExclusions -notcontains $agentExe) {
+                        throw "Microsoft Defender exclusion was not applied for $agentExe"
+                    }
+                }
+            }
 
             # NOTE: device-interaction-agent is intentionally left alone — it
             # predates LabLink and may be owned by other tooling on this host.
@@ -119,7 +136,7 @@ foreach ($machine in $Machines) {
             Get-Process -Name 'lablink-agent', 'LabLinkAgent', 'agent' -ErrorAction SilentlyContinue |
                 Where-Object { $_.Path -in @((Join-Path $dir 'lablink-agent.exe'), (Join-Path $dir 'LabLinkAgent.exe'), (Join-Path $dir 'agent.exe'), (Join-Path $legacyDir 'agent.exe')) } |
                 Stop-Process -Force
-        } -ArgumentList $RemoteDir, $RemoteTlsDir, $LegacyRemoteDir, $ServiceName, $PreviousServiceName
+        } -ArgumentList $RemoteDir, $RemoteTlsDir, $LegacyRemoteDir, $ServiceName, $PreviousServiceName, $RemoteAgentExe, $AddDefenderExclusion
 
         Copy-Item -Path $AgentBinary -Destination $RemoteAgentExe -ToSession $session -Force
         $installScript = Join-Path $PSScriptRoot 'install-agent.ps1'
@@ -182,7 +199,7 @@ foreach ($machine in $Machines) {
             } -ArgumentList $RemoteDir, $Port, $Token, $RemoteTokenFile, $Transport, [bool]$AllowInsecure, $RemoteCA, $RemoteCert, $RemoteKey, $FirewallRuleName, $LegacyFirewallRuleName
         } else {
             Invoke-Command -Session $session -ScriptBlock {
-                param($dir, $token, $tokenFile, $port, $transport, $allowInsecure, $tlsCA, $tlsCert, $tlsKey)
+                param($dir, $token, $tokenFile, $port, $transport, $allowInsecure, $tlsCA, $tlsCert, $tlsKey, $addDefenderExclusion)
                 $script = Join-Path $dir 'install-agent.ps1'
                 $params = @{
                     Token = $token
@@ -190,6 +207,7 @@ foreach ($machine in $Machines) {
                     Port = $port
                     AgentDir = $dir
                     Transport = $transport
+                    AddDefenderExclusion = $addDefenderExclusion
                 }
                 if ($transport -eq 'insecure') {
                     if ($allowInsecure) {
@@ -202,7 +220,7 @@ foreach ($machine in $Machines) {
                 }
 
                 & $script @params
-            } -ArgumentList $RemoteDir, $Token, $RemoteTokenFile, $Port, $Transport, [bool]$AllowInsecure, $RemoteCA, $RemoteCert, $RemoteKey
+            } -ArgumentList $RemoteDir, $Token, $RemoteTokenFile, $Port, $Transport, [bool]$AllowInsecure, $RemoteCA, $RemoteCert, $RemoteKey, $AddDefenderExclusion
         }
     }
     finally {
