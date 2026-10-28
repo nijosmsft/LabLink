@@ -156,11 +156,15 @@ func main() {
 	vmDefaults := vmconfig.Load(vmDefaultsFile)
 	serverExecutable, _ := os.Executable()
 	installRoot := filepath.Dir(filepath.Dir(serverExecutable))
+	linuxAgentBinary := filepath.Join(installRoot, "bin", "linux-amd64", "lablink-agent")
+	if _, err := os.Stat(linuxAgentBinary); err != nil && runtime.GOOS == "linux" {
+		linuxAgentBinary = filepath.Join(installRoot, "bin", "lablink-agent")
+	}
 	vmEnrollment := mcptools.VMEnrollmentConfig{
 		ConfigDir:        configDir,
 		PKIDir:           filepath.Join(configDir, "pki"),
 		AgentBinary:      filepath.Join(installRoot, "bin", "lablink-agent.exe"),
-		LinuxAgentBinary: filepath.Join(installRoot, "bin", "linux-amd64", "lablink-agent"),
+		LinuxAgentBinary: linuxAgentBinary,
 		AuthToken:        token,
 	}
 
@@ -196,6 +200,7 @@ func main() {
 		server.WithInstructions(`Remote device management for test automation.
 
 Use save_credential to store WinRM credentials, then deploy_agent to install agents on new machines.
+Use update_agent to converge an existing Windows or Linux node to the running server's bundled agent version. The server pushes the payload over mTLS; clients do not need internet access.
 Use register_node to add test machines, then execute_command to run commands on them.
 For multi-node operations, use register_topology to define node groups, then execute_on_role.
 Use set_node_context to avoid repeating working_dir and env vars on every command.
@@ -235,6 +240,11 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterMultiNode(s, reg, pool, auditLog, leaseCfg)
 	mcptools.RegisterHistory(s, auditLog)
 	mcptools.RegisterDeploy(s, reg, pool, creds, token)
+	mcptools.RegisterAgentUpdate(s, reg, pool, mcptools.AgentUpdateConfig{
+		ServerVersion:      serverVersion,
+		WindowsAgentBinary: vmEnrollment.AgentBinary,
+		LinuxAgentBinary:   vmEnrollment.LinuxAgentBinary,
+	}, leaseCfg)
 	mcptools.RegisterImportExport(s, reg)
 	mcptools.RegisterNodeOps(s, reg, pool, leaseCfg)
 	mcptools.RegisterSchedule(s, reg, pool, auditLog, leaseCfg)
