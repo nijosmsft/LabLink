@@ -51,6 +51,7 @@ jobs:
         with:
           name: ${{ steps.ver.outputs.version }}
           tag_name: ${{ steps.ver.outputs.version }}
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
           generate_release_notes: true
           files: |
             release/lablink-*-windows-amd64.zip.enc
