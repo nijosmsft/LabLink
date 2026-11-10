@@ -153,8 +153,13 @@ func TestStartMCPProgressHeartbeatIncludesPhaseStatus(t *testing.T) {
 	}
 	t.Cleanup(func() { heartbeatDetailNotifierOverride = nil })
 
-	state := NewMCPProgressState(30*time.Minute, "registration", "waiting for NoCloud guest agent")
-	stop := StartMCPProgressHeartbeat(context.Background(), reqWithToken(nil), defaultHeartbeatInterval, state)
+	state, stop := StartMCPProgress(
+		context.Background(),
+		reqWithToken(nil),
+		30*time.Minute,
+		"registration",
+		"waiting for NoCloud guest agent",
+	)
 	time.Sleep(120 * time.Millisecond)
 	state.Update("cleanup", "detaching owned CIDATA ISO")
 	time.Sleep(120 * time.Millisecond)

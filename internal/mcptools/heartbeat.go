@@ -14,14 +14,16 @@ import (
 // clock interface through every handler.
 var defaultHeartbeatInterval = 5 * time.Second
 
-// heartbeatNotifierOverride, when non-nil, is used by StartMCPHeartbeat
-// instead of the real MCP notification path.  Set by tests to record calls
-// without requiring a live MCP server in context.  The override is consulted
-// only after a valid progressToken has been found in the request, so the
-// "no token → no notification" invariant is preserved even when the override
-// is set.
+// heartbeatNotifierOverride, when non-nil, replaces the real MCP notification
+// path for elapsed-time and byte-progress heartbeats. Tests use it to record
+// calls without a live MCP server. The override is consulted only after a valid
+// progressToken is found, preserving the no-token/no-notification invariant.
 var heartbeatNotifierOverride progressNotifier
 var heartbeatDetailNotifierOverride func(done, total int64, message string)
+
+// progressNotifier sends numeric progress to the MCP client. The units are
+// selected by the caller (for example elapsed seconds or transferred bytes).
+type progressNotifier func(done, total int64)
 
 type MCPProgressState struct {
 	mu      sync.RWMutex
@@ -32,9 +34,13 @@ type MCPProgressState struct {
 }
 
 func NewMCPProgressState(total time.Duration, phase, status string) *MCPProgressState {
+	totalSeconds := int64(total.Seconds())
+	if totalSeconds < 1 {
+		totalSeconds = 1
+	}
 	return &MCPProgressState{
 		started: time.Now(),
-		total:   int64(total.Seconds()),
+		total:   totalSeconds,
 		phase:   phase,
 		status:  status,
 	}
@@ -91,6 +97,17 @@ func buildMCPNotifier(ctx context.Context, token mcp.ProgressToken) progressNoti
 	}
 }
 
+func progressNotifierForRequest(ctx context.Context, req mcp.CallToolRequest) progressNotifier {
+	token := ProgressTokenFromRequest(req)
+	if token == nil {
+		return nil
+	}
+	if heartbeatNotifierOverride != nil {
+		return heartbeatNotifierOverride
+	}
+	return buildMCPNotifier(ctx, token)
+}
+
 // StartMCPHeartbeat starts a background goroutine that sends a
 // notifications/progress message to the MCP client every interval.
 // progress is called on each tick to retrieve the current (done, total) pair.
@@ -103,15 +120,7 @@ func StartMCPHeartbeat(
 	interval time.Duration,
 	progress func() (done, total int64),
 ) func() {
-	token := ProgressTokenFromRequest(req)
-	if token == nil {
-		return func() {}
-	}
-
-	notifier := heartbeatNotifierOverride
-	if notifier == nil {
-		notifier = buildMCPNotifier(ctx, token)
-	}
+	notifier := progressNotifierForRequest(ctx, req)
 	if notifier == nil {
 		return func() {}
 	}
@@ -163,6 +172,7 @@ func StartMCPProgressHeartbeat(
 			})
 		}
 	}
+
 	hbCtx, cancel := context.WithCancel(ctx)
 	doneCh := make(chan struct{})
 	go func() {
@@ -182,4 +192,19 @@ func StartMCPProgressHeartbeat(
 		cancel()
 		<-doneCh
 	}
+}
+
+// StartMCPProgress creates phase/status state and starts its heartbeat in one
+// call. Composite operations should own one state for their entire lifetime
+// and update it at phase boundaries rather than starting nested heartbeats.
+func StartMCPProgress(
+	ctx context.Context,
+	req mcp.CallToolRequest,
+	total time.Duration,
+	phase string,
+	status string,
+) (*MCPProgressState, func()) {
+	state := NewMCPProgressState(total, phase, status)
+	stop := StartMCPProgressHeartbeat(ctx, req, defaultHeartbeatInterval, state)
+	return state, stop
 }

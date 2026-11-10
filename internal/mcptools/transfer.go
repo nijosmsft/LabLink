@@ -3,6 +3,7 @@ package mcptools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -62,6 +63,65 @@ func applyTransferTimeout(ctx context.Context, timeoutSec int) (context.Context,
 	return context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 }
 
+func relayRemoteFileWithProgress(
+	ctx context.Context,
+	pullStream pullFileClient,
+	pushStream pushFileClient,
+	remotePath string,
+	reporter progressReporter,
+	notifier progressNotifier,
+) (int64, *pb.PushFileResponse, error) {
+	progress := newTransferProgress(0)
+	stopHeartbeat := startTransferProgressHeartbeat(ctx, reporter, notifier, progress)
+	defer stopHeartbeat()
+
+	var totalBytes int64
+	first := true
+	for {
+		resp, err := pullStream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, nil, fmt.Errorf("pull: %w", err)
+		}
+
+		msg := &pb.PushFileRequest{
+			RemotePath: remotePath,
+			Chunk:      resp.Chunk,
+		}
+		if first {
+			progress.SetTotal(resp.TotalSize)
+			msg.FileSize = resp.TotalSize
+			first = false
+		}
+		if err := pushStream.Send(msg); err != nil {
+			return 0, nil, fmt.Errorf("push chunk: %w", err)
+		}
+		totalBytes += int64(len(resp.Chunk))
+		progress.Add(int64(len(resp.Chunk)))
+	}
+
+	_, finalSize := progress.Snapshot()
+	if first {
+		finalSize = 0
+	}
+	if err := pushStream.Send(&pb.PushFileRequest{
+		RemotePath: remotePath,
+		FileSize:   finalSize,
+		IsLast:     true,
+	}); err != nil {
+		return 0, nil, fmt.Errorf("send final chunk: %w", err)
+	}
+
+	resp, err := pushStream.CloseAndRecv()
+	if err != nil {
+		return 0, nil, fmt.Errorf("close push: %w", err)
+	}
+	publishTransferProgress(reporter, notifier, progress)
+	return totalBytes, resp, nil
+}
+
 func pushFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		nodeName := request.GetString("node", "")
@@ -112,7 +172,7 @@ func pushFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("push_file: %v", err)), nil
 		}
 
-		notifier := buildMCPNotifier(ctx, ProgressTokenFromRequest(request))
+		notifier := progressNotifierForRequest(ctx, request)
 		resp, err := sendLocalFileWithProgress(ctx, stream, f, info.Size(), remotePath, op, notifier)
 		if err != nil {
 			opErr = err
@@ -162,7 +222,7 @@ func pullFileHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 			return mcp.NewToolResultError(fmt.Sprintf("pull_file: %v", err)), nil
 		}
 
-		notifier := buildMCPNotifier(ctx, ProgressTokenFromRequest(request))
+		notifier := progressNotifierForRequest(ctx, request)
 		written, err := pullRemoteFileToPathWithProgress(ctx, stream, localPath, op, notifier)
 		if err != nil {
 			opErr = err
@@ -187,4 +247,3 @@ func formatBytes(b int64) string {
 		return fmt.Sprintf("%d B", b)
 	}
 }
-

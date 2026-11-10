@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -32,6 +33,10 @@ func installPackageHandler(reg *registry.Registry, pool *agentclient.Pool) serve
 		nodeName := request.GetString("node", "")
 		localPath := request.GetString("local_path", "")
 		remoteDir := request.GetString("remote_dir", "")
+		progress, stopProgress := StartMCPProgress(
+			ctx, request, 30*time.Minute, "validate", "validating package source and destination",
+		)
+		defer stopProgress()
 
 		node, ok := reg.GetNode(nodeName)
 		if !ok {
@@ -54,6 +59,7 @@ func installPackageHandler(reg *registry.Registry, pool *agentclient.Pool) serve
 
 		if info.IsDir() {
 			// Zip the directory.
+			progress.Update("archive", "creating the package archive")
 			tmpFile, err := os.CreateTemp("", "di-package-*.zip")
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("create temp zip: %v", err)), nil
@@ -77,6 +83,7 @@ func installPackageHandler(reg *registry.Registry, pool *agentclient.Pool) serve
 		}
 
 		// Use a unique staging path so concurrent installs on the same node do not collide.
+		progress.Update("transfer", "uploading the package archive")
 		remoteZip := fmt.Sprintf(`C:\LabLink\staging\package-%d.zip`, timeNow().UnixNano())
 		pushBytes, err := pushFileToNode(ctx, client, zipPath, remoteZip)
 		if err != nil {
@@ -84,6 +91,7 @@ func installPackageHandler(reg *registry.Registry, pool *agentclient.Pool) serve
 		}
 
 		// Extract on node.
+		progress.Update("extract", "extracting the package on the destination node")
 		extractCmd := fmt.Sprintf(`
 if (-not (Test-Path '%s')) { New-Item -ItemType Directory -Path '%s' -Force | Out-Null }
 try {

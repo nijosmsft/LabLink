@@ -109,13 +109,22 @@ func listNodesHandler(reg *registry.Registry, pool *agentclient.Pool) server.Too
 		if len(nodes) == 0 {
 			return mcp.NewToolResultText("No nodes registered. Use `register_node` to add one."), nil
 		}
+		progress, stopProgress := StartMCPProgress(
+			ctx,
+			request,
+			time.Duration(len(nodes)*2)*time.Second,
+			"probe",
+			fmt.Sprintf("probing %d registered nodes", len(nodes)),
+		)
+		defer stopProgress()
 
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**Registered nodes** (%d)\n\n", len(nodes)))
 		sb.WriteString("| Name | Address | Transport | TLS Name | OS | Role | CPUs | Memory | Status | Agent Version | Upgrade Recommended | Version Warning |\n")
 		sb.WriteString("|------|---------|-----------|----------|----|----- |------|--------|--------|---------------|---------------------|-----------------|\n")
 
-		for _, n := range nodes {
+		for i, n := range nodes {
+			progress.Update("probe", fmt.Sprintf("probing node %d of %d: %s", i+1, len(nodes), n.Name))
 			status := "offline"
 			agentVersion := ""
 			client, err := pool.GetClient(n.Address, n.TLSServerName)

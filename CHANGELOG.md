@@ -29,6 +29,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Long-running MCP operations now emit one coherent progress stream for their
+  entire request. Deployment, package installation, crash-dump collection, ETW
+  finalization, Hyper-V operations, binary patching, time synchronization, and
+  node inventory probing report phase and status updates instead of appearing
+  idle until the client returns `-32001`.
+- `copy_between_nodes` now uses the same shared byte-progress heartbeat as
+  `push_file` and `pull_file`. Transfer progress tracking, MCP notification
+  routing, and terminal progress reporting are centralized rather than
+  duplicated across the three streaming paths.
 - `save_secret` no longer calls MCP form elicitation with a sensitive value or
   the unsupported `password` schema format. On Windows it now launches the
   packaged `lablink-secret` helper in a separate masked local terminal and

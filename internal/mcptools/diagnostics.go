@@ -81,6 +81,14 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 		profile := request.GetString("profile", "")
 		duration := request.GetInt("duration", 10)
 		localOutput := request.GetString("local_output", "")
+		progress, stopProgress := StartMCPProgress(
+			ctx,
+			request,
+			time.Duration(duration)*time.Second+15*time.Minute,
+			"start",
+			"starting WPR",
+		)
+		defer stopProgress()
 
 		node, ok := reg.GetNode(nodeName)
 		if !ok {
@@ -103,17 +111,13 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 		}
 		sb.WriteString("WPR started\n")
 
-		// Wait for the specified duration; emit heartbeat during capture.
-		captureStart := time.Now()
-		stopHB := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
-			return int64(time.Since(captureStart).Seconds()), int64(duration)
-		})
+		progress.Update("capture", fmt.Sprintf("recording trace for %d seconds", duration))
 		waitCmd := fmt.Sprintf(`Start-Sleep %d; 'Wait done'`, duration)
 		output, _, _, _ = executeAndCollect(ctx, client, waitCmd, "powershell", "", nil, int32(duration+30))
-		stopHB()
 		sb.WriteString(fmt.Sprintf("Traced for %d seconds\n", duration))
 
 		// Stop WPR and save.
+		progress.Update("finalize", "stopping WPR and finalizing the ETL")
 		stopCmd := fmt.Sprintf(`wpr -stop '%s' -skipPdbGen`, remoteEtl)
 		output, exitCode, _, err = executeAndCollect(ctx, client, stopCmd, "powershell", "", nil, 120)
 		if err != nil || exitCode != 0 {
@@ -126,18 +130,8 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 			return mcp.NewToolResultError(fmt.Sprintf("pull: %v", err)), nil
 		}
 
-		// Stage 2: wire a byte-based progress notifier so large ETL pulls emit
-		// MCP heartbeats and don't hit the transport idle timeout.
-		stage2Token := ProgressTokenFromRequest(request)
-		var stage2Notifier progressNotifier
-		if stage2Token != nil {
-			stage2Notifier = heartbeatNotifierOverride
-			if stage2Notifier == nil {
-				stage2Notifier = buildMCPNotifier(ctx, stage2Token)
-			}
-		}
-
-		totalBytes, err := pullRemoteFileToPathWithProgress(ctx, pullStream, localOutput, nopProgressReporter{}, stage2Notifier)
+		progress.Update("download", "pulling the finalized ETL to the LabLink server")
+		totalBytes, err := pullRemoteFileToPathWithProgress(ctx, pullStream, localOutput, nil, nil)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -145,6 +139,7 @@ func collectEtwTraceHandler(reg *registry.Registry, pool *agentclient.Pool, audi
 		sb.WriteString(fmt.Sprintf("Pulled %s (%s)\n", localOutput, formatBytes(totalBytes)))
 
 		// Clean up remote trace.
+		progress.Update("cleanup", "removing the remote ETL")
 		executeAndCollect(ctx, client, fmt.Sprintf(`Remove-Item '%s' -ErrorAction SilentlyContinue`, remoteEtl), "powershell", "", nil, 10)
 
 		auditLog.Append(audit.Entry{
@@ -163,6 +158,10 @@ func getCrashDumpsHandler(reg *registry.Registry, pool *agentclient.Pool) server
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		nodeName := request.GetString("node", "")
 		localDir := request.GetString("local_dir", "")
+		progress, stopProgress := StartMCPProgress(
+			ctx, request, 2*time.Hour, "inventory", "listing crash dumps",
+		)
+		defer stopProgress()
 
 		node, ok := reg.GetNode(nodeName)
 		if !ok {
@@ -221,7 +220,11 @@ if ($dumps.Count -eq 0) {
 				return mcp.NewToolResultError(fmt.Sprintf("mkdir %s: %v", localDir, err)), nil
 			}
 			sb.WriteString(fmt.Sprintf("\nPulling to `%s`:\n", localDir))
-			for _, remotePath := range dumpPaths {
+			for i, remotePath := range dumpPaths {
+				progress.Update(
+					"download",
+					fmt.Sprintf("pulling crash dump %d of %d: %s", i+1, len(dumpPaths), filepath.Base(remotePath)),
+				)
 				localPath := filepath.Join(localDir, fmt.Sprintf("%s_%s", nodeName, filepath.Base(remotePath)))
 				pullStream, err := client.PullFile(ctx, &pb.PullFileRequest{RemotePath: remotePath})
 				if err != nil {
@@ -229,7 +232,7 @@ if ($dumps.Count -eq 0) {
 					continue
 				}
 
-				bytes, err := pullRemoteFileToPath(pullStream, localPath)
+				bytes, err := pullRemoteFileToPathWithProgress(ctx, pullStream, localPath, nil, nil)
 				if err != nil {
 					sb.WriteString(fmt.Sprintf("- %s: pull error: %v\n", filepath.Base(remotePath), err))
 					continue
@@ -269,11 +272,20 @@ func syncTimeHandler(reg *registry.Registry, pool *agentclient.Pool) server.Tool
 		if len(nodes) == 0 {
 			return mcp.NewToolResultError("no nodes to sync"), nil
 		}
+		progress, stopProgress := StartMCPProgress(
+			ctx,
+			request,
+			time.Duration(len(nodes)*15)*time.Second,
+			"sync",
+			fmt.Sprintf("synchronizing time on %d nodes", len(nodes)),
+		)
+		defer stopProgress()
 
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**Time sync** (%d nodes)\n\n", len(nodes)))
 
-		for _, n := range nodes {
+		for i, n := range nodes {
+			progress.Update("sync", fmt.Sprintf("synchronizing node %d of %d: %s", i+1, len(nodes), n.Name))
 			client, err := pool.GetClient(n.Address, n.TLSServerName)
 			if err != nil {
 				sb.WriteString(fmt.Sprintf("- **%s**: connect error\n", n.Name))

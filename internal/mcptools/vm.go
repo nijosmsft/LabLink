@@ -213,6 +213,10 @@ func listPhysicalNicsHandler(reg *registry.Registry, pool *agentclient.Pool) ser
 		})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		_, stopProgress := StartMCPProgress(
+			ctx, req, 10*time.Minute, "discover", "enumerating physical network adapters",
+		)
+		defer stopProgress()
 
 		script := hyperv.BuildListNicsScript(includeVirtual, targetMgmtIP(t))
 		out, _, err := runPS(ctx, reg, pool, t, script, vmDefaultTimeoutSec)
@@ -249,6 +253,10 @@ func listVSwitchesHandler(reg *registry.Registry, pool *agentclient.Pool) server
 		ctx, op := beginOp(ctx, "list_vswitches", t.Name, "discover vSwitches", map[string]string{"target": t.Name})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		_, stopProgress := StartMCPProgress(
+			ctx, req, 10*time.Minute, "discover", "enumerating Hyper-V virtual switches",
+		)
+		defer stopProgress()
 
 		out, _, err := runPS(ctx, reg, pool, t, hyperv.BuildListVSwitchesScript(), vmDefaultTimeoutSec)
 		if err != nil {
@@ -288,6 +296,10 @@ func createVSwitchHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 		})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		progress, stopProgress := StartMCPProgress(
+			ctx, req, 15*time.Minute, "validate", "validating virtual switch configuration",
+		)
+		defer stopProgress()
 
 		script, berr := hyperv.BuildCreateVSwitchScript(p)
 		if berr != nil {
@@ -295,6 +307,7 @@ func createVSwitchHandler(reg *registry.Registry, pool *agentclient.Pool, auditL
 			return mcp.NewToolResultError(berr.Error()), nil
 		}
 		start := time.Now()
+		progress.Update("configure", fmt.Sprintf("creating or updating virtual switch %s", p.Name))
 		out, exit, rerr := runPS(ctx, reg, pool, t, script, vmDefaultTimeoutSec)
 		auditLog.Append(audit.Entry{
 			Timestamp: start, Node: t.Name, Tool: "create_vswitch",
@@ -346,6 +359,10 @@ func createVMHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *a
 		})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		progress, stopProgress := StartMCPProgress(
+			ctx, req, 20*time.Minute, "validate", "validating virtual machine configuration",
+		)
+		defer stopProgress()
 
 		script, berr := hyperv.BuildCreateVMScript(p)
 		if berr != nil {
@@ -353,6 +370,7 @@ func createVMHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog *a
 			return mcp.NewToolResultError(berr.Error()), nil
 		}
 		start := time.Now()
+		progress.Update("create", fmt.Sprintf("creating virtual machine %s", p.Name))
 		out, exit, rerr := runPS(ctx, reg, pool, t, script, vmDefaultTimeoutSec)
 		auditLog.Append(audit.Entry{
 			Timestamp: start, Node: t.Name, Tool: "create_vm",
@@ -398,6 +416,10 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		progress, stopProgress := StartMCPProgress(
+			ctx, req, 30*time.Minute, "validate", "validating unattend configuration",
+		)
+		defer stopProgress()
 
 		if method == string(unattend.MethodAutoUnattendISO) {
 			_, berr := unattend.BuildIsoInjectScript(unattend.MountInjectParams{})
@@ -414,6 +436,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		}
 
 		// Render the answer file (password lives only in memory + the staged file).
+		progress.Update("render", "rendering the unattend payload")
 		xml, rerr := unattend.Render(unattend.Params{
 			Hostname:                    hostname,
 			AdminPassword:               password,
@@ -457,6 +480,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		// Go-side defer additionally covers push/runPS/transport failures and
 		// build errors that abort before (or instead of) running that script.
 		defer scrubRemoteStaged(reg, pool, t, remoteUnattend)
+		progress.Update("stage", "uploading the unattend payload to the Hyper-V host")
 		if err := pushToTarget(ctx, reg, pool, t, localUnattend, remoteUnattend); err != nil {
 			opErr = err
 			return mcp.NewToolResultError(fmt.Sprintf("stage unattend on target: %v", err)), nil
@@ -476,6 +500,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 			// scrub before the push so a post-commit push/transport error still
 			// removes the staged file from the target.
 			defer scrubRemoteStaged(reg, pool, t, remoteFirstBoot)
+			progress.Update("stage", "uploading the first-boot script to the Hyper-V host")
 			if err := pushToTarget(ctx, reg, pool, t, localFB, remoteFirstBoot); err != nil {
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("stage first-boot script on target: %v", err)), nil
@@ -496,6 +521,7 @@ func provisionUnattendHandler(reg *registry.Registry, pool *agentclient.Pool, cr
 		}
 
 		start := time.Now()
+		progress.Update("inject", fmt.Sprintf("mounting the OS disk and provisioning %s", vmName))
 		out, exit, runErr := runPS(ctx, reg, pool, t, script, vmDefaultTimeoutSec)
 		auditLog.Append(audit.Entry{
 			Timestamp: start, Node: t.Name, Tool: "provision_unattend",

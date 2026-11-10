@@ -158,11 +158,16 @@ func patchBinaryHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("connect to %s: %v", node.Address, err)), nil
 		}
+		progress, stopProgress := StartMCPProgress(
+			ctx, request, 20*time.Minute, "prepare", "preparing the binary replacement",
+		)
+		defer stopProgress()
 
 		var sb strings.Builder
 
 		// Step 1: Ensure sfpcopy.exe exists on the node.
 		// Check remotely first; if missing, cache locally and push via gRPC.
+		progress.Update("prepare", "checking the configured replacement utility")
 		sfpCheck := fmt.Sprintf(`if (Test-Path '%s') { 'exists' } else { 'missing' }`, remotesfpCopyPath)
 		output, _, _, _ := executeAndCollect(ctx, client, sfpCheck, "powershell", "", nil, 10)
 		if strings.TrimSpace(output) != "exists" {
@@ -193,6 +198,7 @@ if (-not $ts) {
 		sb.WriteString(strings.TrimSpace(output) + "\n")
 
 		// Step 3: Push the binary to a staging path on the node.
+		progress.Update("transfer", fmt.Sprintf("uploading %s to the staging directory", baseName(localPath)))
 		stagingPath := `C:\LabLink\staging\` + baseName(destPath)
 		pushResult, err := pushFileToNode(ctx, client, localPath, stagingPath)
 		if err != nil {
@@ -224,6 +230,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 `, destPath, destPath, destPath, destPath, remotesfpCopyPath, stagingPath, destPath)
 
+		progress.Update("replace", fmt.Sprintf("backing up and replacing %s", destPath))
 		output, exitCode, _, err := executeAndCollect(ctx, client, patchCmd, "powershell", "", nil, 30)
 		if err != nil || exitCode != 0 {
 			return mcp.NewToolResultError(fmt.Sprintf("patch failed (exit %d):\n%s\nerr: %v", exitCode, output, err)), nil
@@ -240,6 +247,7 @@ if ($LASTEXITCODE -eq 0) {
 
 		// Step 5: Reboot if requested.
 		if reboot {
+			progress.Update("reboot", "initiating reboot and waiting for the node to go offline")
 			executeAndCollect(ctx, client, "shutdown /r /t 2 /f", "cmd", "", nil, 5)
 			sb.WriteString("Reboot initiated, waiting for node to go down...\n")
 
