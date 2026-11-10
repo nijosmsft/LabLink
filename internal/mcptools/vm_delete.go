@@ -44,7 +44,12 @@ func deleteVMHandler(
 		})
 		var opErr error
 		defer func() { op.Done(opErr) }()
+		progress, stopProgress := StartMCPProgress(
+			ctx, req, 30*time.Minute, "inspect", fmt.Sprintf("inspecting virtual machine %s", name),
+		)
+		defer stopProgress()
 
+		progress.Update("lock", "acquiring the virtual machine lifecycle lock")
 		lifecycleLock, err := acquireVMLifecycleLock(ctx, name, target, reg, pool)
 		if err != nil {
 			opErr = err
@@ -52,6 +57,7 @@ func deleteVMHandler(
 		}
 		defer lifecycleLock.release(reg, pool, target)
 
+		progress.Update("inspect", "reading managed virtual machine metadata")
 		metadata, err := inspectVMManagement(ctx, name, target, reg, pool)
 		if err != nil {
 			opErr = err
@@ -76,9 +82,11 @@ func deleteVMHandler(
 		nodeName := caseCorrectRegistryNodeName(reg, identity.NodeName)
 
 		if !dryRun && identity.GuestOS == vmconfig.GuestOSWindows {
+			progress.Update("network", "releasing the guest DHCP lease")
 			releaseGuestDHCP(ctx, nodeName, reg, pool)
 		}
 		start := time.Now()
+		progress.Update("delete", fmt.Sprintf("deleting virtual machine %s", name))
 		out, exit, runErr := runPS(ctx, reg, pool, target, script, vmDefaultTimeoutSec)
 		auditLog.Append(audit.Entry{
 			Timestamp: start, Node: target.Name, Tool: "delete_vm",
@@ -94,12 +102,14 @@ func deleteVMHandler(
 		}
 
 		if req.GetBool("unregister_node", true) {
+			progress.Update("cleanup", "removing the guest from the LabLink registry")
 			if err := reg.RemoveNode(nodeName); err != nil {
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("VM deleted but unregister node %q failed: %v", nodeName, err)), nil
 			}
 		}
 		if req.GetBool("delete_identity", false) {
+			progress.Update("cleanup", "deleting the issued LabLink identity")
 			if err := deleteIssuedIdentity(enrollment.PKIDir, nodeName); err != nil {
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("VM deleted but identity cleanup failed: %v", err)), nil

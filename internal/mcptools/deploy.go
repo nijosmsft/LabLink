@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -71,6 +72,10 @@ func deployAgentHandler(reg *registry.Registry, pool *agentclient.Pool, creds *c
 		allowInsecure := request.GetBool("allow_insecure", false)
 		noService := request.GetBool("no_service", false)
 		defenderExcludeAgent := request.GetBool("defender_exclude_agent", true)
+		progress, stopProgress := StartMCPProgress(
+			ctx, request, 30*time.Minute, "validate", "validating deployment configuration",
+		)
+		defer stopProgress()
 
 		switch transportMode {
 		case "", string(security.TransportModeMTLS):
@@ -136,6 +141,7 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 			defenderFlag,
 		)
 
+		progress.Update("deploy", "copying and installing the agent through PowerShell remoting")
 		cmd := exec.CommandContext(ctx, "pwsh", "-NoProfile", "-Command", psScript)
 		output, err := cmd.CombinedOutput()
 		outputStr := string(output)
@@ -145,6 +151,7 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 		}
 
 		// Auto-register the node.
+		progress.Update("register", "probing the deployed agent and updating the node registry")
 		address := fmt.Sprintf("%s:%d", machine, port)
 		regResult := ""
 		client, connErr := pool.GetClient(address, tlsServerName)

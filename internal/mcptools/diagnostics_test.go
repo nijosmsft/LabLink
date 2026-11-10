@@ -4,7 +4,10 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/audit"
@@ -15,13 +18,14 @@ import (
 )
 
 // etwMockAgent is a minimal NodeAgent that returns success for every Execute
-// call and delivers a 2-byte payload from PullFile. It is used to assert that
-// collect_etw_trace wires the Stage-2 byte-progress notifier.
+// call and delivers a 2-byte payload from PullFile.
 type etwMockAgent struct {
 	pb.UnimplementedNodeAgentServer
+	delay time.Duration
 }
 
 func (a *etwMockAgent) Execute(_ *pb.ExecuteRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
+	time.Sleep(a.delay)
 	if err := stream.Send(&pb.ExecuteResponse{Pid: 1}); err != nil {
 		return err
 	}
@@ -32,24 +36,31 @@ func (a *etwMockAgent) PullFile(_ *pb.PullFileRequest, stream grpc.ServerStreami
 	return stream.Send(&pb.PullFileResponse{Chunk: []byte{0xAB, 0xCD}, TotalSize: 2})
 }
 
-func startEtwMockAgent(t *testing.T) string {
+func startEtwMockAgent(t *testing.T, delay time.Duration) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	srv := grpc.NewServer()
-	pb.RegisterNodeAgentServer(srv, &etwMockAgent{})
+	pb.RegisterNodeAgentServer(srv, &etwMockAgent{delay: delay})
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { srv.Stop(); ln.Close() })
 	return ln.Addr().String()
 }
 
-func TestCollectEtwTrace_Stage2NotifierIsWired(t *testing.T) {
+func TestCollectEtwTrace_UsesSinglePhaseHeartbeatAcrossFinalization(t *testing.T) {
 	shrinkHeartbeatInterval(t)
-	rec := withNotifRecorder(t)
+	var mu sync.Mutex
+	var messages []string
+	heartbeatDetailNotifierOverride = func(_, _ int64, message string) {
+		mu.Lock()
+		messages = append(messages, message)
+		mu.Unlock()
+	}
+	t.Cleanup(func() { heartbeatDetailNotifierOverride = nil })
 
-	addr := startEtwMockAgent(t)
+	addr := startEtwMockAgent(t, 75*time.Millisecond)
 	reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
 	defer pool.Close()
@@ -58,9 +69,6 @@ func TestCollectEtwTrace_Stage2NotifierIsWired(t *testing.T) {
 	h := collectEtwTraceHandler(reg, pool, log)
 	localEtl := filepath.Join(t.TempDir(), "trace.etl")
 
-	// duration=0 so Start-Sleep 0 returns instantly; the mock Execute completes
-	// before a single 50 ms tick fires. Any notification in rec therefore comes
-	// from the Stage-2 pull, not Stage-1.
 	req := reqWithToken(map[string]any{
 		"node":         "node1",
 		"profile":      "CPU",
@@ -76,10 +84,10 @@ func TestCollectEtwTrace_Stage2NotifierIsWired(t *testing.T) {
 		t.Fatalf("expected success result, got: %#v", res)
 	}
 
-	// pullRemoteFileToPathWithProgress calls notifier(written, total) once at
-	// transfer completion. heartbeatNotifierOverride is the test seam wired by
-	// withNotifRecorder; it must have been passed as the Stage-2 notifier.
-	if n := rec.count(); n < 1 {
-		t.Fatalf("expected >=1 Stage-2 progress notification (Stage-2 notifier not wired?), got %d", n)
+	mu.Lock()
+	joined := strings.Join(messages, "\n")
+	mu.Unlock()
+	if !strings.Contains(joined, "phase=finalize; status=stopping WPR and finalizing the ETL") {
+		t.Fatalf("expected finalization heartbeat, got: %q", joined)
 	}
 }

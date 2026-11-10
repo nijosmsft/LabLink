@@ -667,7 +667,7 @@ diagnosis. See
 ### Patching and lifecycle
 | Tool | What it does |
 |------|--------------|
-| `patch_binary` | Replace a protected Windows system binary using a Windows engineering replace-utility you supply (path passed via `SFPCOPY_SOURCE`). Backs up the original first. |
+| `patch_binary` | Replace a protected Windows system binary using a configured Windows engineering replacement utility. Backs up the original first. |
 | `restore_binary` | Roll back a previously patched binary. |
 | `ensure_test_signing` | Enable `bcdedit /set testsigning on` and report whether a reboot is needed. |
 | `reboot_node` | Reboot a single node and wait until the agent is first observed offline, then back online. For 2+ nodes use `reboot_nodes` instead — calling `reboot_node` in a loop blocks for the full `wait_seconds` per node. |

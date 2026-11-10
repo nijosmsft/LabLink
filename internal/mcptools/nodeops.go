@@ -3,7 +3,6 @@ package mcptools
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -444,56 +443,24 @@ func copyBetweenNodesHandler(reg *registry.Registry, pool *agentclient.Pool) ser
 			return mcp.NewToolResultError(fmt.Sprintf("pull from %s: %v", srcNodeName, err)), nil
 		}
 
-		// Push to dest — stream chunks directly without writing to local disk.
+		// Push to dest — relay chunks directly without writing to local disk.
 		pushStream, err := dstClient.PushFile(ctx)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("push to %s: %v", dstNodeName, err)), nil
 		}
 
-		var totalBytes int64
-		var totalSize int64
-		first := true
-		for {
-			resp, err := pullStream.Recv()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("pull from %s: %v", srcNodeName, err)), nil
-			}
-
-			msg := &pb.PushFileRequest{
-				RemotePath: dstPath,
-				Chunk:      resp.Chunk,
-			}
-			if first {
-				totalSize = resp.TotalSize
-				msg.FileSize = totalSize
-				first = false
-			}
-			totalBytes += int64(len(resp.Chunk))
-
-			if err := pushStream.Send(msg); err != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("push chunk: %v", err)), nil
-			}
-		}
-
-		// Explicitly terminate the upload so the destination can detect truncation.
-		finalSize := totalSize
-		if first {
-			finalSize = 0
-		}
-		if err := pushStream.Send(&pb.PushFileRequest{
-			RemotePath: dstPath,
-			FileSize:   finalSize,
-			IsLast:     true,
-		}); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("send final chunk: %v", err)), nil
-		}
-
-		pushResp, err := pushStream.CloseAndRecv()
+		totalBytes, pushResp, err := relayRemoteFileWithProgress(
+			ctx,
+			pullStream,
+			pushStream,
+			dstPath,
+			nil,
+			progressNotifierForRequest(ctx, request),
+		)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("close push: %v", err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"copy %s to %s: %v", srcNodeName, dstNodeName, err,
+			)), nil
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf("Copied **%s:%s** → **%s:%s** (%s)",

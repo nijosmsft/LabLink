@@ -298,6 +298,67 @@ func TestSendLocalFileWithProgress_HeartbeatFiresPeriodically(t *testing.T) {
 	}
 }
 
+func TestRelayRemoteFileWithProgress_UsesSharedHeartbeat(t *testing.T) {
+	originalInterval := heartbeatInterval
+	heartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = originalInterval })
+
+	ctx := context.Background()
+	pull := &blockingPullFileClient{
+		ctx:   ctx,
+		delay: 25 * time.Millisecond,
+		responses: []*pb.PullFileResponse{
+			{Chunk: []byte("abc"), TotalSize: 6},
+			{Chunk: []byte("def"), TotalSize: 6},
+		},
+	}
+	push := &mockPushFileClient{
+		resp: &pb.PushFileResponse{
+			RemotePath:   `E:\dest\file.bin`,
+			BytesWritten: 6,
+		},
+	}
+	reporter := &recordingReporter{}
+	var notifierCalls recordingReporter
+	notifier := progressNotifier(func(done, total int64) {
+		notifierCalls.Progress(done, total)
+	})
+
+	written, resp, err := relayRemoteFileWithProgress(
+		ctx,
+		pull,
+		push,
+		`E:\dest\file.bin`,
+		reporter,
+		notifier,
+	)
+	if err != nil {
+		t.Fatalf("relayRemoteFileWithProgress failed: %v", err)
+	}
+	if written != 6 || resp.BytesWritten != 6 {
+		t.Fatalf("written=%d response=%+v, want 6 bytes", written, resp)
+	}
+	if len(push.messages) != 3 {
+		t.Fatalf("expected 2 data chunks and 1 terminal chunk, got %d", len(push.messages))
+	}
+	if push.messages[0].FileSize != 6 {
+		t.Fatalf("first chunk file size = %d, want 6", push.messages[0].FileSize)
+	}
+	if !push.messages[2].IsLast || push.messages[2].FileSize != 6 {
+		t.Fatalf("invalid terminal chunk: %+v", push.messages[2])
+	}
+	if reporter.Count() < 2 {
+		t.Fatalf("expected periodic and final reporter progress, got %+v", reporter.Snapshot())
+	}
+	if notifierCalls.Count() < 2 {
+		t.Fatalf("expected periodic and final MCP progress, got %+v", notifierCalls.Snapshot())
+	}
+	last := notifierCalls.Snapshot()[notifierCalls.Count()-1]
+	if last.BytesDone != 6 || last.BytesTotal != 6 {
+		t.Fatalf("final MCP progress = %+v, want 6/6", last)
+	}
+}
+
 // tinyReader returns one byte at a time from a buffer so the streaming loop
 // makes many small Send calls — useful for timing-sensitive heartbeat tests.
 type tinyReader struct {
