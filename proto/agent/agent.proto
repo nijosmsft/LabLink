@@ -50,6 +50,44 @@ service NodeAgent {
   // protocols (e.g. an MCP server bound to localhost on the node) through the
   // node agent's existing mTLS channel.
   rpc Forward(stream ForwardChunk) returns (stream ForwardChunk);
+
+  // Discover authoritative isolated-appliance state.
+  rpc GetApplianceState(GetApplianceStateRequest)
+      returns (GetApplianceStateResponse);
+
+  // Atomically reserve appliance-owned network resources.
+  rpc ReserveResources(ReserveResourcesRequest)
+      returns (ReserveResourcesResponse);
+
+  // Release appliance-owned network resources after their retirement barrier.
+  rpc ReleaseResources(ReleaseResourcesRequest)
+      returns (ReleaseResourcesResponse);
+
+  // Apply or retire a private network.
+  rpc ApplyPrivateNetwork(ApplyPrivateNetworkRequest)
+      returns (ApplyPrivateNetworkResponse);
+  rpc RemovePrivateNetwork(RemovePrivateNetworkRequest)
+      returns (RemovePrivateNetworkResponse);
+
+  // Register or retire an isolated guest.
+  rpc RegisterIsolatedGuest(RegisterIsolatedGuestRequest)
+      returns (RegisterIsolatedGuestResponse);
+  rpc RemoveIsolatedGuest(RemoveIsolatedGuestRequest)
+      returns (RemoveIsolatedGuestResponse);
+
+  // Manage TCP relays to isolated guests.
+  rpc ApplyRelay(ApplyRelayRequest) returns (Relay);
+  rpc RemoveRelay(RemoveRelayRequest) returns (Relay);
+  rpc ListRelays(ListRelaysRequest) returns (ListRelaysResponse);
+  rpc GetRelayStats(GetRelayStatsRequest) returns (GetRelayStatsResponse);
+  rpc RebindRelays(RebindRelaysRequest) returns (RebindRelaysResponse);
+  rpc ValidateRelay(ValidateRelayRequest) returns (ValidateRelayResponse);
+  rpc AdoptRelay(AdoptRelayRequest) returns (Relay);
+
+  // Manage per-guest NAT state.
+  rpc SetNatState(SetNatStateRequest) returns (NatState);
+  rpc ListNatState(ListNatStateRequest) returns (ListNatStateResponse);
+  rpc ReconcileNat(ReconcileNatRequest) returns (ReconcileNatResponse);
 }
 
 message ExecuteRequest {
@@ -139,6 +177,11 @@ message GetInfoResponse {
   int32 cpu_count = 4;
   int64 memory_bytes = 5;
   string agent_version = 6;
+  repeated string capabilities = 7;
+  uint32 protocol_version = 8;
+  bool appliance_ready = 9;
+  uint64 appliance_generation = 10;
+  string appliance_error = 11;
 }
 
 // -----------------------------------------------------------------------------
@@ -259,4 +302,410 @@ message ForwardChunk {
   string target_addr = 1;       // First client message only
   bytes data = 2;
   bool close = 3;
+}
+
+// -----------------------------------------------------------------------------
+// Isolated VM appliance
+// -----------------------------------------------------------------------------
+
+// MutationHeader is the common idempotency, generation, and fencing envelope
+// carried by every appliance mutation.
+message MutationHeader {
+  string parent_operation_id = 1;
+  string mutation_id = 2;
+  string semantic_hash = 3;
+  string resource_id = 4;
+  uint64 expected_generation = 5;
+  uint64 new_generation = 6;
+  string physical_host_id = 7;
+  uint64 host_fence = 8;
+  string parent_resource_id = 9;
+  uint64 expected_parent_generation = 10;
+  string host_lease_id = 11;
+  bytes host_lease_secret = 12;
+  string cascade_operation_id = 13;
+  string cascade_plan_revision = 14;
+  string cascade_plan_hash = 15;
+  string cascade_item_id = 16;
+}
+
+// GenerationState records desired, applied, and externally observed versions
+// of an appliance resource.
+message GenerationState {
+  uint64 desired_generation = 1;
+  uint64 applied_generation = 2;
+  uint64 observed_generation = 3;
+  uint64 parent_generation = 4;
+}
+
+// FenceState identifies the physical host ownership epoch accepted by the
+// appliance. The lease secret is intentionally never returned.
+message FenceState {
+  string physical_host_id = 1;
+  uint64 host_fence = 2;
+  string host_lease_id = 3;
+  string parent_resource_id = 4;
+  uint64 parent_generation = 5;
+  bool frozen = 6;
+  bool deleting = 7;
+  bool lost = 8;
+}
+
+// MutationResult describes the durable result of an appliance mutation.
+message MutationResult {
+  string mutation_id = 1;
+  string semantic_hash = 2;
+  GenerationState generation = 3;
+  string compiled_hash = 4;
+  bool replayed = 5;
+  uint64 appliance_generation = 6;
+}
+
+// ApplyIntent exposes a recoverable intent in the appliance's
+// intent/apply/observe/commit protocol.
+message ApplyIntent {
+  string mutation_id = 1;
+  string resource_kind = 2;
+  string resource_id = 3;
+  uint64 desired_generation = 4;
+  uint64 parent_generation = 5;
+  uint64 fence = 6;
+  string semantic_hash = 7;
+  string compiled_hash = 8;
+  string phase = 9;
+  string error_text = 10;
+  int64 created_at_unix = 11;
+  int64 updated_at_unix = 12;
+}
+
+enum ApplianceErrorCode {
+  APPLIANCE_ERROR_CODE_UNSPECIFIED = 0;
+  APPLIANCE_ERROR_CODE_SUBNET_IN_USE = 1;
+  APPLIANCE_ERROR_CODE_IP_IN_USE = 2;
+  APPLIANCE_ERROR_CODE_MAC_IN_USE = 3;
+  APPLIANCE_ERROR_CODE_PORT_IN_USE = 4;
+  APPLIANCE_ERROR_CODE_CONNTRACK_MARK_IN_USE = 5;
+  APPLIANCE_ERROR_CODE_CAPACITY_EXHAUSTED = 6;
+  APPLIANCE_ERROR_CODE_GENERATION_CONFLICT = 7;
+  APPLIANCE_ERROR_CODE_PARENT_GENERATION_CONFLICT = 8;
+  APPLIANCE_ERROR_CODE_FENCE_REJECTED = 9;
+  APPLIANCE_ERROR_CODE_PARENT_FROZEN = 10;
+  APPLIANCE_ERROR_CODE_RESERVATION_LOST = 11;
+}
+
+// InventorySummary contains only capacity and free-set information; it does
+// not disclose payloads or lease secrets.
+message InventorySummary {
+  uint32 max_networks = 1;
+  uint32 live_networks = 2;
+  uint32 max_guests = 3;
+  uint32 live_guests = 4;
+  repeated uint32 free_subnet_indices = 5;
+  uint32 free_ipv4_count = 6;
+  uint32 free_mac_count = 7;
+  uint32 free_relay_port_count = 8;
+  uint32 free_conntrack_mark_count = 9;
+}
+
+// ApplianceConflict can be attached to a gRPC status to provide structured,
+// redacted reconciliation data.
+message ApplianceConflict {
+  ApplianceErrorCode code = 1;
+  string message = 2;
+  uint64 inventory_generation = 3;
+  InventorySummary inventory = 4;
+  string resource_id = 5;
+  GenerationState generation = 6;
+  FenceState fence = 7;
+}
+
+message ApplianceState {
+  uint32 schema_version = 1;
+  uint32 protocol_version = 2;
+  bool ready = 3;
+  uint64 appliance_generation = 4;
+  uint64 inventory_generation = 5;
+  FenceState fence = 6;
+  string main_ipv4 = 7;
+  bool policy_verified = 8;
+  bool ipv4_forwarding_enabled = 9;
+  string error = 10;
+  InventorySummary inventory = 11;
+}
+
+message ReservationCandidate {
+  string resource_kind = 1;
+  string resource_id = 2;
+  string network_id = 3;
+  optional uint32 subnet_index = 4;
+  string ipv4 = 5;
+  string mac = 6;
+  optional uint32 listen_port = 7;
+  optional uint32 conntrack_mark = 8;
+}
+
+message Reservation {
+  string id = 1;
+  string resource_kind = 2;
+  string resource_id = 3;
+  string network_id = 4;
+  optional uint32 subnet_index = 5;
+  string ipv4 = 6;
+  string mac = 7;
+  optional uint32 listen_port = 8;
+  optional uint32 conntrack_mark = 9;
+  string state = 10;
+  uint64 parent_generation = 11;
+  int64 created_at_unix = 12;
+  int64 retired_at_unix = 13;
+}
+
+message PrivateNetwork {
+  string id = 1;
+  string cidr = 2;
+  string gateway_ipv4 = 3;
+  string nic_mac = 4;
+  string interface_name = 5;
+  repeated string dns_servers = 6;
+  GenerationState generation = 7;
+  string state = 8;
+  int64 retired_at_unix = 9;
+}
+
+message IsolatedGuest {
+  string id = 1;
+  string network_id = 2;
+  string ipv4 = 3;
+  string mac = 4;
+  GenerationState generation = 5;
+  int64 retired_at_unix = 6;
+}
+
+message Relay {
+  string id = 1;
+  string vm_id = 2;
+  string network_id = 3;
+  uint32 listen_port = 4;
+  string target_ipv4 = 5;
+  uint32 target_port = 6;
+  GenerationState generation = 7;
+  string state = 8;
+  string bound_main_ip = 9;
+  string last_bind_error = 10;
+  int64 retired_at_unix = 11;
+}
+
+message NatState {
+  string vm_id = 1;
+  string network_id = 2;
+  string state = 3;
+  uint32 conntrack_mark = 4;
+  GenerationState generation = 5;
+  int64 drain_started_unix = 6;
+}
+
+message GetApplianceStateRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+  bool include_tombstones = 3;
+}
+
+message GetApplianceStateResponse {
+  ApplianceState appliance = 1;
+  repeated Reservation reservations = 2;
+  repeated PrivateNetwork networks = 3;
+  repeated IsolatedGuest guests = 4;
+  repeated Relay relays = 5;
+  repeated NatState nat_states = 6;
+  repeated ApplyIntent apply_intents = 7;
+  string next_page_token = 8;
+}
+
+message ReserveResourcesRequest {
+  MutationHeader header = 1;
+  repeated ReservationCandidate candidates = 2;
+}
+
+message ReserveResourcesResponse {
+  string reservation_id = 1;
+  uint64 resulting_parent_generation = 2;
+  uint64 inventory_generation = 3;
+  repeated Reservation reservations = 4;
+  InventorySummary inventory = 5;
+  MutationResult mutation = 6;
+}
+
+message ReleaseResourcesRequest {
+  MutationHeader header = 1;
+  repeated string reservation_ids = 2;
+}
+
+message ReleaseResourcesResponse {
+  repeated Reservation reservations = 1;
+  uint64 resulting_parent_generation = 2;
+  uint64 inventory_generation = 3;
+  InventorySummary inventory = 4;
+  MutationResult mutation = 5;
+}
+
+message ApplyPrivateNetworkRequest {
+  MutationHeader header = 1;
+  string reservation_id = 2;
+  string cidr = 3;
+  string gateway_ipv4 = 4;
+  string nic_mac = 5;
+  string interface_name = 6;
+  repeated string dns_servers = 7;
+}
+
+message ApplyPrivateNetworkResponse {
+  PrivateNetwork network = 1;
+  MutationResult mutation = 2;
+}
+
+message RemovePrivateNetworkRequest {
+  MutationHeader header = 1;
+}
+
+message RemovePrivateNetworkResponse {
+  PrivateNetwork network = 1;
+  MutationResult mutation = 2;
+}
+
+message RegisterIsolatedGuestRequest {
+  MutationHeader header = 1;
+  string reservation_id = 2;
+  string network_id = 3;
+  string ipv4 = 4;
+  string mac = 5;
+}
+
+message RegisterIsolatedGuestResponse {
+  IsolatedGuest guest = 1;
+  MutationResult mutation = 2;
+}
+
+message RemoveIsolatedGuestRequest {
+  MutationHeader header = 1;
+  string network_id = 2;
+}
+
+message RemoveIsolatedGuestResponse {
+  IsolatedGuest guest = 1;
+  MutationResult mutation = 2;
+}
+
+// target_port is deliberately absent. Appliance relays always target port
+// 9091.
+message ApplyRelayRequest {
+  MutationHeader header = 1;
+  string reservation_id = 2;
+  string vm_id = 3;
+  string network_id = 4;
+  uint32 listen_port = 5;
+  string target_ipv4 = 6;
+}
+
+message RemoveRelayRequest {
+  MutationHeader header = 1;
+  string vm_id = 2;
+  string network_id = 3;
+}
+
+message ListRelaysRequest {
+  string network_id = 1;
+  string vm_id = 2;
+  bool include_retired = 3;
+  uint32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListRelaysResponse {
+  repeated Relay relays = 1;
+  string next_page_token = 2;
+  uint64 appliance_generation = 3;
+}
+
+message GetRelayStatsRequest {
+  string relay_id = 1;
+}
+
+message GetRelayStatsResponse {
+  string relay_id = 1;
+  string listener_state = 2;
+  string bind_address = 3;
+  uint64 active_connections = 4;
+  uint64 total_accepted_connections = 5;
+  uint64 bytes_guest_to_main = 6;
+  uint64 bytes_main_to_guest = 7;
+  int64 last_successful_connection_unix = 8;
+  uint64 target_dial_failure_count = 9;
+  string last_failure = 10;
+  uint64 relay_generation = 11;
+  uint64 appliance_generation = 12;
+}
+
+message RebindRelaysRequest {
+  MutationHeader header = 1;
+}
+
+message RebindRelaysResponse {
+  repeated Relay relays = 1;
+  MutationResult mutation = 2;
+}
+
+message ValidateRelayRequest {
+  string relay_id = 1;
+  bool probe_target = 2;
+}
+
+message ValidateRelayResponse {
+  Relay relay = 1;
+  bool listener_valid = 2;
+  bool mapping_valid = 3;
+  bool generation_valid = 4;
+  bool target_reachable = 5;
+  string message = 6;
+  uint64 appliance_generation = 7;
+}
+
+message AdoptRelayRequest {
+  MutationHeader header = 1;
+  string reservation_id = 2;
+  string vm_id = 3;
+  string network_id = 4;
+  uint32 listen_port = 5;
+  string target_ipv4 = 6;
+}
+
+message SetNatStateRequest {
+  MutationHeader header = 1;
+  string reservation_id = 2;
+  string network_id = 3;
+  string desired_state = 4;
+  uint32 conntrack_mark = 5;
+}
+
+message ListNatStateRequest {
+  string network_id = 1;
+  string vm_id = 2;
+  string state = 3;
+  uint32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListNatStateResponse {
+  repeated NatState nat_states = 1;
+  string next_page_token = 2;
+  uint64 appliance_generation = 3;
+}
+
+message ReconcileNatRequest {
+  MutationHeader header = 1;
+  string network_id = 2;
+}
+
+message ReconcileNatResponse {
+  NatState nat_state = 1;
+  MutationResult mutation = 2;
 }
