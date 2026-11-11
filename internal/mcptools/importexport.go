@@ -14,9 +14,10 @@ import (
 
 // yamlNode is the YAML-friendly representation of a node.
 type yamlNode struct {
-	Address string            `yaml:"address"`
-	Role    string            `yaml:"role,omitempty"`
-	Labels  map[string]string `yaml:"labels,omitempty"`
+	Address       string            `yaml:"address"`
+	Role          string            `yaml:"role,omitempty"`
+	Labels        map[string]string `yaml:"labels,omitempty"`
+	TLSServerName string            `yaml:"tls_server_name,omitempty"`
 }
 
 // yamlContext is the YAML-friendly representation of node context.
@@ -38,7 +39,7 @@ type yamlFile struct {
 }
 
 func RegisterImportExport(s *server.MCPServer, reg *registry.Registry) {
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("export_nodes",
 			mcp.WithDescription("Export all nodes, topologies, and contexts to a YAML file."),
 			mcp.WithString("file", mcp.Required(), mcp.Description("Output YAML file path")),
@@ -46,7 +47,7 @@ func RegisterImportExport(s *server.MCPServer, reg *registry.Registry) {
 		exportNodesHandler(reg),
 	)
 
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("import_nodes",
 			mcp.WithDescription("Import nodes, topologies, and contexts from a YAML file, overwriting existing entries."),
 			mcp.WithString("file", mcp.Required(), mcp.Description("Input YAML file path")),
@@ -72,9 +73,10 @@ func exportNodesHandler(reg *registry.Registry) server.ToolHandlerFunc {
 
 		for _, n := range nodes {
 			yf.Nodes[n.Name] = yamlNode{
-				Address: n.Address,
-				Role:    n.Role,
-				Labels:  n.Labels,
+				Address:       n.Address,
+				Role:          n.Role,
+				Labels:        n.Labels,
+				TLSServerName: n.TLSServerName,
 			}
 
 			// Export context if set.
@@ -140,10 +142,11 @@ func importNodesHandler(reg *registry.Registry) server.ToolHandlerFunc {
 
 		for name, yn := range yf.Nodes {
 			node := &registry.Node{
-				Name:    name,
-				Address: yn.Address,
-				Role:    yn.Role,
-				Labels:  yn.Labels,
+				Name:          name,
+				Address:       yn.Address,
+				Role:          yn.Role,
+				Labels:        yn.Labels,
+				TLSServerName: yn.TLSServerName,
 			}
 			if err := reg.SetNode(node); err != nil {
 				details.WriteString(fmt.Sprintf("- **%s**: failed (%v)\n", name, err))
