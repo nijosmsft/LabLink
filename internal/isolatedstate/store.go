@@ -16,12 +16,15 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 2
 	schemaVersionKey     = "schema_version"
 )
 
 //go:embed schema.sql
 var initialSchemaSQL string
+
+//go:embed migration_v2.sql
+var migrationV2SQL string
 
 type migration struct {
 	version int
@@ -30,6 +33,7 @@ type migration struct {
 
 var schemaMigrations = []migration{
 	{version: 1, sql: initialSchemaSQL},
+	{version: 2, sql: migrationV2SQL},
 }
 
 // Store is one process-local handle to the shared isolated state database.

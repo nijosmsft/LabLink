@@ -33,6 +33,8 @@ func TestOpenCreatesInitialSchema(t *testing.T) {
 		"relay_allocations", "nat_allocations",
 		"active_resource_allocations", "resource_allocation_history",
 		"operations", "operation_phases", "operation_events",
+		"locks", "lock_fences", "cascade_authorities",
+		"cascade_authority_items",
 	} {
 		var count int
 		if err := store.QueryRowContext(context.Background(), `
@@ -44,6 +46,38 @@ func TestOpenCreatesInitialSchema(t *testing.T) {
 		if count != 1 {
 			t.Errorf("table %s count = %d, want 1", table, count)
 		}
+	}
+}
+
+func TestUpgradeSeedsDurableLockFences(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "isolated.db")
+	v1, err := openWithMigrations(path, schemaMigrations[:1])
+	if err != nil {
+		t.Fatalf("open v1: %v", err)
+	}
+	mustExec(t, v1, ctx, `
+		INSERT INTO locks (
+			lock_key, holder_cookie, holder_hostname, holder_pid,
+			holder_process_start_unix, operation_id, fence, acquired_at_unix,
+			heartbeat_at_unix, expires_at_unix
+		) VALUES ('network:network-1', 'cookie', 'host', 1, 1, 'op', 7, 1, 1, 2)`)
+	if err := v1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	defer upgraded.Close()
+	var fence int64
+	if err := upgraded.QueryRowContext(ctx, `
+		SELECT last_fence FROM lock_fences WHERE lock_key='network:network-1'`,
+	).Scan(&fence); err != nil {
+		t.Fatal(err)
+	}
+	if fence != 7 {
+		t.Fatalf("seeded fence=%d, want 7", fence)
 	}
 }
 
@@ -158,7 +192,7 @@ func TestMigrationFailureIsAtomic(t *testing.T) {
 
 	broken := append([]migration(nil), schemaMigrations...)
 	broken = append(broken, migration{
-		version: 2,
+		version: CurrentSchemaVersion + 1,
 		sql: `
 			CREATE TABLE migration_probe (id INTEGER PRIMARY KEY);
 			THIS IS NOT VALID SQL;
@@ -178,8 +212,8 @@ func TestMigrationFailureIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if version != 1 {
-		t.Fatalf("SchemaVersion = %d, want 1", version)
+	if version != CurrentSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", version, CurrentSchemaVersion)
 	}
 	var count int
 	if err := reopened.QueryRowContext(context.Background(), `

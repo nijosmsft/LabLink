@@ -17,6 +17,7 @@ type OperationStatus string
 type OperationPhaseStatus string
 type ApprovalPlanState string
 type GuestOS string
+type LockLevel int
 
 const (
 	OrchestratorPlanned     OrchestratorLifecycleState = "planned"
@@ -98,6 +99,15 @@ const (
 const (
 	GuestWindows GuestOS = "windows"
 	GuestLinux   GuestOS = "linux"
+)
+
+const (
+	LockLevelHost LockLevel = iota + 1
+	LockLevelOrchestrator
+	LockLevelAllocation
+	LockLevelNetwork
+	LockLevelVM
+	LockLevelChild
 )
 
 type SchemaMeta struct {
@@ -308,6 +318,41 @@ type Lock struct {
 	AcquiredAt         UnixSeconds
 	HeartbeatAt        UnixSeconds
 	ExpiresAt          UnixSeconds
+}
+
+type ProcessIdentity struct {
+	Hostname     string
+	PID          int
+	ProcessStart UnixSeconds
+	Cookie       string
+}
+
+type LockLease struct {
+	Lock
+	Level LockLevel
+}
+
+type CascadeAuthority struct {
+	OrchestratorID   string
+	FrozenGeneration Generation
+	OperationID      string
+	PlanRevision     string
+	PlanHash         string
+	HostFence        int64
+	LeaseID          string
+	InstalledAt      UnixSeconds
+	Items            []CascadeAuthorityItem
+}
+
+type CascadeAuthorityItem struct {
+	MutationID                string
+	Action                    string
+	ResourceType              string
+	ResourceID                string
+	ExpectedHostIdentity      *string
+	ExpectedApplianceIdentity *string
+	ExpectedGeneration        Generation
+	CompletedAt               *UnixSeconds
 }
 
 // ApplianceImportMetadata is the local projection used while importing the
