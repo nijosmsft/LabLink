@@ -29,11 +29,13 @@ func TestGetInfoWireCompatibility(t *testing.T) {
 	}
 	if got.Hostname != "node-1" || got.Os != "linux" || got.Arch != "amd64" ||
 		got.CpuCount != 8 || got.MemoryBytes != 16<<30 || got.AgentVersion != "v1.0.0" {
-		t.Fatalf("legacy fields changed during unmarshal: %+v", got)
+		t.Fatalf("legacy fields changed during unmarshal: hostname=%q os=%q arch=%q cpu_count=%d memory_bytes=%d agent_version=%q",
+			got.GetHostname(), got.GetOs(), got.GetArch(), got.GetCpuCount(), got.GetMemoryBytes(), got.GetAgentVersion())
 	}
 	if len(got.Capabilities) != 0 || got.ProtocolVersion != 0 || got.ApplianceReady ||
 		got.ApplianceGeneration != 0 || got.ApplianceError != "" {
-		t.Fatalf("new fields did not retain proto3 defaults: %+v", got)
+		t.Fatalf("new fields did not retain proto3 defaults: capabilities=%q protocol_version=%d appliance_ready=%t appliance_generation=%d appliance_error=%q",
+			got.GetCapabilities(), got.GetProtocolVersion(), got.GetApplianceReady(), got.GetApplianceGeneration(), got.GetApplianceError())
 	}
 }
 
