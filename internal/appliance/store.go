@@ -663,6 +663,15 @@ func (s *Store) StageRelay(ctx context.Context, header MutationHeader, relay Rel
 }
 
 func (s *Store) StageNAT(ctx context.Context, header MutationHeader, nat NATState) (StageResult, error) {
+	return s.stageNAT(ctx, header, nat, false)
+}
+
+func (s *Store) stageNAT(
+	ctx context.Context,
+	header MutationHeader,
+	nat NATState,
+	completeDrain bool,
+) (StageResult, error) {
 	if header.ResourceID == "" {
 		header.ResourceID = nat.VMID
 	}
@@ -671,17 +680,40 @@ func (s *Store) StageNAT(ctx context.Context, header MutationHeader, nat NATStat
 	}
 	return s.stage(ctx, header, "nat", func(ctx context.Context, tx *sql.Tx) error {
 		nat.VMID = header.ResourceID
+		if nat.ConntrackMark <= 0 || nat.ConntrackMark > int64(^uint32(0)) {
+			return storeError(CodeInvalidArgument,
+				"invalid conntrack mark %d", nat.ConntrackMark)
+		}
 		if err := requireReservation(ctx, tx, "guest", nat.VMID, `
 			AND conntrack_mark = ?
 		`, nat.ConntrackMark); err != nil {
 			return err
+		}
+		var currentState string
+		err := tx.QueryRowContext(ctx,
+			"SELECT state FROM nat_state WHERE vm_id = ?",
+			nat.VMID,
+		).Scan(&currentState)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if nat.State == "disabled" && !completeDrain &&
+			(currentState == "enabled" || currentState == "draining") {
+			nat.State = "draining"
+			if nat.DrainStartedUnix == nil {
+				started := s.now().Unix()
+				nat.DrainStartedUnix = &started
+			}
+		}
+		if nat.State != "draining" {
+			nat.DrainStartedUnix = nil
 		}
 		nat.DesiredGeneration = header.NewGeneration
 		nat.ParentGeneration = header.ExpectedParentGeneration
 		if nat.State != "enabled" && nat.State != "draining" && nat.State != "disabled" {
 			return storeError(CodeInvalidArgument, "invalid NAT state %q", nat.State)
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO nat_state (
 				vm_id, state, conntrack_mark, desired_generation,
 				applied_generation, observed_generation, parent_generation,

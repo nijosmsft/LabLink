@@ -159,6 +159,104 @@ func TestFullPolicyPrivateICMPAndRelayOrdering(t *testing.T) {
 	}
 }
 
+func TestNATPolicyGatesNewAndEstablishedFlowsByExactVMState(t *testing.T) {
+	base := DesiredSnapshot{
+		Networks: []Network{{
+			ID: "network-1", GatewayIPv4: "10.80.0.1",
+			InterfaceName: "eth1", State: "active",
+		}, {
+			ID: "network-2", GatewayIPv4: "10.81.0.1",
+			InterfaceName: "eth2", State: "active",
+		}},
+		Guests: []Guest{{
+			ID: "guest-1", NetworkID: "network-1", IPv4: "10.80.0.10",
+			State: "active",
+		}},
+	}
+
+	enabled := base
+	enabled.NAT = []NATState{{
+		VMID: "guest-1", State: "enabled", ConntrackMark: 101,
+	}}
+	ruleset, forwarding, err := compileFullRuleset(
+		enabled, "eth0", "snapshot-hash", "compiled-hash")
+	if err != nil {
+		t.Fatalf("compile enabled NAT: %v", err)
+	}
+	if !forwarding {
+		t.Fatal("enabled NAT did not enable IPv4 forwarding")
+	}
+	for _, want := range []string{
+		`"eth1" . 10.80.0.10 : 0x65`,
+		`iifname @private_ifaces oifname "eth0" ct state new ct mark set iifname . ip saddr map @enabled_guest_marks accept`,
+		`iifname @private_ifaces oifname "eth0" ct state established,related ct direction original iifname . ip saddr . ct mark @active_nat_sources accept`,
+		`iifname "eth0" oifname @private_ifaces ct state established,related ct direction reply oifname . ip daddr . ct mark @active_nat_sources accept`,
+		`oifname "eth0" iifname . ip saddr . ct mark @nat_sources masquerade`,
+	} {
+		if !strings.Contains(ruleset, want) {
+			t.Fatalf("enabled ruleset lacks %q:\n%s", want, ruleset)
+		}
+	}
+	crossDrop := strings.Index(ruleset,
+		`iifname @private_ifaces oifname @private_ifaces drop comment "private-cross-network-drop"`)
+	established := strings.Index(ruleset,
+		`ct state established,related ct direction original`)
+	if crossDrop < 0 || established < 0 || crossDrop > established {
+		t.Fatalf("cross-private drop is not before established-flow accepts:\n%s", ruleset)
+	}
+	if strings.Contains(ruleset,
+		`ct state established,related ct mark @active_nat_marks accept`) {
+		t.Fatalf("ruleset contains unconditional marked established accept:\n%s", ruleset)
+	}
+
+	draining := base
+	draining.NAT = []NATState{{
+		VMID: "guest-1", State: "draining", ConntrackMark: 101,
+	}}
+	ruleset, forwarding, err = compileFullRuleset(
+		draining, "eth0", "snapshot-hash", "compiled-hash")
+	if err != nil {
+		t.Fatalf("compile draining NAT: %v", err)
+	}
+	if !forwarding {
+		t.Fatal("draining NAT disabled forwarding before existing flows expired")
+	}
+	if strings.Contains(ruleset, "ct state new ct mark set") {
+		t.Fatalf("draining NAT still accepts new flows:\n%s", ruleset)
+	}
+	for _, want := range []string{
+		`ct state established,related ct direction original`,
+		`ct state established,related ct direction reply`,
+		`masquerade`,
+	} {
+		if !strings.Contains(ruleset, want) {
+			t.Fatalf("draining NAT lacks existing-flow rule %q:\n%s", want, ruleset)
+		}
+	}
+
+	disabled := base
+	disabled.NAT = []NATState{{
+		VMID: "guest-1", State: "disabled", ConntrackMark: 101,
+	}}
+	ruleset, forwarding, err = compileFullRuleset(
+		disabled, "eth0", "snapshot-hash", "compiled-hash")
+	if err != nil {
+		t.Fatalf("compile disabled NAT: %v", err)
+	}
+	if forwarding {
+		t.Fatal("disabled NAT left IPv4 forwarding enabled")
+	}
+	for _, forbidden := range []string{
+		"ct state new ct mark set",
+		"ct state established,related ct direction",
+		"masquerade",
+	} {
+		if strings.Contains(ruleset, forbidden) {
+			t.Fatalf("disabled NAT contains %q:\n%s", forbidden, ruleset)
+		}
+	}
+}
+
 func TestConflictScannerProducesApprovalPlanWithoutDisablingServices(t *testing.T) {
 	executor := &scriptedExecutor{
 		run: func(name string, args ...string) (CommandResult, error) {

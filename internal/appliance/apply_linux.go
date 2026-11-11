@@ -289,7 +289,7 @@ func compileFullRuleset(
 		guests[guest.ID] = guest
 	}
 
-	var activeMarks, natPairs, enabledMappings []string
+	var activeMappings, natPairs, enabledMappings []string
 	for _, state := range snapshot.NAT {
 		guest, ok := guests[state.VMID]
 		if !ok {
@@ -306,20 +306,24 @@ func compileFullRuleset(
 		mark := fmt.Sprintf("0x%x", state.ConntrackMark)
 		switch state.State {
 		case "enabled":
-			activeMarks = append(activeMarks, mark)
-			natPairs = append(natPairs, guest.IPv4+" . "+mark)
+			activeMappings = append(activeMappings,
+				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
+			natPairs = append(natPairs,
+				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
 			enabledMappings = append(enabledMappings,
 				quoteNFT(network.Interface)+" . "+guest.IPv4+" : "+mark)
 		case "draining":
-			activeMarks = append(activeMarks, mark)
-			natPairs = append(natPairs, guest.IPv4+" . "+mark)
+			activeMappings = append(activeMappings,
+				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
+			natPairs = append(natPairs,
+				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
 		case "disabled":
 		default:
 			return "", false, fmt.Errorf("NAT state for %s has invalid state %q",
 				state.VMID, state.State)
 		}
 	}
-	sort.Strings(activeMarks)
+	sort.Strings(activeMappings)
 	sort.Strings(natPairs)
 	sort.Strings(enabledMappings)
 
@@ -357,9 +361,9 @@ func compileFullRuleset(
 	fmt.Fprintf(&builder, "    comment %s\n", quoteNFT(
 		ApplianceRuleSignature+" snapshot="+snapshotHash+" compiled="+compiledHash))
 	writeSet(&builder, "private_ifaces", "ifname", privateInterfaces(private))
-	writeSet(&builder, "active_nat_marks", "mark", activeMarks)
+	writeSet(&builder, "active_nat_sources", "ifname . ipv4_addr . mark", activeMappings)
 	writeMap(&builder, "enabled_guest_marks", "ifname . ipv4_addr : mark", enabledMappings)
-	writeSet(&builder, "nat_sources", "ipv4_addr . mark", natPairs)
+	writeSet(&builder, "nat_sources", "ifname . ipv4_addr . mark", natPairs)
 
 	builder.WriteString("    chain input {\n")
 	builder.WriteString("        type filter hook input priority filter; policy drop;\n")
@@ -399,8 +403,13 @@ func compileFullRuleset(
 	if len(private) != 0 {
 		builder.WriteString("        iifname @private_ifaces oifname @private_ifaces drop comment \"private-cross-network-drop\"\n")
 	}
-	if len(activeMarks) != 0 {
-		builder.WriteString("        ct state established,related ct mark @active_nat_marks accept\n")
+	if len(activeMappings) != 0 {
+		fmt.Fprintf(&builder,
+			"        iifname @private_ifaces oifname %s ct state established,related ct direction original iifname . ip saddr . ct mark @active_nat_sources accept\n",
+			quoteNFT(mainInterface))
+		fmt.Fprintf(&builder,
+			"        iifname %s oifname @private_ifaces ct state established,related ct direction reply oifname . ip daddr . ct mark @active_nat_sources accept\n",
+			quoteNFT(mainInterface))
 	}
 	if len(enabledMappings) != 0 {
 		fmt.Fprintf(&builder,
@@ -413,12 +422,12 @@ func compileFullRuleset(
 	builder.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
 	if len(natPairs) != 0 {
 		fmt.Fprintf(&builder,
-			"        oifname %s ip saddr . ct mark @nat_sources masquerade\n",
+			"        oifname %s iifname . ip saddr . ct mark @nat_sources masquerade\n",
 			quoteNFT(mainInterface))
 	}
 	builder.WriteString("    }\n")
 	builder.WriteString("}\n")
-	return builder.String(), len(private) != 0, nil
+	return builder.String(), len(activeMappings) != 0, nil
 }
 
 func privateInterfaces(networks []linuxPrivateNetwork) []string {
@@ -443,21 +452,6 @@ func writeMap(builder *strings.Builder, name, itemType string, elements []string
 		fmt.Fprintf(builder, "        elements = { %s }\n", strings.Join(elements, ", "))
 	}
 	builder.WriteString("    }\n\n")
-}
-
-func validateInterfaceName(value string) error {
-	if value == "" || len(value) > 15 {
-		return fmt.Errorf("invalid interface name %q", value)
-	}
-	for _, character := range value {
-		if !((character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') ||
-			character == '_' || character == '-' || character == '.') {
-			return fmt.Errorf("invalid interface name %q", value)
-		}
-	}
-	return nil
 }
 
 func quoteNFT(value string) string {
