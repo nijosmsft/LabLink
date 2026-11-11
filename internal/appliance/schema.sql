@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS guests (
 CREATE TABLE IF NOT EXISTS relays (
     id TEXT PRIMARY KEY,
     vm_id TEXT NOT NULL REFERENCES guests(id),
-    listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 1 AND 65535),
+    listen_port INTEGER NOT NULL CHECK (listen_port BETWEEN 20000 AND 39999),
     target_ipv4 TEXT NOT NULL,
     target_port INTEGER NOT NULL CHECK (target_port = 9091),
     desired_generation INTEGER NOT NULL,

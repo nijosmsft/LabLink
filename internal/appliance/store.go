@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -578,6 +579,10 @@ func (s *Store) StageRelay(ctx context.Context, header MutationHeader, relay Rel
 	}
 	return s.stage(ctx, header, "relay", func(ctx context.Context, tx *sql.Tx) error {
 		relay.ID = header.ResourceID
+		if relay.ListenPort < RelayPortMin || relay.ListenPort > RelayPortMax {
+			return storeError(CodeInvalidArgument, "relay listen port must be between %d and %d",
+				RelayPortMin, RelayPortMax)
+		}
 		if err := requireReservation(ctx, tx, "relay", relay.ID, `
 			AND listen_port = ?
 		`, relay.ListenPort); err != nil {
@@ -594,10 +599,31 @@ func (s *Store) StageRelay(ctx context.Context, header MutationHeader, relay Rel
 		if relay.TargetPort != RelayTargetPort {
 			return storeError(CodeInvalidArgument, "relay target port must be %d", RelayTargetPort)
 		}
+		target, err := netip.ParseAddr(relay.TargetIPv4)
+		if err != nil || !target.Is4() || target.IsUnspecified() ||
+			target.IsMulticast() || target.IsLoopback() {
+			return storeError(CodeInvalidArgument, "relay target must be a unicast IPv4 address")
+		}
+		var guestIPv4 string
+		err = tx.QueryRowContext(ctx, `
+			SELECT ipv4 FROM guests
+			WHERE id = ? AND retired_at_unix IS NULL
+		`, relay.VMID).Scan(&guestIPv4)
+		if errors.Is(err, sql.ErrNoRows) {
+			return storeError(CodeNotFound, "relay guest %q not found", relay.VMID)
+		}
+		if err != nil {
+			return err
+		}
+		if guestIPv4 != relay.TargetIPv4 {
+			return storeError(CodeInvalidArgument,
+				"relay target %s does not match guest %s address %s",
+				relay.TargetIPv4, relay.VMID, guestIPv4)
+		}
 		if relay.State == "" {
 			relay.State = "pending"
 		}
-		_, err := tx.ExecContext(ctx, `
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO relays (
 				id, vm_id, listen_port, target_ipv4, target_port,
 				desired_generation, applied_generation, observed_generation,
@@ -998,6 +1024,215 @@ func (s *Store) NAT(ctx context.Context, vmID string) (NATState, bool, error) {
 	return nat, true, nil
 }
 
+func (s *Store) Relay(ctx context.Context, id string) (Relay, bool, error) {
+	relay, err := readRelayForRuntime(ctx, s.db, id)
+	if ErrorCodeOf(err) == CodeNotFound {
+		return Relay{}, false, nil
+	}
+	if err != nil {
+		return Relay{}, false, err
+	}
+	return relay, true, nil
+}
+
+func (s *Store) ValidateRelay(
+	ctx context.Context,
+	relayID string,
+	expectedGeneration, fence uint64,
+) (Relay, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Relay{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := validateFence(ctx, tx, MutationHeader{HostFence: fence}, s.now()); err != nil {
+		return Relay{}, err
+	}
+	relay, err := readRelayForRuntime(ctx, tx, relayID)
+	if err != nil {
+		return Relay{}, err
+	}
+	if relay.DesiredGeneration != expectedGeneration {
+		return Relay{}, storeError(CodeGenerationConflict,
+			"relay %s generation is %d; expected %d",
+			relayID, relay.DesiredGeneration, expectedGeneration)
+	}
+	if relay.State == "retiring" || relay.State == "removing" ||
+		relay.State == "removed" || relay.RetiredAtUnix != nil {
+		return Relay{}, storeError(CodeNotFound, "relay %q is not accepting connections", relayID)
+	}
+	if err := validateRelayTarget(ctx, tx, relay); err != nil {
+		return Relay{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Relay{}, err
+	}
+	return relay, nil
+}
+
+func (s *Store) SetRelayBindStatus(
+	ctx context.Context,
+	relayID string,
+	expectedGeneration, fence uint64,
+	boundMainIP, bindError, state string,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := validateFence(ctx, tx, MutationHeader{HostFence: fence}, s.now()); err != nil {
+		return err
+	}
+	relay, err := readRelayForRuntime(ctx, tx, relayID)
+	if err != nil {
+		return err
+	}
+	if relay.DesiredGeneration != expectedGeneration {
+		return storeError(CodeGenerationConflict,
+			"relay %s generation is %d; expected %d",
+			relayID, relay.DesiredGeneration, expectedGeneration)
+	}
+	if state == "" {
+		state = relay.State
+	}
+	changed := relay.BoundMainIP != boundMainIP ||
+		relay.LastBindError != bindError || relay.State != state
+	result, err := tx.ExecContext(ctx, `
+		UPDATE relays SET
+			bound_main_ip = NULLIF(?, ''),
+			last_bind_error = NULLIF(?, ''),
+			state = ?
+		WHERE id = ? AND desired_generation = ? AND retired_at_unix IS NULL
+	`, boundMainIP, bindError, state, relayID, expectedGeneration)
+	if err != nil {
+		return fmt.Errorf("appliance: update relay bind status: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return storeError(CodeGenerationConflict, "relay %s changed while recording bind status", relayID)
+	}
+	if changed {
+		if _, err := bumpInventoryGeneration(ctx, tx, s.now().Unix()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) BeginRelayRetirement(
+	ctx context.Context,
+	relayID string,
+	expectedGeneration, fence uint64,
+) (Relay, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Relay{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := validateFence(ctx, tx, MutationHeader{HostFence: fence}, s.now()); err != nil {
+		return Relay{}, err
+	}
+	relay, err := readRelayForRuntime(ctx, tx, relayID)
+	if err != nil {
+		return Relay{}, err
+	}
+	if relay.DesiredGeneration != expectedGeneration {
+		return Relay{}, storeError(CodeGenerationConflict,
+			"relay %s generation is %d; expected %d",
+			relayID, relay.DesiredGeneration, expectedGeneration)
+	}
+	if relay.RetiredAtUnix != nil || relay.State == "removed" {
+		return Relay{}, storeError(CodeNotFound, "relay %q is already retired", relayID)
+	}
+	if relay.State != "retiring" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE relays SET state = 'retiring', last_bind_error = NULL
+			WHERE id = ? AND desired_generation = ? AND retired_at_unix IS NULL
+		`, relayID, expectedGeneration); err != nil {
+			return Relay{}, fmt.Errorf("appliance: begin relay retirement: %w", err)
+		}
+		if _, err := bumpInventoryGeneration(ctx, tx, s.now().Unix()); err != nil {
+			return Relay{}, err
+		}
+		relay.State = "retiring"
+	}
+	if err := tx.Commit(); err != nil {
+		return Relay{}, err
+	}
+	return relay, nil
+}
+
+func (s *Store) FinalizeRelayRetirement(
+	ctx context.Context,
+	relayID string,
+	expectedGeneration, fence uint64,
+) (Relay, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Relay{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := validateFence(ctx, tx, MutationHeader{HostFence: fence}, s.now()); err != nil {
+		return Relay{}, err
+	}
+	relay, err := readRelayForRuntime(ctx, tx, relayID)
+	if err != nil {
+		return Relay{}, err
+	}
+	if relay.DesiredGeneration != expectedGeneration {
+		return Relay{}, storeError(CodeGenerationConflict,
+			"relay %s generation is %d; expected %d",
+			relayID, relay.DesiredGeneration, expectedGeneration)
+	}
+	if relay.State != "retiring" || relay.RetiredAtUnix != nil {
+		return Relay{}, storeError(CodeResourceInUse,
+			"relay %q must be retiring before its port can be released", relayID)
+	}
+	now := s.now().Unix()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE reservations
+		SET state = 'retired', retired_at_unix = ?
+		WHERE resource_kind = 'relay' AND resource_id = ?
+			AND retired_at_unix IS NULL
+	`, now, relayID)
+	if err != nil {
+		return Relay{}, fmt.Errorf("appliance: retire relay reservation: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Relay{}, err
+	}
+	if affected != 1 {
+		return Relay{}, storeError(CodeReservationLost,
+			"relay %q has no live port reservation", relayID)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE relays SET
+			state = 'removed',
+			bound_main_ip = NULL,
+			last_bind_error = NULL,
+			retired_at_unix = ?
+		WHERE id = ? AND desired_generation = ? AND state = 'retiring'
+	`, now, relayID, expectedGeneration); err != nil {
+		return Relay{}, fmt.Errorf("appliance: retire relay mapping: %w", err)
+	}
+	if _, err := bumpInventoryGeneration(ctx, tx, now); err != nil {
+		return Relay{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Relay{}, err
+	}
+	relay.State = "removed"
+	relay.BoundMainIP = ""
+	relay.LastBindError = ""
+	relay.RetiredAtUnix = &now
+	return relay, nil
+}
+
 func (s *Store) Snapshot(ctx context.Context) (DesiredSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -1202,6 +1437,12 @@ func normalizeReservation(
 		return storeError(CodeInvalidArgument,
 			"reservation %s has invalid listen port %d",
 			reservation.ID, *reservation.ListenPort)
+	}
+	if reservation.ResourceKind == "relay" && reservation.ListenPort != nil &&
+		(*reservation.ListenPort < RelayPortMin || *reservation.ListenPort > RelayPortMax) {
+		return storeError(CodeInvalidArgument,
+			"relay reservation %s listen port must be between %d and %d",
+			reservation.ID, RelayPortMin, RelayPortMax)
 	}
 	if reservation.CapacityKind == "" && reservation.CapacityUnits != 0 {
 		return storeError(CodeInvalidArgument,
@@ -1709,6 +1950,66 @@ func listRelays(ctx context.Context, q queryer) ([]Relay, error) {
 		relays = append(relays, relay)
 	}
 	return relays, rows.Err()
+}
+
+func readRelayForRuntime(ctx context.Context, q queryRower, id string) (Relay, error) {
+	row := q.QueryRowContext(ctx, `
+		SELECT id, vm_id, listen_port, target_ipv4, target_port,
+			desired_generation, applied_generation, observed_generation,
+			parent_generation, incarnation, state, COALESCE(bound_main_ip, ''),
+			COALESCE(last_bind_error, ''), retired_at_unix
+		FROM relays WHERE id = ?
+	`, id)
+	var relay Relay
+	var retired sql.NullInt64
+	err := row.Scan(&relay.ID, &relay.VMID, &relay.ListenPort,
+		&relay.TargetIPv4, &relay.TargetPort, &relay.DesiredGeneration,
+		&relay.AppliedGeneration, &relay.ObservedGeneration,
+		&relay.ParentGeneration, &relay.Incarnation, &relay.State,
+		&relay.BoundMainIP, &relay.LastBindError, &retired)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Relay{}, storeError(CodeNotFound, "relay %q not found", id)
+	}
+	if err != nil {
+		return Relay{}, err
+	}
+	relay.RetiredAtUnix = nullInt64Ptr(retired)
+	return relay, nil
+}
+
+func validateRelayTarget(ctx context.Context, q queryRower, relay Relay) error {
+	if relay.ListenPort < RelayPortMin || relay.ListenPort > RelayPortMax {
+		return storeError(CodeInvalidArgument,
+			"relay %s listen port %d is outside %d-%d",
+			relay.ID, relay.ListenPort, RelayPortMin, RelayPortMax)
+	}
+	if relay.TargetPort != RelayTargetPort {
+		return storeError(CodeInvalidArgument,
+			"relay %s target port is %d; expected %d",
+			relay.ID, relay.TargetPort, RelayTargetPort)
+	}
+	target, err := netip.ParseAddr(relay.TargetIPv4)
+	if err != nil || !target.Is4() || target.IsUnspecified() ||
+		target.IsMulticast() || target.IsLoopback() {
+		return storeError(CodeInvalidArgument, "relay %s target is not a unicast IPv4 address", relay.ID)
+	}
+	var guestIPv4 string
+	err = q.QueryRowContext(ctx, `
+		SELECT ipv4 FROM guests
+		WHERE id = ? AND retired_at_unix IS NULL
+	`, relay.VMID).Scan(&guestIPv4)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storeError(CodeNotFound, "relay %s guest %q is not live", relay.ID, relay.VMID)
+	}
+	if err != nil {
+		return err
+	}
+	if guestIPv4 != relay.TargetIPv4 {
+		return storeError(CodeInvalidArgument,
+			"relay %s target %s does not match guest address %s",
+			relay.ID, relay.TargetIPv4, guestIPv4)
+	}
+	return nil
 }
 
 func listNAT(ctx context.Context, q queryer) ([]NATState, error) {

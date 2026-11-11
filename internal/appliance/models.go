@@ -9,6 +9,8 @@ import (
 const (
 	DefaultDBPath        = "/var/lib/lablink-agent/isolated-appliance.db"
 	CurrentSchemaVersion = 1
+	RelayPortMin         = 20000
+	RelayPortMax         = 39999
 	RelayTargetPort      = 9091
 )
 
