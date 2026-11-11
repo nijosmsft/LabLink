@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,6 +26,8 @@ type Store struct {
 	db   *sql.DB
 	path string
 	now  func() time.Time
+
+	externalApply sync.RWMutex
 }
 
 func Open(path string) (*Store, error) {
@@ -201,6 +204,8 @@ func (s *Store) Authority(ctx context.Context) (Authority, error) {
 }
 
 func (s *Store) InstallAuthority(ctx context.Context, next Authority) error {
+	s.externalApply.Lock()
+	defer s.externalApply.Unlock()
 	if next.ParentState == "" {
 		next.ParentState = "active"
 	}
@@ -258,6 +263,8 @@ func (s *Store) InstallAuthority(ctx context.Context, next Authority) error {
 }
 
 func (s *Store) SetCapacityLimit(ctx context.Context, kind string, maxUnits int64) error {
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
 	kind = strings.TrimSpace(kind)
 	if kind == "" || maxUnits < 0 {
 		return storeError(CodeInvalidArgument, "capacity kind must be non-empty and max units non-negative")
@@ -281,6 +288,8 @@ func (s *Store) SetCapacityLimit(ctx context.Context, kind string, maxUnits int6
 }
 
 func (s *Store) ReserveResources(ctx context.Context, req ReserveRequest) (ReserveResult, error) {
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
 	if err := validateMutationHeader(req.Header, false); err != nil {
 		return ReserveResult{}, err
 	}
@@ -372,6 +381,8 @@ func (s *Store) ReserveResources(ctx context.Context, req ReserveRequest) (Reser
 }
 
 func (s *Store) ReleaseResources(ctx context.Context, req ReleaseRequest) (ReleaseResult, error) {
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
 	if err := validateMutationHeader(req.Header, false); err != nil {
 		return ReleaseResult{}, err
 	}
@@ -695,6 +706,8 @@ func (s *Store) stage(
 	resourceKind string,
 	writeDesired func(context.Context, *sql.Tx) error,
 ) (StageResult, error) {
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
 	if err := validateMutationHeader(header, true); err != nil {
 		return StageResult{}, err
 	}
@@ -770,6 +783,13 @@ func (s *Store) stage(
 	if err != nil {
 		return StageResult{}, fmt.Errorf("appliance: insert apply intent: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE appliance_status
+		SET ready = 0, error_text = ?, updated_at_unix = ?
+		WHERE singleton = 1
+	`, fmt.Sprintf("apply intent %s pending", intent.MutationID), now); err != nil {
+		return StageResult{}, fmt.Errorf("appliance: block readiness for apply intent: %w", err)
+	}
 	if _, err := bumpInventoryGeneration(ctx, tx, now); err != nil {
 		return StageResult{}, err
 	}
@@ -821,6 +841,21 @@ func (s *Store) UpdateIntent(
 }
 
 func (s *Store) CommitIntent(ctx context.Context, req CommitIntentRequest) (AppliedOperation, error) {
+	return s.commitIntent(ctx, req, false)
+}
+
+func (s *Store) commitAdmittedIntent(
+	ctx context.Context,
+	req CommitIntentRequest,
+) (AppliedOperation, error) {
+	return s.commitIntent(ctx, req, true)
+}
+
+func (s *Store) commitIntent(
+	ctx context.Context,
+	req CommitIntentRequest,
+	allowPendingHandoff bool,
+) (AppliedOperation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return AppliedOperation{}, err
@@ -852,13 +887,19 @@ func (s *Store) CommitIntent(ctx context.Context, req CommitIntentRequest) (Appl
 		HostFence:                req.HostFence,
 		ExpectedParentGeneration: intent.ParentGeneration,
 	}
-	authority, err := validateFence(ctx, tx, header, s.now())
+	var authority Authority
+	if allowPendingHandoff {
+		authority, err = validateAdmittedFence(ctx, tx, header, s.now())
+	} else {
+		authority, err = validateFence(ctx, tx, header, s.now())
+	}
 	if err != nil {
 		return AppliedOperation{}, err
 	}
 	if err := validateParentGeneration(ctx, tx, authority, intent.ResourceKind, header); err != nil {
 		return AppliedOperation{}, err
 	}
+
 	currentGeneration, err := resourceGeneration(ctx, tx, intent.ResourceKind, intent.ResourceID)
 	if err != nil {
 		return AppliedOperation{}, err
@@ -918,6 +959,29 @@ func (s *Store) CommitIntent(ctx context.Context, req CommitIntentRequest) (Appl
 	return operation, nil
 }
 
+func validateAdmittedFence(
+	ctx context.Context,
+	tx *sql.Tx,
+	header MutationHeader,
+	now time.Time,
+) (Authority, error) {
+	authority, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if authority.Fence != header.HostFence {
+		return Authority{}, storeError(CodeFenceRejected, "host fence is %d; request supplied %d",
+			authority.Fence, header.HostFence)
+	}
+	if authority.HostLeaseExpiresUnix > 0 && now.Unix() >= authority.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected, "host lease expired")
+	}
+	if authority.ParentState != "active" {
+		return Authority{}, storeError(CodeParentFrozen, "parent state is %s", authority.ParentState)
+	}
+	return authority, nil
+}
+
 func (s *Store) Intent(ctx context.Context, mutationID string) (Intent, bool, error) {
 	return lookupIntent(ctx, s.db, mutationID)
 }
@@ -948,6 +1012,8 @@ func (s *Store) RecoveryIntents(ctx context.Context) ([]Intent, error) {
 }
 
 func (s *Store) NormalizeDrainingNAT(ctx context.Context) (int64, error) {
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
