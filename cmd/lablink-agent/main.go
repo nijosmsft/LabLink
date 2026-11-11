@@ -41,6 +41,8 @@ var (
 	uninstall         = flag.Bool("uninstall", false, "uninstall Windows service")
 	setToken          = flag.String("set-token", "", "write auth token to registry and exit")
 	versionFlag       = flag.Bool("version", false, "print version and exit")
+	applianceMode     = flag.Bool("appliance", false, "enable isolated appliance RPC mode (Linux only)")
+	applianceDBPath   = flag.String("appliance-db", "", "path to isolated appliance SQLite state")
 )
 
 func main() {
@@ -213,7 +215,16 @@ func runServer() error {
 	}
 	jm.Recover()
 	setJobManager(jm)
-	pb.RegisterNodeAgentServer(srv, &agentServer{jobs: jm})
+	applianceService := loadApplianceRPC(*applianceMode, *applianceDBPath)
+	if applianceService != nil {
+		defer applianceService.Close()
+		if applianceService.startupErr != nil {
+			log.Printf("WARNING: appliance mode is not ready: %v", applianceService.startupErr)
+		} else {
+			log.Printf("LabLink appliance state: %s", applianceService.store.Path())
+		}
+	}
+	pb.RegisterNodeAgentServer(srv, &agentServer{jobs: jm, appliance: applianceService})
 
 	hostname, _ := os.Hostname()
 	log.Printf("LabLink agent transport: %s", transportCfg.Mode)
@@ -267,23 +278,26 @@ func tokenSource() string {
 
 type agentServer struct {
 	pb.UnimplementedNodeAgentServer
-	jobs *JobManager
+	jobs      *JobManager
+	appliance *applianceRPC
 }
 
-func (s *agentServer) GetInfo(_ context.Context, _ *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+func (s *agentServer) GetInfo(ctx context.Context, _ *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
 	hostname, _ := os.Hostname()
 	var memTotal int64
 	if v, err := mem.VirtualMemory(); err == nil {
 		memTotal = int64(v.Total)
 	}
-	return &pb.GetInfoResponse{
+	response := &pb.GetInfoResponse{
 		Hostname:     hostname,
 		Os:           runtime.GOOS,
 		Arch:         runtime.GOARCH,
 		CpuCount:     int32(runtime.NumCPU()),
 		MemoryBytes:  memTotal,
 		AgentVersion: agentVersion,
-	}, nil
+	}
+	s.appliance.populateInfo(ctx, response)
+	return response, nil
 }
 
 func (s *agentServer) Execute(req *pb.ExecuteRequest, stream pb.NodeAgent_ExecuteServer) error {
