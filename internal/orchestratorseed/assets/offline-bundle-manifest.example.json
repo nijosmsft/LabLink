@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "distribution": "ubuntu",
+  "release": "24.04",
+  "architecture": "amd64",
+  "complete_dependency_closure": false,
+  "packages": [
+    {
+      "name": "example",
+      "version": "1.0-1",
+      "architecture": "amd64",
+      "file": "packages/example_1.0-1_amd64.deb",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}

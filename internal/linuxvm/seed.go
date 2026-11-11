@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-crypt/crypt/algorithm/shacrypt"
+	"github.com/nijosmsft/lablink/internal/orchestratorseed"
 )
 
 const CIDATAVolumeLabel = "CIDATA"
@@ -34,6 +35,7 @@ type SeedConfig struct {
 	NetworkConfig        string
 	NodeName             string
 	Port                 int
+	Orchestrator         *orchestratorseed.Config
 }
 
 func ValidateHostname(value string) error {
@@ -144,10 +146,14 @@ users:
 	if strings.TrimSpace(config.SSHPublicKey) != "" {
 		fmt.Fprintf(&user, "    ssh_authorized_keys:\n      - %s\n", yamlScalar(strings.TrimSpace(config.SSHPublicKey)))
 	}
-	user.WriteString(`runcmd:
-  - [bash, -c, "set -eu; mkdir -p /run/lablink-cidata; mount -o ro LABEL=CIDATA /run/lablink-cidata; trap 'umount /run/lablink-cidata || true' EXIT; /bin/bash /run/lablink-cidata/install-lablink.sh"]
+	customize := ""
+	if config.Orchestrator != nil {
+		customize = "; /bin/bash /run/lablink-cidata/orchestrator/install-orchestrator.sh"
+	}
+	fmt.Fprintf(&user, `runcmd:
+  - [bash, -c, "set -eu; mkdir -p /run/lablink-cidata; mount -o ro LABEL=CIDATA /run/lablink-cidata; trap 'umount /run/lablink-cidata || true' EXIT; /bin/bash /run/lablink-cidata/install-lablink.sh%s"]
 final_message: "LabLink NoCloud provisioning complete"
-`)
+`, customize)
 	return []byte(user.String()), nil
 }
 
@@ -263,6 +269,18 @@ func Files(config SeedConfig) (map[string][]byte, error) {
 		"user-data":          userData,
 		"meta-data":          metaData,
 		"install-lablink.sh": installer,
+	}
+	if config.Orchestrator != nil {
+		orchestratorFiles, err := orchestratorseed.Files(*config.Orchestrator)
+		if err != nil {
+			return nil, fmt.Errorf("render isolated orchestrator customization: %w", err)
+		}
+		for name, data := range orchestratorFiles {
+			if _, exists := files[name]; exists {
+				return nil, fmt.Errorf("isolated orchestrator seed file %q conflicts with a base seed file", name)
+			}
+			files[name] = data
+		}
 	}
 	networkConfig := strings.TrimSpace(config.NetworkConfig)
 	if networkConfig == "" {

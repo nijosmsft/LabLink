@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify LabLink isolated appliance fail-closed policy
+Requires=lablink-appliance-firewall.service
+After=lablink-appliance-firewall.service lablink-agent.service
+PartOf=lablink-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/lablink/orchestrator/verify-appliance-policy.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,7 @@
 package vmconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -327,5 +328,144 @@ func TestDomainJoinVerificationRequiresReboot(t *testing.T) {
 	}
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "requires domain_join.reboot=true") {
 		t.Fatalf("domain join reboot validation = %v", err)
+	}
+}
+
+func TestResolveDefaultIsolatedOrchestratorProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_profile":"windows",
+  "default_linux_profile":"ubuntu",
+  "default_isolated_orchestrator_profile":"isolated-default",
+  "profiles":{
+    "windows":{"guest_os":"windows","target":"node1"},
+    "ubuntu":{
+      "guest_os":"linux",
+      "target":"node1",
+      "distribution":"ubuntu",
+      "release":"24.04",
+      "architecture":"amd64",
+      "vswitch":"main-switch",
+      "memory_mb":4096,
+      "cpu_count":2
+    }
+  },
+  "isolated_orchestrator_profiles":{
+    "isolated-default":{"linux_profile":"ubuntu"}
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := Load(path)
+	resolved, name, err := store.ResolveIsolatedOrchestrator("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "isolated-default" || resolved.LinuxProfileName != "ubuntu" ||
+		resolved.LinuxVM.VSwitch != "main-switch" ||
+		resolved.LinuxVM.CPUCount != 4 || resolved.LinuxVM.MemoryMB != 8192 ||
+		resolved.LinuxVM.DynamicMemory || resolved.LinuxVM.RegisterLabLink == nil ||
+		!*resolved.LinuxVM.RegisterLabLink || resolved.LinuxVM.LabLinkPort != 9091 ||
+		resolved.LinuxVM.LabLinkRole != "isolated-orchestrator" ||
+		resolved.Profile.MaxNetworks != 16 || resolved.Profile.MaxVMs != 100 ||
+		resolved.Profile.RelayPortMin != 20000 || resolved.Profile.RelayPortMax != 39999 ||
+		resolved.Profile.SubnetPool != "192.168.240.0/20" || resolved.Profile.SubnetPrefix != 26 ||
+		resolved.Profile.PackageSource != "online" {
+		t.Fatalf("unexpected resolved orchestrator profile: %+v, %q", resolved, name)
+	}
+	linux, linuxName, err := store.ResolveLinux("")
+	if err != nil || linuxName != "ubuntu" || linux.CPUCount != 2 || linux.MemoryMB != 4096 {
+		t.Fatalf("ordinary Linux behavior changed: %+v, %q, %v", linux, linuxName, err)
+	}
+	windows, windowsName, err := store.ResolveWindows("")
+	if err != nil || windowsName != "windows" || windows.Target != "node1" {
+		t.Fatalf("ordinary Windows behavior changed: %+v, %q, %v", windows, windowsName, err)
+	}
+}
+
+func TestIsolatedOrchestratorProfilePolicyValidation(t *testing.T) {
+	base := `{
+  "default_isolated_orchestrator_profile":"isolated",
+  "profiles":{"ubuntu":{
+    "guest_os":"linux",
+    "distribution":"ubuntu",
+    "release":"24.04",
+    "architecture":"amd64",
+    "vswitch":"main"
+  }},
+  "isolated_orchestrator_profiles":{"isolated":{%s}}
+}`
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "missing-reference", body: `"linux_profile":"missing"`, want: "not found"},
+		{name: "dynamic-memory", body: `"linux_profile":"ubuntu","dynamic_memory":true`, want: "dynamic_memory must be false"},
+		{name: "too-many-networks", body: `"linux_profile":"ubuntu","max_networks":17`, want: "max_networks"},
+		{name: "small-port-range", body: `"linux_profile":"ubuntu","relay_port_min":20000,"relay_port_max":20010`, want: "at least max_vms"},
+		{name: "small-subnet-pool", body: `"linux_profile":"ubuntu","subnet_pool":"192.168.240.0/26","subnet_prefix":26`, want: "fewer than max_networks"},
+		{name: "offline-without-bundle", body: `"linux_profile":"ubuntu","package_source":"offline"`, want: "requires offline_bundle"},
+		{name: "offline-traversal", body: `"linux_profile":"ubuntu","package_source":"offline","offline_bundle_path":"../bundle","offline_bundle_manifest_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, want: "without traversal"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "vm-defaults.json")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf(base, tt.body)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path).List()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validation error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsolatedOrchestratorOfflineBundleAndDeleteGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	digest := strings.Repeat("a", 64)
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{
+  "default_linux_profile":"ubuntu",
+  "default_isolated_orchestrator_profile":"isolated",
+  "profiles":{"ubuntu":{
+    "guest_os":"linux",
+    "distribution":"ubuntu",
+    "release":"24.04",
+    "architecture":"amd64",
+    "vswitch":"main"
+  }},
+  "isolated_orchestrator_profiles":{"isolated":{
+    "linux_profile":"ubuntu",
+    "main_vswitch":"orchestrator-main",
+    "package_source":"offline",
+    "offline_bundle_path":"orchestrator/offline-bundle",
+    "offline_bundle_manifest_sha256":"%s"
+  }}
+}`, digest)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := Load(path)
+	resolved, _, err := store.ResolveIsolatedOrchestrator("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.LinuxVM.VSwitch != "orchestrator-main" ||
+		resolved.Profile.OfflineBundleManifestSHA256 != digest {
+		t.Fatalf("offline profile did not resolve: %+v", resolved)
+	}
+	seed := resolved.SeedConfig("v1.2.3", "orch-1234")
+	if err := seed.Validate(); err != nil {
+		t.Fatalf("resolved seed config is invalid: %v", err)
+	}
+	if seed.OfflineBundle == nil || seed.OfflineBundle.Path != "orchestrator/offline-bundle" ||
+		seed.MaxNetworks != 16 || seed.MaxVMs != 100 {
+		t.Fatalf("resolved seed policy = %+v", seed)
+	}
+	if err := store.Delete("ubuntu"); err == nil || !strings.Contains(err.Error(), "referenced by isolated orchestrator") {
+		t.Fatalf("referenced Linux profile deletion = %v", err)
+	}
+	if _, _, err := store.ResolveLinux(""); err != nil {
+		t.Fatalf("failed deletion must leave original config valid: %v", err)
 	}
 }

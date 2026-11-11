@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nijosmsft/lablink/internal/orchestratorseed"
 	"gopkg.in/yaml.v3"
 )
 
@@ -176,5 +177,63 @@ func TestInstallerIsIdempotent(t *testing.T) {
 	script := string(data)
 	if strings.Contains(script, "useradd") || strings.Contains(script, "mkdir ") && !strings.Contains(script, "install -d") {
 		t.Fatal("installer contains a non-idempotent primitive")
+	}
+}
+
+func TestOrchestratorSeedAddsCustomizationWithoutChangingMainNetwork(t *testing.T) {
+	files, err := Files(SeedConfig{
+		Hostname: "orchestrator-1", Username: "lab", SSHPublicKey: testKey(),
+		NodeName: "orchestrator-1", Port: 9091,
+		Orchestrator: &orchestratorseed.Config{
+			ApplianceVersion: "v1.2.3",
+			OrchestratorID:   "orch-1234",
+			PackageSource:    orchestratorseed.PackageSourceOnline,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userData := string(files["user-data"])
+	if !strings.Contains(userData, "/orchestrator/install-orchestrator.sh") {
+		t.Fatalf("orchestrator customization is not invoked:\n%s", userData)
+	}
+	network := string(files["network-config"])
+	for _, want := range []string{"driver: hv_netvsc", "dhcp4: true", "dhcp6: true"} {
+		if !strings.Contains(network, want) {
+			t.Errorf("bootstrap main-network DHCP missing %q:\n%s", want, network)
+		}
+	}
+	install := string(files["orchestrator/install-orchestrator.sh"])
+	for _, want := range []string{
+		"main_iface=", "ip -4 route show default", "nftables=1.0.9-1build1",
+		"lablink-appliance-firewall.service", "LABLINK_APPLIANCE_MODE=isolated_orchestrator",
+	} {
+		combined := install + string(files["orchestrator/lablink-agent-appliance.conf"])
+		if !strings.Contains(combined, want) {
+			t.Errorf("orchestrator seed missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"rm /etc/netplan", "netplan generate", "networkctl reconfigure"} {
+		if strings.Contains(install, forbidden) {
+			t.Fatalf("bootstrap customization must preserve main DHCP; found %q", forbidden)
+		}
+	}
+}
+
+func TestOrdinaryLinuxSeedOmitsOrchestratorAssets(t *testing.T) {
+	files, err := Files(SeedConfig{
+		Hostname: "ordinary-1", Username: "lab", SSHPublicKey: testKey(),
+		NodeName: "ordinary-1", Port: 9091,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(files["user-data"]), "install-orchestrator.sh") {
+		t.Fatal("ordinary Linux seed unexpectedly invokes orchestrator customization")
+	}
+	for name := range files {
+		if strings.HasPrefix(name, "orchestrator/") {
+			t.Fatalf("ordinary Linux seed unexpectedly contains %s", name)
+		}
 	}
 }
