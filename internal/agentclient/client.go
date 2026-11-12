@@ -17,6 +17,25 @@ import (
 
 const dialTimeout = 5 * time.Second
 
+// Endpoint identifies a node agent without deriving its TLS identity from its
+// network address.
+type Endpoint struct {
+	Address       string
+	TLSServerName string
+}
+
+// ValidateStrict rejects endpoints that could fall back to address-derived
+// certificate verification.
+func (e Endpoint) ValidateStrict() error {
+	if strings.TrimSpace(e.Address) == "" {
+		return fmt.Errorf("agent endpoint address is required")
+	}
+	if strings.TrimSpace(e.TLSServerName) == "" {
+		return fmt.Errorf("agent endpoint TLS server name is required")
+	}
+	return nil
+}
+
 // Pool manages cached gRPC connections to node agents.
 type Pool struct {
 	mu        sync.Mutex
@@ -44,6 +63,17 @@ func (p *Pool) GetClient(address string, serverNameOverride ...string) (pb.NodeA
 	return pb.NewNodeAgentClient(conn), nil
 }
 
+// GetEndpointClient returns a client for an endpoint with an explicit TLS
+// identity. It never uses the pool's address-derived server-name fallback.
+func (p *Pool) GetEndpointClient(endpoint Endpoint) (pb.NodeAgentClient, error) {
+	if err := endpoint.ValidateStrict(); err != nil {
+		return nil, err
+	}
+	endpoint.Address = strings.TrimSpace(endpoint.Address)
+	endpoint.TLSServerName = strings.TrimSpace(endpoint.TLSServerName)
+	return p.GetClient(endpoint.Address, endpoint.TLSServerName)
+}
+
 // ResetConnection drops the cached connection for an address, forcing a fresh dial on next use.
 func (p *Pool) ResetConnection(address string) {
 	p.mu.Lock()
@@ -54,6 +84,23 @@ func (p *Pool) ResetConnection(address string) {
 			conn.Close()
 			delete(p.conns, cacheKey)
 		}
+	}
+}
+
+// ResetEndpoint drops only the cached connection for the exact address and TLS
+// identity pair.
+func (p *Pool) ResetEndpoint(endpoint Endpoint) {
+	endpoint.Address = strings.TrimSpace(endpoint.Address)
+	endpoint.TLSServerName = strings.TrimSpace(endpoint.TLSServerName)
+	if endpoint.Address == "" || endpoint.TLSServerName == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cacheKey := fmt.Sprintf("%s|%s", endpoint.Address, endpoint.TLSServerName)
+	if conn, ok := p.conns[cacheKey]; ok {
+		conn.Close()
+		delete(p.conns, cacheKey)
 	}
 }
 
