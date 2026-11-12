@@ -335,57 +335,6 @@ func (s *Store) PutVM(ctx context.Context, value IsolatedVM) error {
 	return nil
 }
 
-func (s *Store) PutNAT(ctx context.Context, value NATAllocation) error {
-	value.VMID = canonicalID(value.VMID)
-	value.OrchestratorID = canonicalID(value.OrchestratorID)
-	value.UpdatedAt = nowUnix(value.UpdatedAt)
-	if value.VMID == "" || value.OrchestratorID == "" {
-		return errors.New("isolatedstate: incomplete NAT identity")
-	}
-	_, err := s.db.ExecContext(ctx, `
-			INSERT INTO nat_allocations (
-				vm_id, orchestrator_id, desired_state, observed_state,
-				conntrack_mark, desired_generation, applied_generation,
-				observed_generation, drain_started_unix, updated_at_unix
-			) VALUES (?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(vm_id) DO UPDATE SET
-				desired_state=excluded.desired_state,
-				observed_state=excluded.observed_state,
-				conntrack_mark=excluded.conntrack_mark,
-				desired_generation=excluded.desired_generation,
-				applied_generation=excluded.applied_generation,
-				observed_generation=excluded.observed_generation,
-				drain_started_unix=excluded.drain_started_unix,
-				updated_at_unix=excluded.updated_at_unix`,
-		value.VMID, value.OrchestratorID, value.DesiredState, value.ObservedState,
-		value.ConntrackMark, value.DesiredGeneration, value.AppliedGeneration,
-		value.ObservedGeneration, value.DrainStartedAt, value.UpdatedAt)
-	if err != nil {
-		return fmt.Errorf("isolatedstate: put NAT allocation: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) GetNAT(ctx context.Context, vmID string) (NATAllocation, error) {
-	var value NATAllocation
-	err := s.db.QueryRowContext(ctx, `
-			SELECT vm_id, orchestrator_id, desired_state, observed_state,
-			       conntrack_mark, desired_generation, applied_generation,
-			       observed_generation, drain_started_unix, updated_at_unix
-			FROM nat_allocations WHERE vm_id=?`, canonicalID(vmID)).Scan(
-		&value.VMID, &value.OrchestratorID, &value.DesiredState,
-		&value.ObservedState, &value.ConntrackMark, &value.DesiredGeneration,
-		&value.AppliedGeneration, &value.ObservedGeneration,
-		&value.DrainStartedAt, &value.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return NATAllocation{}, ErrVMNotFound
-	}
-	if err != nil {
-		return NATAllocation{}, err
-	}
-	return value, nil
-}
-
 func (s *Store) ListVMs(ctx context.Context, orchestratorID, networkID string) ([]IsolatedVM, error) {
 	query := `
 		SELECT id, orchestrator_id, network_id, display_name, hyperv_name,
