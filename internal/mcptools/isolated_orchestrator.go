@@ -442,6 +442,7 @@ func RegisterIsolatedLifecycleTools(s *server.MCPServer, deps *isolatedLifecycle
 	RegisterIsolatedNetworkTools(s, deps)
 	RegisterIsolatedRelayTools(s, deps)
 	RegisterIsolatedVMTools(s, deps)
+	RegisterIsolatedNAT(s, deps)
 }
 
 func RegisterIsolatedOrchestratorTools(s *server.MCPServer, deps *isolatedLifecycleDeps) {
