@@ -742,6 +742,7 @@ func BuildInspectVMManagementScript(name string) (string, error) {
 	body := fmt.Sprintf(`
 $name = %s
 $prefix = %s
+$isolatedPrefix = %s
 $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
 if (-not $vm) {
     [pscustomobject]@{ exists=$false } | ConvertTo-Json -Compress
@@ -751,6 +752,21 @@ $metadata = $null
 $notes = [string]$vm.Notes
 if ($notes.StartsWith($prefix, [StringComparison]::Ordinal)) {
     $metadata = $notes.Substring($prefix.Length) | ConvertFrom-Json
+} elseif ($notes.StartsWith($isolatedPrefix, [StringComparison]::Ordinal)) {
+    $isolated = $notes.Substring($isolatedPrefix.Length) | ConvertFrom-Json
+    if ([string]$isolated.lifecycle_state -eq 'deleted') {
+        throw 'VM_IDENTITY_MISMATCH: isolated orchestrator metadata is already deleted'
+    }
+    $expectedVHDs = @($isolated.expected_vhd_paths)
+    if ($expectedVHDs.Count -ne 1) {
+        throw 'VM_IDENTITY_MISMATCH: isolated orchestrator must have exactly one expected OS VHD'
+    }
+    $metadata = [pscustomobject]@{
+        schema_version=%d; guest_os='linux'; vm_name=[string]$vm.Name
+        node_name=[string]$isolated.node_name; managed_root=[string]$isolated.managed_root
+        parent_vhdx=''; child_vhdx=[string]$expectedVHDs[0]
+        expected_cidata_iso=''; cleanup_phase='complete'; registered=$true
+    }
 }
 $attached = @(Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue |
     Where-Object Path | ForEach-Object { [string]$_.Path })
@@ -764,7 +780,8 @@ $ownershipPath = if ($metadata) {
     expected_iso_exists=[bool]($metadata -and (Test-Path -LiteralPath ([string]$metadata.expected_cidata_iso) -PathType Leaf))
     ownership_exists=[bool]($ownershipPath -and (Test-Path -LiteralPath $ownershipPath -PathType Leaf))
 } | ConvertTo-Json -Depth 6 -Compress
-`, PSLit(name), PSLit(LinuxVMMetadataPrefix), PSLit(LinuxVMOwnershipFile))
+`, PSLit(name), PSLit(LinuxVMMetadataPrefix), PSLit(IsolatedOrchestratorMetadataPrefix),
+		LinuxVMMetadataSchema, PSLit(LinuxVMOwnershipFile))
 	return wrapTagged(body), nil
 }
 

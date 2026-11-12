@@ -293,6 +293,56 @@ func (s *Store) GetOperation(ctx context.Context, operationID string) (Operation
 	return getOperation(ctx, s.db, canonicalID(operationID))
 }
 
+// OperationPhaseSucceeded reports whether any completed attempt of the exact
+// phase succeeded. Durable workflow resumes use it to skip proven phases only.
+func (s *Store) OperationPhaseSucceeded(
+	ctx context.Context,
+	operationID string,
+	phaseIndex int,
+	phaseName string,
+) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM operation_phases
+		WHERE operation_id=? AND phase_index=? AND phase_name=? AND status=?`,
+		canonicalID(operationID), phaseIndex, canonicalToken(phaseName),
+		PhaseSucceeded,
+	).Scan(&count)
+	return count > 0, err
+}
+
+// LoadSucceededPhaseDetail decodes the newest successful attempt's detail
+// into target. It returns false when no successful attempt exists.
+func (s *Store) LoadSucceededPhaseDetail(
+	ctx context.Context,
+	operationID string,
+	phaseIndex int,
+	phaseName string,
+	target any,
+) (bool, error) {
+	var detail sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT detail_json FROM operation_phases
+		WHERE operation_id=? AND phase_index=? AND phase_name=? AND status=?
+		ORDER BY attempt DESC LIMIT 1`,
+		canonicalID(operationID), phaseIndex, canonicalToken(phaseName),
+		PhaseSucceeded,
+	).Scan(&detail)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if target == nil || !detail.Valid || strings.TrimSpace(detail.String) == "" {
+		return true, nil
+	}
+	if err := json.Unmarshal([]byte(detail.String), target); err != nil {
+		return false, fmt.Errorf("isolatedstate: decode succeeded phase detail: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) UpdateOperation(ctx context.Context, update OperationUpdate) (Operation, error) {
 	update.OperationID = canonicalID(update.OperationID)
 	update.CurrentPhase = canonicalToken(update.CurrentPhase)

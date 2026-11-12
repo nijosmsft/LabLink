@@ -491,6 +491,7 @@ func TestIsolatedRenderedPowerShellParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	lease := IsolatedHostLeaseParams{
 		PhysicalHostID: testHostID, LeaseID: testLeaseID, LeaseSecret: testSecret,
 		HolderIdentity: "host:123:456:cookie", OperationID: testOperationID,
@@ -561,5 +562,22 @@ func TestIsolatedRenderedPowerShellParses(t *testing.T) {
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
 		t.Fatalf("generated PowerShell did not parse: %v\n%s", err, output.String())
+	}
+}
+
+func TestManagedVMInspectionSupportsIsolatedOrchestratorMetadata(t *testing.T) {
+	script, err := BuildInspectVMManagementScript("isolated-orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		IsolatedOrchestratorMetadataPrefix,
+		"expected_vhd_paths",
+		"isolated orchestrator must have exactly one expected OS VHD",
+		"managed_root=[string]$isolated.managed_root",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("inspection script missing %q", want)
+		}
 	}
 }

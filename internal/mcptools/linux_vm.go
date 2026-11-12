@@ -19,6 +19,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/linuximage"
 	"github.com/nijosmsft/lablink/internal/linuxvm"
+	"github.com/nijosmsft/lablink/internal/orchestratorseed"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	"github.com/nijosmsft/lablink/internal/winpath"
@@ -71,40 +72,41 @@ func (l vmLifecycleLock) release(reg *registry.Registry, pool *agentclient.Pool,
 }
 
 type linuxVMPlan struct {
-	Profile                   string  `json:"profile,omitempty"`
-	Target                    string  `json:"target"`
-	Name                      string  `json:"name"`
-	Hostname                  string  `json:"hostname"`
-	LinuxUsername             string  `json:"linux_username"`
-	SSHPublicKey              string  `json:"ssh_public_key"`
-	SSHPublicKeyFile          string  `json:"ssh_public_key_file,omitempty"`
-	LinuxPasswordCredential   string  `json:"linux_password_credential,omitempty"`
-	AllowSSHPasswordAuth      bool    `json:"allow_ssh_password_auth"`
-	NetworkConfig             string  `json:"network_config,omitempty"`
-	PasswordHash              string  `json:"-"`
-	ImageCacheRoot            string  `json:"image_cache_root"`
-	VMRoot                    string  `json:"vm_root"`
-	VMLocation                string  `json:"vm_location"`
-	VHDPath                   string  `json:"vhd_path"`
-	CIDATAPath                string  `json:"cidata_path"`
-	VSwitch                   string  `json:"vswitch"`
-	MemoryMB                  float64 `json:"memory_mb"`
-	CPUCount                  float64 `json:"cpu_count"`
-	DynamicMemory             bool    `json:"dynamic_memory"`
-	DynamicMinMB              float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB              float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct          float64 `json:"dynamic_buffer_pct,omitempty"`
-	DiskSizeGB                float64 `json:"disk_size_gb"`
-	RegisterWithLabLink       bool    `json:"register_with_lablink"`
-	LabLinkNodeName           string  `json:"lablink_node_name"`
-	LabLinkRole               string  `json:"lablink_role"`
-	LabLinkPort               int     `json:"lablink_port"`
-	MinHostReservePct         float64 `json:"min_host_reserve_pct"`
-	AllowHostResourcePressure bool    `json:"allow_host_resource_pressure"`
-	PreparedVHDX              string  `json:"prepared_vhdx,omitempty"`
-	LabLinkAddress            string  `json:"lablink_address,omitempty"`
-	State                     string  `json:"state,omitempty"`
-	Registered                bool    `json:"registered"`
+	Profile                   string                   `json:"profile,omitempty"`
+	Target                    string                   `json:"target"`
+	Name                      string                   `json:"name"`
+	Hostname                  string                   `json:"hostname"`
+	LinuxUsername             string                   `json:"linux_username"`
+	SSHPublicKey              string                   `json:"ssh_public_key"`
+	SSHPublicKeyFile          string                   `json:"ssh_public_key_file,omitempty"`
+	LinuxPasswordCredential   string                   `json:"linux_password_credential,omitempty"`
+	AllowSSHPasswordAuth      bool                     `json:"allow_ssh_password_auth"`
+	NetworkConfig             string                   `json:"network_config,omitempty"`
+	PasswordHash              string                   `json:"-"`
+	ImageCacheRoot            string                   `json:"image_cache_root"`
+	VMRoot                    string                   `json:"vm_root"`
+	VMLocation                string                   `json:"vm_location"`
+	VHDPath                   string                   `json:"vhd_path"`
+	CIDATAPath                string                   `json:"cidata_path"`
+	VSwitch                   string                   `json:"vswitch"`
+	MemoryMB                  float64                  `json:"memory_mb"`
+	CPUCount                  float64                  `json:"cpu_count"`
+	DynamicMemory             bool                     `json:"dynamic_memory"`
+	DynamicMinMB              float64                  `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB              float64                  `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct          float64                  `json:"dynamic_buffer_pct,omitempty"`
+	DiskSizeGB                float64                  `json:"disk_size_gb"`
+	RegisterWithLabLink       bool                     `json:"register_with_lablink"`
+	LabLinkNodeName           string                   `json:"lablink_node_name"`
+	LabLinkRole               string                   `json:"lablink_role"`
+	LabLinkPort               int                      `json:"lablink_port"`
+	MinHostReservePct         float64                  `json:"min_host_reserve_pct"`
+	AllowHostResourcePressure bool                     `json:"allow_host_resource_pressure"`
+	PreparedVHDX              string                   `json:"prepared_vhdx,omitempty"`
+	LabLinkAddress            string                   `json:"lablink_address,omitempty"`
+	State                     string                   `json:"state,omitempty"`
+	Registered                bool                     `json:"registered"`
+	Orchestrator              *orchestratorseed.Config `json:"-"`
 	sshPasswordAuthExplicit   bool
 }
 
@@ -889,6 +891,7 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 		AllowSSHPasswordAuth: plan.AllowSSHPasswordAuth,
 		NetworkConfig:        plan.NetworkConfig,
 		NodeName:             plan.LabLinkNodeName, Port: plan.LabLinkPort,
+		Orchestrator: plan.Orchestrator,
 	})
 	if err != nil {
 		cleanupLocal()

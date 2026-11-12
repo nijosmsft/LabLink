@@ -474,6 +474,20 @@ identity cleanup.
 | `get_linux_image_status` | Return persisted phase state plus any active BITS job IDs and byte progress. |
 | `create_linux_vm` | Prepare-on-demand, create a Gen2 differencing VM, provision through standard NoCloud CIDATA, verify mTLS, and optionally register it. |
 
+### Isolated lifecycle control plane
+
+The isolated lifecycle tools use `isolated.db` under the LabLink config
+directory for durable operation IDs, exact phase resume, approvals, locks, and
+resource identities. Orchestrator creation and deletion are approval-gated;
+ordinary network and relay mutations are not.
+
+| Tools | Purpose |
+|-------|---------|
+| `create/list/get/reconcile/delete_isolated_orchestrator` | Reuse, recover, create, inspect, reconcile, or exactly delete Ubuntu orchestrator appliances. |
+| `add/remove_isolated_network` | Reserve an appliance-authoritative `/26` and manage its exact private vSwitch and orchestrator NIC. |
+| `create/remove/list_isolated_relay` | Manage guest-agent relays fixed to managed guest TCP port 9091. |
+| `get_isolated_relay_stats`, `rebind_isolated_relays`, `validate_isolated_relay`, `adopt_isolated_relay` | Diagnose and recover exact relay mappings. |
+
 The physical host needs Hyper-V, BITS, in-box `tar.exe`, and the Hyper-V
 `Convert-VHD`/`Resize-VHD` cmdlets. It verifies Canonical's signed manifest,
 validates and safely extracts the exact Azure VHD archive, converts it to a
@@ -759,7 +773,13 @@ ships in the protected package (`scripts\Update-LabLink.ps1`) and at
 
 ## Running multiple LabLink instances
 
-Everything `lablink-server.exe` reads or writes — `nodes.json`, `history.jsonl`, `credentials.json`, `cache/`, `pki/` — lives under a single config directory. By default that's `~/.lablink`, but you can point any installation at a different one with `LABLINK_HOME`. This lets one operator machine run several isolated LabLink "worlds" side by side: separate PKI roots, separate node inventories, separate audit logs, separate AI-client sessions.
+Everything `lablink-server.exe` reads or writes — `nodes.json`, `history.jsonl`,
+`credentials.json`, `leases.db`, `isolated.db`, `cache/`, and `pki/` — lives
+under a single config directory. By default that's `~/.lablink`, but you can
+point any installation at a different one with `LABLINK_HOME`. This lets one
+operator machine run several isolated LabLink "worlds" side by side: separate
+PKI roots, separate node inventories, separate audit logs, separate AI-client
+sessions.
 
 Two common reasons to do this:
 
