@@ -18,6 +18,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
 
@@ -44,6 +45,9 @@ type isolatedState interface {
 	CountActiveVMs(context.Context, string) (int, error)
 	GetVM(context.Context, string) (isolatedstate.IsolatedVM, error)
 	ListVMs(context.Context, string, string) ([]isolatedstate.IsolatedVM, error)
+	PutVM(context.Context, isolatedstate.IsolatedVM) error
+	PutNAT(context.Context, isolatedstate.NATAllocation) error
+	GetNAT(context.Context, string) (isolatedstate.NATAllocation, error)
 	PutRelay(context.Context, isolatedstate.RelayAllocation) error
 	GetRelay(context.Context, string) (isolatedstate.RelayAllocation, error)
 	GetRelayForVM(context.Context, string) (isolatedstate.RelayAllocation, error)
@@ -60,6 +64,8 @@ type isolatedAppliance interface {
 	ReleaseResources(context.Context, string, appliance.ReleaseRequest) (appliance.ReleaseResult, error)
 	ApplyPrivateNetwork(context.Context, string, isolated.ApplyPrivateNetworkInput) (isolated.NetworkMutationResult, error)
 	RemovePrivateNetwork(context.Context, string, isolated.MutationEnvelope) (isolated.NetworkMutationResult, error)
+	RegisterIsolatedGuest(context.Context, string, isolated.RegisterGuestInput) (isolated.GuestMutationResult, error)
+	RemoveIsolatedGuest(context.Context, string, isolated.MutationEnvelope, string) (isolated.GuestMutationResult, error)
 	ApplyRelay(context.Context, string, isolated.RelayInput) (isolated.RelayMutationResult, error)
 	AdoptRelay(context.Context, string, isolated.RelayInput) (isolated.RelayMutationResult, error)
 	RemoveRelay(context.Context, string, isolated.MutationEnvelope, string, string) (isolated.RelayMutationResult, error)
@@ -67,6 +73,9 @@ type isolatedAppliance interface {
 	GetRelayStats(context.Context, string, string) (appliance.RelayStats, error)
 	RebindRelays(context.Context, string, isolated.MutationEnvelope) ([]appliance.Relay, isolated.MutationResult, error)
 	ValidateRelay(context.Context, string, string, bool) (isolated.RelayValidation, error)
+	SetNATState(context.Context, string, isolated.NATInput) (isolated.NATMutationResult, error)
+	ListNATState(context.Context, string, string, string, string, uint32, string) (isolated.NATList, error)
+	ReconcileNAT(context.Context, string, isolated.MutationEnvelope, string) (isolated.NATMutationResult, error)
 }
 
 type isolatedHost interface {
@@ -86,6 +95,14 @@ type isolatedLinuxCreator interface {
 	Create(context.Context, mcp.CallToolRequest, linuxVMPlan, Target, *MCPProgressState) (*mcp.CallToolResult, error)
 }
 
+type isolatedGuestRuntime interface {
+	Provision(context.Context, isolatedstate.IsolatedVM, isolatedstate.PrivateNetwork, isolatedstate.Orchestrator, Target, isolated.HostFenceLease, string, *MCPProgressState) (isolatedstate.IsolatedVM, hyperv.IsolatedVMMutationResult, error)
+	StartAndEnroll(context.Context, isolatedstate.IsolatedVM, isolatedstate.RelayAllocation, isolatedstate.Orchestrator, Target, *MCPProgressState) error
+	Inspect(context.Context, isolatedstate.IsolatedVM, Target) (hyperv.IsolatedVMMutationResult, error)
+	Reconcile(context.Context, isolatedstate.IsolatedVM, isolatedstate.PrivateNetwork, isolatedstate.Orchestrator, Target, isolated.HostFenceLease, string) (hyperv.IsolatedVMMutationResult, error)
+	Delete(context.Context, isolatedstate.IsolatedVM, isolatedstate.Orchestrator, Target, isolated.HostFenceLease, string, bool) (hyperv.IsolatedVMMutationResult, error)
+}
+
 type isolatedLifecycleDeps struct {
 	server        *server.MCPServer
 	state         isolatedState
@@ -102,10 +119,13 @@ type isolatedLifecycleDeps struct {
 	pool          *agentclient.Pool
 	defaults      *vmconfig.Store
 	credentials   *credentials.Store
+	secrets       *secretstore.Store
 	audit         *audit.Log
 	enrollment    VMEnrollmentConfig
 	lease         LeaseGateConfig
 	serverVersion string
+	guests        isolatedGuestRuntime
+	joinDomain    func(context.Context, string, vmconfig.WindowsDomainJoin, int, *registry.Registry, *agentclient.Pool, *secretstore.Store, *audit.Log) (windowsDomainJoinResult, error)
 }
 
 type productionLinuxCreator struct {

@@ -272,7 +272,7 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterSecrets(s, secrets, secretHelper)
 	mcptools.RegisterVM(s, reg, pool, creds, secrets, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 	isolatedDeps, err := mcptools.NewIsolatedLifecycleDependencies(
-		s, isolatedStore, reg, pool, vmDefaults, creds, auditLog,
+		s, isolatedStore, reg, pool, vmDefaults, creds, secrets, auditLog,
 		vmEnrollment, leaseCfg, serverVersion,
 	)
 	if err != nil {

@@ -286,6 +286,106 @@ func (s *Store) GetVM(ctx context.Context, id string) (IsolatedVM, error) {
 	return value, nil
 }
 
+func (s *Store) PutVM(ctx context.Context, value IsolatedVM) error {
+	value.ID = canonicalID(value.ID)
+	value.OrchestratorID = canonicalID(value.OrchestratorID)
+	value.NetworkID = canonicalID(value.NetworkID)
+	value.CreatedAt = nowUnix(value.CreatedAt)
+	value.UpdatedAt = nowUnix(value.UpdatedAt)
+	if value.ID == "" || value.OrchestratorID == "" || value.NetworkID == "" ||
+		strings.TrimSpace(value.HyperVName) == "" || strings.TrimSpace(value.NodeName) == "" ||
+		value.Incarnation <= 0 {
+		return errors.New("isolatedstate: incomplete isolated VM identity")
+	}
+	_, err := s.db.ExecContext(ctx, `
+			INSERT INTO isolated_vms (
+				id, orchestrator_id, network_id, display_name, hyperv_name,
+				hyperv_vm_id, hyperv_adapter_id, incarnation, node_name,
+				guest_os, profile_name, ipv4, mac, prefix_length, gateway_ipv4,
+				dns_servers_json, storage_root, vm_path, vhd_path,
+				desired_generation, applied_generation, observed_generation,
+				lifecycle_state, created_at_unix, updated_at_unix, retired_at_unix
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET
+				display_name=excluded.display_name,
+				hyperv_vm_id=excluded.hyperv_vm_id,
+				hyperv_adapter_id=excluded.hyperv_adapter_id,
+				incarnation=excluded.incarnation,
+				profile_name=excluded.profile_name,
+				storage_root=excluded.storage_root,
+				vm_path=excluded.vm_path,
+				vhd_path=excluded.vhd_path,
+				desired_generation=excluded.desired_generation,
+				applied_generation=excluded.applied_generation,
+				observed_generation=excluded.observed_generation,
+				lifecycle_state=excluded.lifecycle_state,
+				updated_at_unix=excluded.updated_at_unix,
+				retired_at_unix=excluded.retired_at_unix`,
+		value.ID, value.OrchestratorID, value.NetworkID, value.DisplayName,
+		value.HyperVName, value.HyperVVMID, value.HyperVAdapterID,
+		value.Incarnation, value.NodeName, value.GuestOS, value.ProfileName,
+		value.IPv4, value.MAC, value.PrefixLength, value.GatewayIPv4,
+		value.DNSServersJSON, value.StorageRoot, value.VMPath, value.VHDPath,
+		value.DesiredGeneration, value.AppliedGeneration,
+		value.ObservedGeneration, value.LifecycleState, value.CreatedAt,
+		value.UpdatedAt, value.RetiredAt)
+	if err != nil {
+		return fmt.Errorf("isolatedstate: put isolated VM: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) PutNAT(ctx context.Context, value NATAllocation) error {
+	value.VMID = canonicalID(value.VMID)
+	value.OrchestratorID = canonicalID(value.OrchestratorID)
+	value.UpdatedAt = nowUnix(value.UpdatedAt)
+	if value.VMID == "" || value.OrchestratorID == "" {
+		return errors.New("isolatedstate: incomplete NAT identity")
+	}
+	_, err := s.db.ExecContext(ctx, `
+			INSERT INTO nat_allocations (
+				vm_id, orchestrator_id, desired_state, observed_state,
+				conntrack_mark, desired_generation, applied_generation,
+				observed_generation, drain_started_unix, updated_at_unix
+			) VALUES (?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(vm_id) DO UPDATE SET
+				desired_state=excluded.desired_state,
+				observed_state=excluded.observed_state,
+				conntrack_mark=excluded.conntrack_mark,
+				desired_generation=excluded.desired_generation,
+				applied_generation=excluded.applied_generation,
+				observed_generation=excluded.observed_generation,
+				drain_started_unix=excluded.drain_started_unix,
+				updated_at_unix=excluded.updated_at_unix`,
+		value.VMID, value.OrchestratorID, value.DesiredState, value.ObservedState,
+		value.ConntrackMark, value.DesiredGeneration, value.AppliedGeneration,
+		value.ObservedGeneration, value.DrainStartedAt, value.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("isolatedstate: put NAT allocation: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetNAT(ctx context.Context, vmID string) (NATAllocation, error) {
+	var value NATAllocation
+	err := s.db.QueryRowContext(ctx, `
+			SELECT vm_id, orchestrator_id, desired_state, observed_state,
+			       conntrack_mark, desired_generation, applied_generation,
+			       observed_generation, drain_started_unix, updated_at_unix
+			FROM nat_allocations WHERE vm_id=?`, canonicalID(vmID)).Scan(
+		&value.VMID, &value.OrchestratorID, &value.DesiredState,
+		&value.ObservedState, &value.ConntrackMark, &value.DesiredGeneration,
+		&value.AppliedGeneration, &value.ObservedGeneration,
+		&value.DrainStartedAt, &value.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return NATAllocation{}, ErrVMNotFound
+	}
+	if err != nil {
+		return NATAllocation{}, err
+	}
+	return value, nil
+}
+
 func (s *Store) ListVMs(ctx context.Context, orchestratorID, networkID string) ([]IsolatedVM, error) {
 	query := `
 		SELECT id, orchestrator_id, network_id, display_name, hyperv_name,

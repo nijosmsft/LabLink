@@ -108,6 +108,7 @@ type linuxVMPlan struct {
 	Registered                bool                     `json:"registered"`
 	Orchestrator              *orchestratorseed.Config `json:"-"`
 	sshPasswordAuthExplicit   bool
+	DeferBoot                 bool `json:"-"`
 }
 
 func registerCreateLinuxVMTool(
@@ -519,6 +520,10 @@ func executeLinuxVMPlan(
 					fmt.Errorf("finish existing managed Linux VM configuration: %w", err)), nil
 			}
 		}
+		if plan.DeferBoot {
+			plan.State = existing.State
+			return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+		}
 		return finishLinuxVM(ctx, plan, existing.Metadata.ExpectedCIDATAISO, target, reg, pool, progress)
 	}
 	progress.Update("reconcile", "reconciling stale pre-VM CIDATA ownership and exact managed artifacts")
@@ -657,6 +662,11 @@ func executeLinuxVMPlan(
 		return mcp.NewToolResultError(fmt.Sprintf("create Linux VM: %v", err)), nil
 	}
 	preVMCleanup.vmCreated = true
+	if plan.DeferBoot {
+		plan.CIDATAPath = stage.isoPath
+		plan.State = "Off"
+		return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+	}
 	return finishLinuxVM(ctx, plan, stage.isoPath, target, reg, pool, progress)
 }
 

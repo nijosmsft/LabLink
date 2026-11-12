@@ -222,6 +222,17 @@ func enrollmentFirstBootScript(userScript string) string {
 	return b.String()
 }
 
+func firstBootScriptBeforeEnrollment(userScript string) string {
+	var b strings.Builder
+	if strings.TrimSpace(userScript) != "" {
+		b.WriteString(userScript)
+		b.WriteString("\r\n")
+	}
+	b.WriteString(`& 'C:\Windows\Setup\Scripts\LabLinkPayload\Install-LabLink.ps1'`)
+	b.WriteString("\r\n")
+	return b.String()
+}
+
 type startedVMInfo struct {
 	IPAddress string `json:"ip_address"`
 	State     string `json:"state"`
@@ -284,10 +295,14 @@ func verifyEnrolledVM(ctx context.Context, plan windowsVMPlan, info startedVMInf
 type enrollmentWaitOptions struct {
 	Timeout  time.Duration
 	OnStatus func(string)
+	Address  string
 }
 
 func verifyEnrolledVMWithOptions(ctx context.Context, plan windowsVMPlan, info startedVMInfo, reg *registry.Registry, pool *agentclient.Pool, register bool, options enrollmentWaitOptions) error {
 	address := fmt.Sprintf("%s:%d", info.IPAddress, plan.LabLinkPort)
+	if strings.TrimSpace(options.Address) != "" {
+		address = strings.TrimSpace(options.Address)
+	}
 	if options.Timeout <= 0 {
 		options.Timeout = windowsEnrollmentReadyTimeout
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
 
@@ -396,6 +397,7 @@ func NewIsolatedLifecycleDependencies(
 	pool *agentclient.Pool,
 	defaults *vmconfig.Store,
 	creds *credentials.Store,
+	secrets *secretstore.Store,
 	auditLog *audit.Log,
 	enrollment VMEnrollmentConfig,
 	leaseCfg LeaseGateConfig,
@@ -418,7 +420,8 @@ func NewIsolatedLifecycleDependencies(
 		server: s, state: store, locks: locks, host: host, appliance: applianceClient,
 		orchestrators: stateAdapter, planner: host, probe: probe,
 		registry: reg, pool: pool, defaults: defaults, credentials: creds,
-		audit: auditLog, enrollment: enrollment, lease: leaseCfg,
+		secrets: secrets,
+		audit:   auditLog, enrollment: enrollment, lease: leaseCfg,
 		serverVersion: serverVersion,
 	}
 	deps.networks = isolatedNetworkStateAdapter{state: deps.state}
@@ -429,6 +432,8 @@ func NewIsolatedLifecycleDependencies(
 		},
 	}
 	deps.linux = productionLinuxCreator{deps: deps}
+	deps.guests = productionIsolatedGuestRuntime{deps: deps}
+	deps.joinDomain = executeWindowsDomainJoin
 	return deps, nil
 }
 
@@ -436,6 +441,7 @@ func RegisterIsolatedLifecycleTools(s *server.MCPServer, deps *isolatedLifecycle
 	RegisterIsolatedOrchestratorTools(s, deps)
 	RegisterIsolatedNetworkTools(s, deps)
 	RegisterIsolatedRelayTools(s, deps)
+	RegisterIsolatedVMTools(s, deps)
 }
 
 func RegisterIsolatedOrchestratorTools(s *server.MCPServer, deps *isolatedLifecycleDeps) {
@@ -1028,11 +1034,61 @@ func deleteIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server.ToolH
 			})
 			return approvalResult, nil
 		}
-		if len(vms) != 0 {
-			return isolatedError(fmt.Errorf("CASCADE_GUEST_LIFECYCLE_REQUIRED: isolated guest deletion is owned by the guest lifecycle tools; no resources were deleted"))
+		if cascade {
+			for _, child := range vms {
+				if child.LifecycleState == isolatedstate.VMDeleted {
+					continue
+				}
+				childReq := mcp.CallToolRequest{}
+				childReq.Params.Name = "delete_isolated_vm"
+				childReq.Params.Arguments = map[string]any{
+					"isolated_vm_id": child.ID, "delete_storage": true,
+					"operation_id": isolatedstate.StableMutationID(operationID, child.ID, "cascade_delete_vm", "guest"),
+				}
+				result, childErr := deleteIsolatedVMHandler(deps)(ctx, childReq)
+				if childErr != nil || result == nil || result.IsError {
+					if childErr != nil {
+						return isolatedError(childErr)
+					}
+					return isolatedError(fmt.Errorf("CASCADE_GUEST_DELETE_FAILED: %s", toolResultText(result)))
+				}
+			}
+			for _, child := range networks {
+				if child.LifecycleState == isolatedstate.NetworkDeleted {
+					continue
+				}
+				childReq := mcp.CallToolRequest{}
+				childReq.Params.Name = "remove_isolated_network"
+				childReq.Params.Arguments = map[string]any{
+					"network_id":   child.ID,
+					"operation_id": isolatedstate.StableMutationID(operationID, child.ID, "cascade_delete_network", "network"),
+				}
+				result, childErr := removeIsolatedNetworkHandler(deps)(ctx, childReq)
+				if childErr != nil || result == nil || result.IsError {
+					if childErr != nil {
+						return isolatedError(childErr)
+					}
+					return isolatedError(fmt.Errorf("CASCADE_NETWORK_DELETE_FAILED: %s", toolResultText(result)))
+				}
+			}
+			networks, err = deps.state.ListNetworks(ctx, id.String())
+			if err != nil {
+				return isolatedError(err)
+			}
+			relays, err = deps.state.ListRelays(ctx, id.String(), "")
+			if err != nil {
+				return isolatedError(err)
+			}
 		}
-		if len(networks) != 0 || len(relays) != 0 {
-			return isolatedError(fmt.Errorf("CASCADE_CHILDREN_REMAIN: remove relay and network children first; approved plan was preserved"))
+		for _, child := range networks {
+			if child.LifecycleState != isolatedstate.NetworkDeleted {
+				return isolatedError(fmt.Errorf("CASCADE_CHILDREN_REMAIN: network %s remains %s", child.ID, child.LifecycleState))
+			}
+		}
+		for _, child := range relays {
+			if child.LifecycleState != isolatedstate.RelayRemoved {
+				return isolatedError(fmt.Errorf("CASCADE_CHILDREN_REMAIN: relay %s remains %s", child.ID, child.LifecycleState))
+			}
 		}
 		record.LifecycleState = isolatedstate.OrchestratorDeleting
 		record.HealthState = "deleting"

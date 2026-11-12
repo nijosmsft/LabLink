@@ -487,6 +487,13 @@ ordinary network and relay mutations are not.
 | `add/remove_isolated_network` | Reserve an appliance-authoritative `/26` and manage its exact private vSwitch and orchestrator NIC. |
 | `create/remove/list_isolated_relay` | Manage guest-agent relays fixed to managed guest TCP port 9091. |
 | `get_isolated_relay_stats`, `rebind_isolated_relays`, `validate_isolated_relay`, `adopt_isolated_relay` | Diagnose and recover exact relay mappings. |
+| `create/delete/list/get/repair_isolated_vm` | Provision private-only Windows or Linux guests, verify relay mTLS and pre-boot NAT state, delete exact owned storage, or repair/recreate while preserving immutable identity. |
+| `rename_isolated_display_name` | Change only the mutable registry/state label; Hyper-V names, TLS names, IDs, paths, and allocations remain unchanged. |
+
+Isolated guests use static IPv4 `/26` configuration with the orchestrator at
+`.1` as gateway and DNS copied from its main NIC. Relay mapping is live before
+the guest boots. NAT defaults off; declared online bootstrap requires verified
+pre-boot NAT, and Windows domain join runs only after relay enrollment.
 
 The physical host needs Hyper-V, BITS, in-box `tar.exe`, and the Hyper-V
 `Convert-VHD`/`Resize-VHD` cmdlets. It verifies Canonical's signed manifest,

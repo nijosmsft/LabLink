@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- End-to-end isolated Windows and Linux guest lifecycle tools. Guests receive
+  appliance-authoritative static `/26` addressing, a private-only Hyper-V NIC,
+  relay-first mTLS enrollment, pre-boot NAT verification, durable resumable
+  phases, exact owned-storage deletion, and repair with automatic incarnation
+  recreation. Orchestrator cascade deletion now executes approved guest and
+  network cleanup.
 - Backward-compatible `profile_usage` classification for VM profiles.
   `ordinary` remains the default; `linux_image_builder` profiles are accepted
   only by internal Linux image preparation and are rejected by public

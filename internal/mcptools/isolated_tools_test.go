@@ -35,6 +35,8 @@ func TestIsolatedLifecycleToolRegistrationAndApprovalSchema(t *testing.T) {
 		"remove_isolated_relay", "list_isolated_relays",
 		"get_isolated_relay_stats", "rebind_isolated_relays",
 		"validate_isolated_relay", "adopt_isolated_relay",
+		"create_isolated_vm", "delete_isolated_vm", "list_isolated_vms",
+		"get_isolated_vm", "repair_isolated_vm", "rename_isolated_display_name",
 	}
 	if len(tools) != len(expected) {
 		t.Fatalf("registered %d tools, want %d", len(tools), len(expected))
@@ -53,6 +55,8 @@ func TestIsolatedLifecycleToolRegistrationAndApprovalSchema(t *testing.T) {
 		"add_isolated_network", "remove_isolated_network",
 		"create_isolated_relay", "remove_isolated_relay",
 		"rebind_isolated_relays", "adopt_isolated_relay",
+		"create_isolated_vm", "delete_isolated_vm", "repair_isolated_vm",
+		"rename_isolated_display_name",
 	} {
 		if _, ok := tools[name].Tool.InputSchema.Properties["approved_plan_revision"]; ok {
 			t.Errorf("%s must not request approval", name)
