@@ -23,6 +23,23 @@ type secretPromptStatus struct {
 }
 
 func launchSecretPrompt(ctx context.Context, helperPath, storePath, name string) error {
+	return launchLocalSecretPrompt(ctx, helperPath, storePath, name, "")
+}
+
+func launchCredentialPrompt(
+	ctx context.Context,
+	helperPath, storePath, secretName, credentialName string,
+) error {
+	return launchLocalSecretPrompt(
+		ctx, helperPath, storePath, secretName,
+		fmt.Sprintf("Password for credential %q", credentialName),
+	)
+}
+
+func launchLocalSecretPrompt(
+	ctx context.Context,
+	helperPath, storePath, name, label string,
+) error {
 	info, err := os.Stat(helperPath)
 	if err != nil {
 		return fmt.Errorf("locate helper %q: %w", helperPath, err)
@@ -42,7 +59,12 @@ func launchSecretPrompt(ctx context.Context, helperPath, storePath, name string)
 	}
 	defer os.Remove(statusPath)
 
-	cmd := exec.CommandContext(ctx, helperPath, "set", "--store", storePath, name)
+	args := []string{"set", "--store", storePath}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	args = append(args, name)
+	cmd := exec.CommandContext(ctx, helperPath, args...)
 	cmd.Env = append(
 		os.Environ(),
 		secretConsoleEnv+"=1",

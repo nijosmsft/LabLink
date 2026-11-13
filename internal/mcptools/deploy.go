@@ -14,11 +14,18 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
 
-func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclient.Pool, creds *credentials.Store, agentToken string) {
+func RegisterDeploy(
+	s *server.MCPServer,
+	reg *registry.Registry,
+	pool *agentclient.Pool,
+	creds *credentials.Store,
+	agentToken, secretHelperPath string,
+) {
 	addTool(s,
 		mcp.NewTool("deploy_agent",
 			mcp.WithDescription("Deploy LabLink agent to a remote Windows machine via PS Remoting."),
@@ -41,17 +48,16 @@ func RegisterDeploy(s *server.MCPServer, reg *registry.Registry, pool *agentclie
 
 	addTool(s,
 		mcp.NewTool("save_credential",
-			mcp.WithDescription("Save a credential profile for use with deploy_agent."),
+			mcp.WithDescription("Open a local masked terminal prompt to save or replace an encrypted credential profile for deploy_agent. Passwords never pass through MCP."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Credential profile name")),
 			mcp.WithString("username", mcp.Required(), mcp.Description("Username")),
-			mcp.WithString("password", mcp.Required(), mcp.Description("Password")),
 		),
-		saveCredentialHandler(creds),
+		saveCredentialHandler(creds, secretHelperPath, launchCredentialPrompt),
 	)
 
 	addTool(s,
 		mcp.NewTool("list_credentials",
-			mcp.WithDescription("List saved credential profile names."),
+			mcp.WithDescription("List saved credential profile names, usernames, and legacy re-save status. Passwords are never decrypted or returned."),
 		),
 		listCredentialsHandler(creds),
 	)
@@ -142,12 +148,15 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 		)
 
 		progress.Update("deploy", "copying and installing the agent through PowerShell remoting")
-		cmd := exec.CommandContext(ctx, "pwsh", "-NoProfile", "-Command", psScript)
+		cmd := powerShellStdinCommand(ctx, psScript)
 		output, err := cmd.CombinedOutput()
-		outputStr := string(output)
+		outputStr := redactSecrets(string(output), []string{cred.Password})
 
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("deploy failed:\n```\n%s\n```\nerror: %v", outputStr, err)), nil
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"deploy failed:\n```\n%s\n```\nerror: %s",
+				outputStr, redactSecrets(err.Error(), []string{cred.Password}),
+			)), nil
 		}
 
 		// Auto-register the node.
@@ -186,37 +195,89 @@ $cred = New-Object PSCredential('%s', (ConvertTo-SecureString '%s' -AsPlainText 
 	}
 }
 
-func saveCredentialHandler(creds *credentials.Store) server.ToolHandlerFunc {
-	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		name := request.GetString("name", "")
-		username := request.GetString("username", "")
-		password := request.GetString("password", "")
+func powerShellStdinCommand(ctx context.Context, script string) *exec.Cmd {
+	cmd := exec.CommandContext(
+		ctx, "pwsh", "-NoProfile", "-NonInteractive", "-Command", "-",
+	)
+	cmd.Stdin = strings.NewReader(script)
+	return cmd
+}
 
-		if err := creds.Set(&credentials.Profile{
-			Name:     name,
-			Username: username,
-			Password: password,
-		}); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("save failed: %v", err)), nil
+type credentialPromptLauncher func(context.Context, string, string, string, string) error
+
+func saveCredentialHandler(
+	creds *credentials.Store,
+	helperPath string,
+	launch credentialPromptLauncher,
+) server.ToolHandlerFunc {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if request.GetString("password", "") != "" {
+			return mcp.NewToolResultError(
+				"save_credential no longer accepts a password argument; enter it only in the local masked prompt",
+			), nil
+		}
+		name, err := credentials.ValidateName(request.GetString("name", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		username, err := credentials.ValidateUsername(request.GetString("username", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		secretName, err := credentials.NewPasswordSecretName(name)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		storePath, err := filepath.Abs(creds.SecretStorePath())
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"resolve encrypted credential store path: %v", err)), nil
+		}
+		if err := launch(ctx, helperPath, storePath, secretName, name); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"credential prompt failed: %v", err)), nil
+		}
+		if err := creds.ReloadSecrets(); err != nil {
+			_ = secretstore.Open(storePath).Delete(secretName)
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"reload encrypted credential store after prompt: %v", err)), nil
+		}
+		if err := creds.SetReference(name, username, secretName); err != nil {
+			_ = secretstore.Open(storePath).Delete(secretName)
+			_ = creds.ReloadSecrets()
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"save credential metadata: %v", err)), nil
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Saved credential profile **%s** (user: %s)", name, username)), nil
+		return mcp.NewToolResultText(fmt.Sprintf(
+			"Credential profile **%s** (user: %s) was saved through a local masked terminal and encrypted at rest. The password did not pass through MCP.",
+			name, username,
+		)), nil
 	}
 }
 
 func listCredentialsHandler(creds *credentials.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		names := creds.List()
-		if len(names) == 0 {
+		if err := creds.Err(); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"load credential metadata: %v", err)), nil
+		}
+		profiles := creds.ListProfiles()
+		if len(profiles) == 0 {
 			return mcp.NewToolResultText("No credential profiles saved. Use `save_credential` to create one."), nil
 		}
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("**Saved credential profiles** (%d)\n\n", len(names)))
-		for _, n := range names {
-			p, _ := creds.Get(n)
-			if p != nil {
-				sb.WriteString(fmt.Sprintf("- **%s** (user: %s)\n", n, p.Username))
+		sb.WriteString(fmt.Sprintf("**Saved credential profiles** (%d)\n\n", len(profiles)))
+		for _, profile := range profiles {
+			if profile.RequiresResave {
+				sb.WriteString(fmt.Sprintf(
+					"- **%s** (user: %s) — legacy plaintext profile disabled; re-save with `save_credential`\n",
+					profile.Name, profile.Username,
+				))
+			} else {
+				sb.WriteString(fmt.Sprintf(
+					"- **%s** (user: %s)\n", profile.Name, profile.Username))
 			}
 		}
 		return mcp.NewToolResultText(sb.String()), nil

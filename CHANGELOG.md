@@ -35,6 +35,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `save_credential` no longer accepts passwords through MCP arguments. It opens
+  the packaged masked local prompt, stores passwords in a separate encrypted
+  credential secret store, and keeps only usernames and opaque secret
+  references in `credentials.json`. Legacy plaintext profiles are disabled
+  until explicitly re-saved.
 - Long-running MCP operations now emit one coherent progress stream for their
   entire request. Deployment, package installation, crash-dump collection, ETW
   finalization, Hyper-V operations, binary patching, time synchronization, and
@@ -53,6 +58,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- WinRM deployment passwords no longer appear in MCP requests or PowerShell
+  process command lines. Deployment scripts carrying decrypted credentials are
+  streamed to PowerShell over standard input.
 - Added interactive masked secret ingestion through `lablink-secret`. The
   helper requires terminal input, confirms the value, refuses pipes and
   redirected files, and writes to the same encrypted store used by the server.

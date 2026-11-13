@@ -34,7 +34,13 @@ Avoid:
 
 The recommended public path uses **token files plus local filesystem ACLs** instead of placing shared tokens directly in `.mcp.json`.
 
-`save_credential` remains available as an operator convenience feature, but on shared operator machines you should prefer:
+`save_credential` opens a separate local masked terminal. Passwords never pass
+through MCP and are encrypted at rest with user-scoped DPAPI on Windows or
+AES-GCM in the credential-store implementation on non-Windows hosts.
+`credentials.json` contains metadata only. Automatic prompt launching is
+currently supported on Windows.
+
+On shared operator machines, you may still prefer:
 
 - interactive `PSCredential` prompts
 - the bootstrap scripts

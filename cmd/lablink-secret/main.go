@@ -125,6 +125,7 @@ func runSet(args []string, stdout, stderr io.Writer, readSecret secretReader) er
 	flags := flag.NewFlagSet("set", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	storePath := flags.String("store", "", "encrypted LabLink secret-store path")
+	label := flags.String("label", "", "masked prompt label")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -139,7 +140,11 @@ func runSet(args []string, stdout, stderr io.Writer, readSecret secretReader) er
 	if err != nil {
 		return err
 	}
-	first, err := readSecret(fmt.Sprintf("Secret value for %q: ", name))
+	promptLabel := strings.TrimSpace(*label)
+	if promptLabel == "" {
+		promptLabel = fmt.Sprintf("Secret value for %q", name)
+	}
+	first, err := readSecret(promptLabel + ": ")
 	if err != nil {
 		return err
 	}
@@ -147,7 +152,7 @@ func runSet(args []string, stdout, stderr io.Writer, readSecret secretReader) er
 	if len(first) == 0 {
 		return fmt.Errorf("secret value cannot be empty")
 	}
-	second, err := readSecret("Confirm secret value: ")
+	second, err := readSecret("Confirm " + promptLabel + ": ")
 	if err != nil {
 		return err
 	}

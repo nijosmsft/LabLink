@@ -33,6 +33,25 @@ func TestSetStoresConfirmedSecretWithoutPrintingValue(t *testing.T) {
 	}
 }
 
+func TestSetUsesCustomPromptLabel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secrets.json")
+	var prompts []string
+	reader := func(prompt string) ([]byte, error) {
+		prompts = append(prompts, prompt)
+		return []byte("value"), nil
+	}
+	if err := run([]string{
+		"set", "--store", path, "--label", `Password for credential "admin"`, "opaque-name",
+	}, &bytes.Buffer{}, &bytes.Buffer{}, reader); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 ||
+		prompts[0] != `Password for credential "admin": ` ||
+		prompts[1] != `Confirm Password for credential "admin": ` {
+		t.Fatalf("prompts = %#v", prompts)
+	}
+}
+
 func TestSetRejectsMismatchWithoutCreatingSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	values := [][]byte{[]byte("first"), []byte("second")}

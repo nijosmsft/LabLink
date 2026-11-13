@@ -207,5 +207,7 @@ register_node name=WIN-NODE-01 address=10.0.0.10:9091 role=server transport_mode
 ## Operational notes
 
 - `lablink-probe.exe` is the easiest binary for validating agent connectivity outside MCP.
-- `save_credential` is still available inside MCP, but the public bootstrap scripts are the recommended flow when you do not want to persist WinRM credentials as a reusable profile.
+- `save_credential name=<profile> username=<user>` opens a local masked prompt.
+  The password never passes through MCP and is encrypted at rest. Legacy
+  plaintext profiles must be explicitly re-saved before use.
 - `lablink-agent.exe --set-token ...` remains for legacy migration, but the public setup flow prefers `LABLINK_AGENT_TOKEN_FILE`.

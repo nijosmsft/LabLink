@@ -10,3 +10,7 @@ import (
 func launchSecretPrompt(_ context.Context, _, _, _ string) error {
 	return fmt.Errorf("automatic local secret prompting is currently supported only on Windows")
 }
+
+func launchCredentialPrompt(_ context.Context, _, _, _, _ string) error {
+	return fmt.Errorf("automatic local credential prompting is currently supported only on Windows")
+}
