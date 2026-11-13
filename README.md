@@ -474,21 +474,22 @@ identity cleanup.
 | `get_linux_image_status` | Return persisted phase state plus any active BITS job IDs and byte progress. |
 | `create_linux_vm` | Prepare-on-demand, create a Gen2 differencing VM, provision through standard NoCloud CIDATA, verify mTLS, and optionally register it. |
 
-### Isolated lifecycle control plane
+### Isolated VM lifecycle
 
-The isolated lifecycle tools use `isolated.db` under the LabLink config
-directory for durable operation IDs, exact phase resume, approvals, locks, and
-resource identities. Orchestrator creation and deletion are approval-gated;
-ordinary network and relay mutations are not.
+The isolated lifecycle tools reuse the ordinary Windows and Linux VM create and
+delete flows, persisting inventory in `isolated.db` under the LabLink config
+directory. Isolation adds only private vSwitches, static `/26` addressing,
+relay-first mTLS enrollment, optional NAT, and a single persisted static
+appliance configuration on the Ubuntu orchestrator.
 
 | Tools | Purpose |
 |-------|---------|
-| `create/list/get/reconcile/delete_isolated_orchestrator` | Reuse, recover, create, inspect, reconcile, or exactly delete Ubuntu orchestrator appliances. |
-| `add/remove_isolated_network` | Reserve an appliance-authoritative `/26` and manage its exact private vSwitch and orchestrator NIC. |
-| `create/remove/list_isolated_relay` | Manage guest-agent relays fixed to managed guest TCP port 9091. |
-| `get_isolated_relay_stats`, `rebind_isolated_relays`, `validate_isolated_relay`, `adopt_isolated_relay` | Diagnose and recover exact relay mappings. |
-| `create/delete/list/get/repair_isolated_vm` | Provision private-only Windows or Linux guests, verify relay mTLS and pre-boot NAT state, delete exact owned storage, or repair/recreate while preserving immutable identity. |
-| `rename_isolated_display_name` | Change only the mutable registry/state label; Hyper-V names, TLS names, IDs, paths, and allocations remain unchanged. |
+| `create/list/get/delete_isolated_orchestrator` | Create, inspect, or delete Ubuntu orchestrator appliances (`cascade=true` deletes child VMs and networks first). |
+| `add/remove_isolated_network` | Allocate a private `/26` subnet and manage its private Hyper-V vSwitch and orchestrator NIC. |
+| `create/delete/list/get_isolated_vm` | Provision or delete private-only Windows or Linux guests using normal VM `name` semantics and relay-first mTLS enrollment. |
+| `enable/disable/get/list_isolated_vm_nat` | Toggle or inspect per-VM outbound IPv4 NAT and conntrack marks on the orchestrator. |
+| `list_isolated_relays`, `get_isolated_relay_stats`, `validate_isolated_relay`, `rebind_isolated_relays` | Inspect, validate, and rebind guest-agent TCP relays (orchestrator main IP -> guest port 9091). |
+| `rename_isolated_display_name` | Update the mutable display label on an orchestrator, network, or isolated VM without changing Hyper-V or TLS identity. |
 
 Isolated guests use static IPv4 `/26` configuration with the orchestrator at
 `.1` as gateway and DNS copied from its main NIC. Relay mapping is live before
