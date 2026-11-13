@@ -44,6 +44,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Retrying a failed same-name isolated guest creation cleans the partial normal
   VM and starts fresh. Deletion disables relay/NAT first but marks inventory
   deleted only after ordinary VM deletion succeeds.
+- `create_isolated_orchestrator` and `create_isolated_vm` now start MCP progress
+  heartbeats across full provisioning and enrollment, and `list_isolated_relays`
+  / `list_isolated_vm_nat` omit retired entries for deleted VMs.
 - `save_credential` no longer accepts passwords through MCP arguments. It opens
   the packaged masked local prompt, stores passwords in a separate encrypted
   credential secret store, and keeps only usernames and opaque secret

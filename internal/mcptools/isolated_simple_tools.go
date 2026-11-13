@@ -128,6 +128,10 @@ func simpleActiveVM(value isolatedstate.IsolatedVM) bool {
 	return value.LifecycleState != isolatedstate.VMDeleted && value.RetiredAt == nil
 }
 
+func simpleActiveRelay(value isolatedstate.RelayAllocation) bool {
+	return value.LifecycleState != isolatedstate.RelayRemoved && value.RetiredAt == nil
+}
+
 func buildStaticApplianceConfig(
 	ctx context.Context,
 	deps *isolatedLifecycleDeps,
@@ -406,7 +410,14 @@ func listSimpleIsolatedNATHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 		if err != nil {
 			return isolatedError(err)
 		}
-		return simpleIsolatedResult("**Isolated VM NAT**", values), nil
+		result := make([]isolatedstate.NATAllocation, 0, len(values))
+		for _, value := range values {
+			vm, getErr := deps.state.GetVM(ctx, value.VMID)
+			if getErr == nil && simpleActiveVM(vm) {
+				result = append(result, value)
+			}
+		}
+		return simpleIsolatedResult("**Isolated VM NAT**", result), nil
 	}
 }
 
@@ -419,17 +430,21 @@ func listSimpleIsolatedRelaysHandler(deps *isolatedLifecycleDeps) server.ToolHan
 			return isolatedError(err)
 		}
 		networkID := strings.TrimSpace(req.GetString("network_id", ""))
-		if networkID != "" {
-			filtered := values[:0]
-			for _, value := range values {
-				vm, getErr := deps.state.GetVM(ctx, value.VMID)
-				if getErr == nil && vm.NetworkID == networkID {
-					filtered = append(filtered, value)
-				}
+		result := make([]isolatedstate.RelayAllocation, 0, len(values))
+		for _, value := range values {
+			if !simpleActiveRelay(value) {
+				continue
 			}
-			values = filtered
+			vm, getErr := deps.state.GetVM(ctx, value.VMID)
+			if getErr != nil || !simpleActiveVM(vm) {
+				continue
+			}
+			if networkID != "" && vm.NetworkID != networkID {
+				continue
+			}
+			result = append(result, value)
 		}
-		return simpleIsolatedResult("**Isolated relays**", values), nil
+		return simpleIsolatedResult("**Isolated relays**", result), nil
 	}
 }
 
@@ -578,8 +593,12 @@ func withSimpleTargetLease(
 	return LeaseGate(deps.lease, extractTarget("target"), run)(ctx, gated)
 }
 
-func simpleWaitProgress() *MCPProgressState {
-	return NewMCPProgressState(35*time.Minute, "resolve", "configuration validated")
+func simpleWaitProgress(
+	ctx context.Context,
+	req mcp.CallToolRequest,
+) (*MCPProgressState, func()) {
+	return StartMCPProgress(
+		ctx, req, 35*time.Minute, "resolve", "configuration validated")
 }
 
 func simpleNormalDeleteRequest(
@@ -666,7 +685,8 @@ func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server
 		}
 
 		run := func(ctx context.Context, gated mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			progress := simpleWaitProgress()
+			progress, stopProgress := simpleWaitProgress(ctx, gated)
+			defer stopProgress()
 			linuxReq := gated
 			args := cloneArguments(gated.GetArguments())
 			args["target"] = target.Name
@@ -1164,6 +1184,8 @@ func createSimpleIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 			natState.State = isolatedstate.NATEnabled
 		}
 		run := func(ctx context.Context, gated mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			progress, stopProgress := simpleWaitProgress(ctx, gated)
+			defer stopProgress()
 			if err := errors.Join(
 				deps.state.PutVM(ctx, vm),
 				deps.state.PutRelay(ctx, relay),
@@ -1174,7 +1196,6 @@ func createSimpleIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 			if _, err := configureStaticAppliance(ctx, deps, orchestrator.ID, nil); err != nil {
 				return isolatedError(err)
 			}
-			progress := simpleWaitProgress()
 			dns, err := isolated.ParseDNSServers(vm.DNSServersJSON)
 			if err != nil {
 				return isolatedError(err)
