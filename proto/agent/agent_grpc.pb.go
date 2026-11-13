@@ -19,39 +19,24 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeAgent_Execute_FullMethodName                     = "/agent.NodeAgent/Execute"
-	NodeAgent_ExecuteScript_FullMethodName               = "/agent.NodeAgent/ExecuteScript"
-	NodeAgent_PushFile_FullMethodName                    = "/agent.NodeAgent/PushFile"
-	NodeAgent_PullFile_FullMethodName                    = "/agent.NodeAgent/PullFile"
-	NodeAgent_ListProcesses_FullMethodName               = "/agent.NodeAgent/ListProcesses"
-	NodeAgent_KillProcess_FullMethodName                 = "/agent.NodeAgent/KillProcess"
-	NodeAgent_GetInfo_FullMethodName                     = "/agent.NodeAgent/GetInfo"
-	NodeAgent_ListJobs_FullMethodName                    = "/agent.NodeAgent/ListJobs"
-	NodeAgent_GetJob_FullMethodName                      = "/agent.NodeAgent/GetJob"
-	NodeAgent_GetJobOutput_FullMethodName                = "/agent.NodeAgent/GetJobOutput"
-	NodeAgent_CancelJob_FullMethodName                   = "/agent.NodeAgent/CancelJob"
-	NodeAgent_DeleteJob_FullMethodName                   = "/agent.NodeAgent/DeleteJob"
-	NodeAgent_WatchJobs_FullMethodName                   = "/agent.NodeAgent/WatchJobs"
-	NodeAgent_Forward_FullMethodName                     = "/agent.NodeAgent/Forward"
-	NodeAgent_GetApplianceState_FullMethodName           = "/agent.NodeAgent/GetApplianceState"
-	NodeAgent_ReserveResources_FullMethodName            = "/agent.NodeAgent/ReserveResources"
-	NodeAgent_ReleaseResources_FullMethodName            = "/agent.NodeAgent/ReleaseResources"
-	NodeAgent_ReleaseApplianceAuthority_FullMethodName   = "/agent.NodeAgent/ReleaseApplianceAuthority"
-	NodeAgent_SetApplianceParentLifecycle_FullMethodName = "/agent.NodeAgent/SetApplianceParentLifecycle"
-	NodeAgent_ApplyPrivateNetwork_FullMethodName         = "/agent.NodeAgent/ApplyPrivateNetwork"
-	NodeAgent_RemovePrivateNetwork_FullMethodName        = "/agent.NodeAgent/RemovePrivateNetwork"
-	NodeAgent_RegisterIsolatedGuest_FullMethodName       = "/agent.NodeAgent/RegisterIsolatedGuest"
-	NodeAgent_RemoveIsolatedGuest_FullMethodName         = "/agent.NodeAgent/RemoveIsolatedGuest"
-	NodeAgent_ApplyRelay_FullMethodName                  = "/agent.NodeAgent/ApplyRelay"
-	NodeAgent_RemoveRelay_FullMethodName                 = "/agent.NodeAgent/RemoveRelay"
-	NodeAgent_ListRelays_FullMethodName                  = "/agent.NodeAgent/ListRelays"
-	NodeAgent_GetRelayStats_FullMethodName               = "/agent.NodeAgent/GetRelayStats"
-	NodeAgent_RebindRelays_FullMethodName                = "/agent.NodeAgent/RebindRelays"
-	NodeAgent_ValidateRelay_FullMethodName               = "/agent.NodeAgent/ValidateRelay"
-	NodeAgent_AdoptRelay_FullMethodName                  = "/agent.NodeAgent/AdoptRelay"
-	NodeAgent_SetNatState_FullMethodName                 = "/agent.NodeAgent/SetNatState"
-	NodeAgent_ListNatState_FullMethodName                = "/agent.NodeAgent/ListNatState"
-	NodeAgent_ReconcileNat_FullMethodName                = "/agent.NodeAgent/ReconcileNat"
+	NodeAgent_Execute_FullMethodName                    = "/agent.NodeAgent/Execute"
+	NodeAgent_ExecuteScript_FullMethodName              = "/agent.NodeAgent/ExecuteScript"
+	NodeAgent_PushFile_FullMethodName                   = "/agent.NodeAgent/PushFile"
+	NodeAgent_PullFile_FullMethodName                   = "/agent.NodeAgent/PullFile"
+	NodeAgent_ListProcesses_FullMethodName              = "/agent.NodeAgent/ListProcesses"
+	NodeAgent_KillProcess_FullMethodName                = "/agent.NodeAgent/KillProcess"
+	NodeAgent_GetInfo_FullMethodName                    = "/agent.NodeAgent/GetInfo"
+	NodeAgent_ListJobs_FullMethodName                   = "/agent.NodeAgent/ListJobs"
+	NodeAgent_GetJob_FullMethodName                     = "/agent.NodeAgent/GetJob"
+	NodeAgent_GetJobOutput_FullMethodName               = "/agent.NodeAgent/GetJobOutput"
+	NodeAgent_CancelJob_FullMethodName                  = "/agent.NodeAgent/CancelJob"
+	NodeAgent_DeleteJob_FullMethodName                  = "/agent.NodeAgent/DeleteJob"
+	NodeAgent_WatchJobs_FullMethodName                  = "/agent.NodeAgent/WatchJobs"
+	NodeAgent_Forward_FullMethodName                    = "/agent.NodeAgent/Forward"
+	NodeAgent_GetApplianceState_FullMethodName          = "/agent.NodeAgent/GetApplianceState"
+	NodeAgent_ConfigureIsolatedAppliance_FullMethodName = "/agent.NodeAgent/ConfigureIsolatedAppliance"
+	NodeAgent_GetRelayStats_FullMethodName              = "/agent.NodeAgent/GetRelayStats"
+	NodeAgent_ValidateRelay_FullMethodName              = "/agent.NodeAgent/ValidateRelay"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -94,32 +79,13 @@ type NodeAgentClient interface {
 	Forward(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ForwardChunk, ForwardChunk], error)
 	// Discover authoritative isolated-appliance state.
 	GetApplianceState(ctx context.Context, in *GetApplianceStateRequest, opts ...grpc.CallOption) (*GetApplianceStateResponse, error)
-	// Atomically reserve appliance-owned network resources.
-	ReserveResources(ctx context.Context, in *ReserveResourcesRequest, opts ...grpc.CallOption) (*ReserveResourcesResponse, error)
-	// Release appliance-owned network resources after their retirement barrier.
-	ReleaseResources(ctx context.Context, in *ReleaseResourcesRequest, opts ...grpc.CallOption) (*ReleaseResourcesResponse, error)
-	// Revoke the current physical-host lease before releasing it on the host.
-	ReleaseApplianceAuthority(ctx context.Context, in *MutationHeader, opts ...grpc.CallOption) (*FenceState, error)
-	// Atomically freeze the parent generation before an approved cascade.
-	SetApplianceParentLifecycle(ctx context.Context, in *SetApplianceParentLifecycleRequest, opts ...grpc.CallOption) (*FenceState, error)
-	// Apply or retire a private network.
-	ApplyPrivateNetwork(ctx context.Context, in *ApplyPrivateNetworkRequest, opts ...grpc.CallOption) (*ApplyPrivateNetworkResponse, error)
-	RemovePrivateNetwork(ctx context.Context, in *RemovePrivateNetworkRequest, opts ...grpc.CallOption) (*RemovePrivateNetworkResponse, error)
-	// Register or retire an isolated guest.
-	RegisterIsolatedGuest(ctx context.Context, in *RegisterIsolatedGuestRequest, opts ...grpc.CallOption) (*RegisterIsolatedGuestResponse, error)
-	RemoveIsolatedGuest(ctx context.Context, in *RemoveIsolatedGuestRequest, opts ...grpc.CallOption) (*RemoveIsolatedGuestResponse, error)
-	// Manage TCP relays to isolated guests.
-	ApplyRelay(ctx context.Context, in *ApplyRelayRequest, opts ...grpc.CallOption) (*Relay, error)
-	RemoveRelay(ctx context.Context, in *RemoveRelayRequest, opts ...grpc.CallOption) (*Relay, error)
-	ListRelays(ctx context.Context, in *ListRelaysRequest, opts ...grpc.CallOption) (*ListRelaysResponse, error)
+	// Replace the complete persisted isolated-appliance configuration.
+	// LabLink is a single-controller developer tool, so updates are explicit,
+	// sequential, and idempotent by resource identity.
+	ConfigureIsolatedAppliance(ctx context.Context, in *ConfigureIsolatedApplianceRequest, opts ...grpc.CallOption) (*ConfigureIsolatedApplianceResponse, error)
+	// Inspect relay runtime state.
 	GetRelayStats(ctx context.Context, in *GetRelayStatsRequest, opts ...grpc.CallOption) (*GetRelayStatsResponse, error)
-	RebindRelays(ctx context.Context, in *RebindRelaysRequest, opts ...grpc.CallOption) (*RebindRelaysResponse, error)
 	ValidateRelay(ctx context.Context, in *ValidateRelayRequest, opts ...grpc.CallOption) (*ValidateRelayResponse, error)
-	AdoptRelay(ctx context.Context, in *AdoptRelayRequest, opts ...grpc.CallOption) (*Relay, error)
-	// Manage per-guest NAT state.
-	SetNatState(ctx context.Context, in *SetNatStateRequest, opts ...grpc.CallOption) (*NatState, error)
-	ListNatState(ctx context.Context, in *ListNatStateRequest, opts ...grpc.CallOption) (*ListNatStateResponse, error)
-	ReconcileNat(ctx context.Context, in *ReconcileNatRequest, opts ...grpc.CallOption) (*ReconcileNatResponse, error)
 }
 
 type nodeAgentClient struct {
@@ -322,110 +288,10 @@ func (c *nodeAgentClient) GetApplianceState(ctx context.Context, in *GetApplianc
 	return out, nil
 }
 
-func (c *nodeAgentClient) ReserveResources(ctx context.Context, in *ReserveResourcesRequest, opts ...grpc.CallOption) (*ReserveResourcesResponse, error) {
+func (c *nodeAgentClient) ConfigureIsolatedAppliance(ctx context.Context, in *ConfigureIsolatedApplianceRequest, opts ...grpc.CallOption) (*ConfigureIsolatedApplianceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReserveResourcesResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ReserveResources_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ReleaseResources(ctx context.Context, in *ReleaseResourcesRequest, opts ...grpc.CallOption) (*ReleaseResourcesResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReleaseResourcesResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ReleaseResources_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ReleaseApplianceAuthority(ctx context.Context, in *MutationHeader, opts ...grpc.CallOption) (*FenceState, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FenceState)
-	err := c.cc.Invoke(ctx, NodeAgent_ReleaseApplianceAuthority_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) SetApplianceParentLifecycle(ctx context.Context, in *SetApplianceParentLifecycleRequest, opts ...grpc.CallOption) (*FenceState, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FenceState)
-	err := c.cc.Invoke(ctx, NodeAgent_SetApplianceParentLifecycle_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ApplyPrivateNetwork(ctx context.Context, in *ApplyPrivateNetworkRequest, opts ...grpc.CallOption) (*ApplyPrivateNetworkResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ApplyPrivateNetworkResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ApplyPrivateNetwork_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) RemovePrivateNetwork(ctx context.Context, in *RemovePrivateNetworkRequest, opts ...grpc.CallOption) (*RemovePrivateNetworkResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RemovePrivateNetworkResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_RemovePrivateNetwork_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) RegisterIsolatedGuest(ctx context.Context, in *RegisterIsolatedGuestRequest, opts ...grpc.CallOption) (*RegisterIsolatedGuestResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RegisterIsolatedGuestResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_RegisterIsolatedGuest_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) RemoveIsolatedGuest(ctx context.Context, in *RemoveIsolatedGuestRequest, opts ...grpc.CallOption) (*RemoveIsolatedGuestResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RemoveIsolatedGuestResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_RemoveIsolatedGuest_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ApplyRelay(ctx context.Context, in *ApplyRelayRequest, opts ...grpc.CallOption) (*Relay, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Relay)
-	err := c.cc.Invoke(ctx, NodeAgent_ApplyRelay_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) RemoveRelay(ctx context.Context, in *RemoveRelayRequest, opts ...grpc.CallOption) (*Relay, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Relay)
-	err := c.cc.Invoke(ctx, NodeAgent_RemoveRelay_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ListRelays(ctx context.Context, in *ListRelaysRequest, opts ...grpc.CallOption) (*ListRelaysResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListRelaysResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ListRelays_FullMethodName, in, out, cOpts...)
+	out := new(ConfigureIsolatedApplianceResponse)
+	err := c.cc.Invoke(ctx, NodeAgent_ConfigureIsolatedAppliance_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -442,60 +308,10 @@ func (c *nodeAgentClient) GetRelayStats(ctx context.Context, in *GetRelayStatsRe
 	return out, nil
 }
 
-func (c *nodeAgentClient) RebindRelays(ctx context.Context, in *RebindRelaysRequest, opts ...grpc.CallOption) (*RebindRelaysResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RebindRelaysResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_RebindRelays_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *nodeAgentClient) ValidateRelay(ctx context.Context, in *ValidateRelayRequest, opts ...grpc.CallOption) (*ValidateRelayResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ValidateRelayResponse)
 	err := c.cc.Invoke(ctx, NodeAgent_ValidateRelay_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) AdoptRelay(ctx context.Context, in *AdoptRelayRequest, opts ...grpc.CallOption) (*Relay, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(Relay)
-	err := c.cc.Invoke(ctx, NodeAgent_AdoptRelay_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) SetNatState(ctx context.Context, in *SetNatStateRequest, opts ...grpc.CallOption) (*NatState, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(NatState)
-	err := c.cc.Invoke(ctx, NodeAgent_SetNatState_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ListNatState(ctx context.Context, in *ListNatStateRequest, opts ...grpc.CallOption) (*ListNatStateResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ListNatStateResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ListNatState_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *nodeAgentClient) ReconcileNat(ctx context.Context, in *ReconcileNatRequest, opts ...grpc.CallOption) (*ReconcileNatResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReconcileNatResponse)
-	err := c.cc.Invoke(ctx, NodeAgent_ReconcileNat_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -542,32 +358,13 @@ type NodeAgentServer interface {
 	Forward(grpc.BidiStreamingServer[ForwardChunk, ForwardChunk]) error
 	// Discover authoritative isolated-appliance state.
 	GetApplianceState(context.Context, *GetApplianceStateRequest) (*GetApplianceStateResponse, error)
-	// Atomically reserve appliance-owned network resources.
-	ReserveResources(context.Context, *ReserveResourcesRequest) (*ReserveResourcesResponse, error)
-	// Release appliance-owned network resources after their retirement barrier.
-	ReleaseResources(context.Context, *ReleaseResourcesRequest) (*ReleaseResourcesResponse, error)
-	// Revoke the current physical-host lease before releasing it on the host.
-	ReleaseApplianceAuthority(context.Context, *MutationHeader) (*FenceState, error)
-	// Atomically freeze the parent generation before an approved cascade.
-	SetApplianceParentLifecycle(context.Context, *SetApplianceParentLifecycleRequest) (*FenceState, error)
-	// Apply or retire a private network.
-	ApplyPrivateNetwork(context.Context, *ApplyPrivateNetworkRequest) (*ApplyPrivateNetworkResponse, error)
-	RemovePrivateNetwork(context.Context, *RemovePrivateNetworkRequest) (*RemovePrivateNetworkResponse, error)
-	// Register or retire an isolated guest.
-	RegisterIsolatedGuest(context.Context, *RegisterIsolatedGuestRequest) (*RegisterIsolatedGuestResponse, error)
-	RemoveIsolatedGuest(context.Context, *RemoveIsolatedGuestRequest) (*RemoveIsolatedGuestResponse, error)
-	// Manage TCP relays to isolated guests.
-	ApplyRelay(context.Context, *ApplyRelayRequest) (*Relay, error)
-	RemoveRelay(context.Context, *RemoveRelayRequest) (*Relay, error)
-	ListRelays(context.Context, *ListRelaysRequest) (*ListRelaysResponse, error)
+	// Replace the complete persisted isolated-appliance configuration.
+	// LabLink is a single-controller developer tool, so updates are explicit,
+	// sequential, and idempotent by resource identity.
+	ConfigureIsolatedAppliance(context.Context, *ConfigureIsolatedApplianceRequest) (*ConfigureIsolatedApplianceResponse, error)
+	// Inspect relay runtime state.
 	GetRelayStats(context.Context, *GetRelayStatsRequest) (*GetRelayStatsResponse, error)
-	RebindRelays(context.Context, *RebindRelaysRequest) (*RebindRelaysResponse, error)
 	ValidateRelay(context.Context, *ValidateRelayRequest) (*ValidateRelayResponse, error)
-	AdoptRelay(context.Context, *AdoptRelayRequest) (*Relay, error)
-	// Manage per-guest NAT state.
-	SetNatState(context.Context, *SetNatStateRequest) (*NatState, error)
-	ListNatState(context.Context, *ListNatStateRequest) (*ListNatStateResponse, error)
-	ReconcileNat(context.Context, *ReconcileNatRequest) (*ReconcileNatResponse, error)
 	mustEmbedUnimplementedNodeAgentServer()
 }
 
@@ -623,59 +420,14 @@ func (UnimplementedNodeAgentServer) Forward(grpc.BidiStreamingServer[ForwardChun
 func (UnimplementedNodeAgentServer) GetApplianceState(context.Context, *GetApplianceStateRequest) (*GetApplianceStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetApplianceState not implemented")
 }
-func (UnimplementedNodeAgentServer) ReserveResources(context.Context, *ReserveResourcesRequest) (*ReserveResourcesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReserveResources not implemented")
-}
-func (UnimplementedNodeAgentServer) ReleaseResources(context.Context, *ReleaseResourcesRequest) (*ReleaseResourcesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReleaseResources not implemented")
-}
-func (UnimplementedNodeAgentServer) ReleaseApplianceAuthority(context.Context, *MutationHeader) (*FenceState, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReleaseApplianceAuthority not implemented")
-}
-func (UnimplementedNodeAgentServer) SetApplianceParentLifecycle(context.Context, *SetApplianceParentLifecycleRequest) (*FenceState, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetApplianceParentLifecycle not implemented")
-}
-func (UnimplementedNodeAgentServer) ApplyPrivateNetwork(context.Context, *ApplyPrivateNetworkRequest) (*ApplyPrivateNetworkResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ApplyPrivateNetwork not implemented")
-}
-func (UnimplementedNodeAgentServer) RemovePrivateNetwork(context.Context, *RemovePrivateNetworkRequest) (*RemovePrivateNetworkResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemovePrivateNetwork not implemented")
-}
-func (UnimplementedNodeAgentServer) RegisterIsolatedGuest(context.Context, *RegisterIsolatedGuestRequest) (*RegisterIsolatedGuestResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RegisterIsolatedGuest not implemented")
-}
-func (UnimplementedNodeAgentServer) RemoveIsolatedGuest(context.Context, *RemoveIsolatedGuestRequest) (*RemoveIsolatedGuestResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemoveIsolatedGuest not implemented")
-}
-func (UnimplementedNodeAgentServer) ApplyRelay(context.Context, *ApplyRelayRequest) (*Relay, error) {
-	return nil, status.Error(codes.Unimplemented, "method ApplyRelay not implemented")
-}
-func (UnimplementedNodeAgentServer) RemoveRelay(context.Context, *RemoveRelayRequest) (*Relay, error) {
-	return nil, status.Error(codes.Unimplemented, "method RemoveRelay not implemented")
-}
-func (UnimplementedNodeAgentServer) ListRelays(context.Context, *ListRelaysRequest) (*ListRelaysResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListRelays not implemented")
+func (UnimplementedNodeAgentServer) ConfigureIsolatedAppliance(context.Context, *ConfigureIsolatedApplianceRequest) (*ConfigureIsolatedApplianceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfigureIsolatedAppliance not implemented")
 }
 func (UnimplementedNodeAgentServer) GetRelayStats(context.Context, *GetRelayStatsRequest) (*GetRelayStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRelayStats not implemented")
 }
-func (UnimplementedNodeAgentServer) RebindRelays(context.Context, *RebindRelaysRequest) (*RebindRelaysResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method RebindRelays not implemented")
-}
 func (UnimplementedNodeAgentServer) ValidateRelay(context.Context, *ValidateRelayRequest) (*ValidateRelayResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ValidateRelay not implemented")
-}
-func (UnimplementedNodeAgentServer) AdoptRelay(context.Context, *AdoptRelayRequest) (*Relay, error) {
-	return nil, status.Error(codes.Unimplemented, "method AdoptRelay not implemented")
-}
-func (UnimplementedNodeAgentServer) SetNatState(context.Context, *SetNatStateRequest) (*NatState, error) {
-	return nil, status.Error(codes.Unimplemented, "method SetNatState not implemented")
-}
-func (UnimplementedNodeAgentServer) ListNatState(context.Context, *ListNatStateRequest) (*ListNatStateResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ListNatState not implemented")
-}
-func (UnimplementedNodeAgentServer) ReconcileNat(context.Context, *ReconcileNatRequest) (*ReconcileNatResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReconcileNat not implemented")
 }
 func (UnimplementedNodeAgentServer) mustEmbedUnimplementedNodeAgentServer() {}
 func (UnimplementedNodeAgentServer) testEmbeddedByValue()                   {}
@@ -918,200 +670,20 @@ func _NodeAgent_GetApplianceState_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _NodeAgent_ReserveResources_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReserveResourcesRequest)
+func _NodeAgent_ConfigureIsolatedAppliance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfigureIsolatedApplianceRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(NodeAgentServer).ReserveResources(ctx, in)
+		return srv.(NodeAgentServer).ConfigureIsolatedAppliance(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: NodeAgent_ReserveResources_FullMethodName,
+		FullMethod: NodeAgent_ConfigureIsolatedAppliance_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ReserveResources(ctx, req.(*ReserveResourcesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ReleaseResources_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReleaseResourcesRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ReleaseResources(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ReleaseResources_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ReleaseResources(ctx, req.(*ReleaseResourcesRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ReleaseApplianceAuthority_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(MutationHeader)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ReleaseApplianceAuthority(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ReleaseApplianceAuthority_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ReleaseApplianceAuthority(ctx, req.(*MutationHeader))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_SetApplianceParentLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetApplianceParentLifecycleRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).SetApplianceParentLifecycle(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_SetApplianceParentLifecycle_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).SetApplianceParentLifecycle(ctx, req.(*SetApplianceParentLifecycleRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ApplyPrivateNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ApplyPrivateNetworkRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ApplyPrivateNetwork(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ApplyPrivateNetwork_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ApplyPrivateNetwork(ctx, req.(*ApplyPrivateNetworkRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_RemovePrivateNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemovePrivateNetworkRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).RemovePrivateNetwork(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_RemovePrivateNetwork_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).RemovePrivateNetwork(ctx, req.(*RemovePrivateNetworkRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_RegisterIsolatedGuest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RegisterIsolatedGuestRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).RegisterIsolatedGuest(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_RegisterIsolatedGuest_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).RegisterIsolatedGuest(ctx, req.(*RegisterIsolatedGuestRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_RemoveIsolatedGuest_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemoveIsolatedGuestRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).RemoveIsolatedGuest(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_RemoveIsolatedGuest_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).RemoveIsolatedGuest(ctx, req.(*RemoveIsolatedGuestRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ApplyRelay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ApplyRelayRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ApplyRelay(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ApplyRelay_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ApplyRelay(ctx, req.(*ApplyRelayRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_RemoveRelay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RemoveRelayRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).RemoveRelay(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_RemoveRelay_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).RemoveRelay(ctx, req.(*RemoveRelayRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ListRelays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListRelaysRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ListRelays(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ListRelays_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ListRelays(ctx, req.(*ListRelaysRequest))
+		return srv.(NodeAgentServer).ConfigureIsolatedAppliance(ctx, req.(*ConfigureIsolatedApplianceRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1134,24 +706,6 @@ func _NodeAgent_GetRelayStats_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _NodeAgent_RebindRelays_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RebindRelaysRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).RebindRelays(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_RebindRelays_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).RebindRelays(ctx, req.(*RebindRelaysRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _NodeAgent_ValidateRelay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ValidateRelayRequest)
 	if err := dec(in); err != nil {
@@ -1166,78 +720,6 @@ func _NodeAgent_ValidateRelay_Handler(srv interface{}, ctx context.Context, dec 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeAgentServer).ValidateRelay(ctx, req.(*ValidateRelayRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_AdoptRelay_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AdoptRelayRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).AdoptRelay(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_AdoptRelay_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).AdoptRelay(ctx, req.(*AdoptRelayRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_SetNatState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SetNatStateRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).SetNatState(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_SetNatState_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).SetNatState(ctx, req.(*SetNatStateRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ListNatState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ListNatStateRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ListNatState(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ListNatState_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ListNatState(ctx, req.(*ListNatStateRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _NodeAgent_ReconcileNat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReconcileNatRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodeAgentServer).ReconcileNat(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: NodeAgent_ReconcileNat_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeAgentServer).ReconcileNat(ctx, req.(*ReconcileNatRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1286,76 +768,16 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NodeAgent_GetApplianceState_Handler,
 		},
 		{
-			MethodName: "ReserveResources",
-			Handler:    _NodeAgent_ReserveResources_Handler,
-		},
-		{
-			MethodName: "ReleaseResources",
-			Handler:    _NodeAgent_ReleaseResources_Handler,
-		},
-		{
-			MethodName: "ReleaseApplianceAuthority",
-			Handler:    _NodeAgent_ReleaseApplianceAuthority_Handler,
-		},
-		{
-			MethodName: "SetApplianceParentLifecycle",
-			Handler:    _NodeAgent_SetApplianceParentLifecycle_Handler,
-		},
-		{
-			MethodName: "ApplyPrivateNetwork",
-			Handler:    _NodeAgent_ApplyPrivateNetwork_Handler,
-		},
-		{
-			MethodName: "RemovePrivateNetwork",
-			Handler:    _NodeAgent_RemovePrivateNetwork_Handler,
-		},
-		{
-			MethodName: "RegisterIsolatedGuest",
-			Handler:    _NodeAgent_RegisterIsolatedGuest_Handler,
-		},
-		{
-			MethodName: "RemoveIsolatedGuest",
-			Handler:    _NodeAgent_RemoveIsolatedGuest_Handler,
-		},
-		{
-			MethodName: "ApplyRelay",
-			Handler:    _NodeAgent_ApplyRelay_Handler,
-		},
-		{
-			MethodName: "RemoveRelay",
-			Handler:    _NodeAgent_RemoveRelay_Handler,
-		},
-		{
-			MethodName: "ListRelays",
-			Handler:    _NodeAgent_ListRelays_Handler,
+			MethodName: "ConfigureIsolatedAppliance",
+			Handler:    _NodeAgent_ConfigureIsolatedAppliance_Handler,
 		},
 		{
 			MethodName: "GetRelayStats",
 			Handler:    _NodeAgent_GetRelayStats_Handler,
 		},
 		{
-			MethodName: "RebindRelays",
-			Handler:    _NodeAgent_RebindRelays_Handler,
-		},
-		{
 			MethodName: "ValidateRelay",
 			Handler:    _NodeAgent_ValidateRelay_Handler,
-		},
-		{
-			MethodName: "AdoptRelay",
-			Handler:    _NodeAgent_AdoptRelay_Handler,
-		},
-		{
-			MethodName: "SetNatState",
-			Handler:    _NodeAgent_SetNatState_Handler,
-		},
-		{
-			MethodName: "ListNatState",
-			Handler:    _NodeAgent_ListNatState_Handler,
-		},
-		{
-			MethodName: "ReconcileNat",
-			Handler:    _NodeAgent_ReconcileNat_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -2,7 +2,6 @@ package portal
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net"
@@ -32,7 +31,7 @@ type isolatedStateReader interface {
 	ListNetworks(context.Context, string) ([]isolatedstate.PrivateNetwork, error)
 	ListVMs(context.Context, string, string) ([]isolatedstate.IsolatedVM, error)
 	ListRelays(context.Context, string, string) ([]isolatedstate.RelayAllocation, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	ListNAT(context.Context, string, string, string) ([]isolatedstate.NATAllocation, error)
 }
 
 type isolatedApplianceReader interface {
@@ -139,18 +138,16 @@ type isolatedEndpointJSON struct {
 }
 
 type isolatedReadinessJSON struct {
-	Available           bool     `json:"available"`
-	Ready               bool     `json:"ready"`
-	Node                string   `json:"node,omitempty"`
-	AgentVersion        string   `json:"agent_version,omitempty"`
-	Capabilities        []string `json:"capabilities"`
-	ProtocolVersion     uint32   `json:"protocol_version,omitempty"`
-	ApplianceSchema     uint32   `json:"appliance_schema,omitempty"`
-	ApplianceGeneration uint64   `json:"appliance_generation,omitempty"`
-	InventoryGeneration uint64   `json:"inventory_generation,omitempty"`
-	PolicyVerified      bool     `json:"policy_verified"`
-	IPv4Forwarding      bool     `json:"ipv4_forwarding"`
-	Error               string   `json:"error,omitempty"`
+	Available       bool     `json:"available"`
+	Ready           bool     `json:"ready"`
+	Node            string   `json:"node,omitempty"`
+	AgentVersion    string   `json:"agent_version,omitempty"`
+	Capabilities    []string `json:"capabilities"`
+	ProtocolVersion uint32   `json:"protocol_version,omitempty"`
+	ApplianceSchema uint32   `json:"appliance_schema,omitempty"`
+	PolicyVerified  bool     `json:"policy_verified"`
+	IPv4Forwarding  bool     `json:"ipv4_forwarding"`
+	Error           string   `json:"error,omitempty"`
 }
 
 type isolatedCapacityJSON struct {
@@ -168,24 +165,21 @@ type isolatedCapacityJSON struct {
 }
 
 type isolatedOrchestratorJSON struct {
-	ID                 string                                   `json:"id"`
-	DisplayName        string                                   `json:"display_name"`
-	PhysicalHostID     string                                   `json:"physical_host_id"`
-	HostNode           string                                   `json:"host_node"`
-	HyperVName         string                                   `json:"hyperv_name"`
-	HyperVVMID         *string                                  `json:"hyperv_vm_id,omitempty"`
-	ProfileName        string                                   `json:"profile_name"`
-	MainVSwitch        string                                   `json:"main_vswitch"`
-	MainMAC            *string                                  `json:"main_mac,omitempty"`
-	LifecycleState     isolatedstate.OrchestratorLifecycleState `json:"lifecycle_state"`
-	HealthState        string                                   `json:"health_state"`
-	DesiredGeneration  isolatedstate.Generation                 `json:"desired_generation"`
-	AppliedGeneration  isolatedstate.Generation                 `json:"applied_generation"`
-	ObservedGeneration isolatedstate.Generation                 `json:"observed_generation"`
-	LastSeenAt         *isolatedstate.UnixSeconds               `json:"last_seen_at_unix,omitempty"`
-	Endpoint           isolatedEndpointJSON                     `json:"endpoint"`
-	Readiness          isolatedReadinessJSON                    `json:"readiness"`
-	Capacity           isolatedCapacityJSON                     `json:"capacity"`
+	ID             string                                   `json:"id"`
+	DisplayName    string                                   `json:"display_name"`
+	PhysicalHostID string                                   `json:"physical_host_id"`
+	HostNode       string                                   `json:"host_node"`
+	HyperVName     string                                   `json:"hyperv_name"`
+	HyperVVMID     *string                                  `json:"hyperv_vm_id,omitempty"`
+	ProfileName    string                                   `json:"profile_name"`
+	MainVSwitch    string                                   `json:"main_vswitch"`
+	MainMAC        *string                                  `json:"main_mac,omitempty"`
+	LifecycleState isolatedstate.OrchestratorLifecycleState `json:"lifecycle_state"`
+	HealthState    string                                   `json:"health_state"`
+	LastSeenAt     *isolatedstate.UnixSeconds               `json:"last_seen_at_unix,omitempty"`
+	Endpoint       isolatedEndpointJSON                     `json:"endpoint"`
+	Readiness      isolatedReadinessJSON                    `json:"readiness"`
+	Capacity       isolatedCapacityJSON                     `json:"capacity"`
 }
 
 type isolatedNetworkJSON struct {
@@ -202,9 +196,6 @@ type isolatedNetworkJSON struct {
 	DNSServers            []string                            `json:"dns_servers"`
 	ObservedDNSServers    []string                            `json:"observed_dns_servers"`
 	DNSDrift              bool                                `json:"dns_drift"`
-	DesiredGeneration     isolatedstate.Generation            `json:"desired_generation"`
-	AppliedGeneration     isolatedstate.Generation            `json:"applied_generation"`
-	ObservedGeneration    isolatedstate.Generation            `json:"observed_generation"`
 	LifecycleState        isolatedstate.NetworkLifecycleState `json:"lifecycle_state"`
 	LiveState             string                              `json:"live_state,omitempty"`
 	LiveError             string                              `json:"live_error,omitempty"`
@@ -220,46 +211,36 @@ type isolatedTLSIdentityJSON struct {
 }
 
 type isolatedNATJSON struct {
-	DesiredState       isolatedstate.NATDesiredState  `json:"desired_state,omitempty"`
-	ObservedState      isolatedstate.NATObservedState `json:"observed_state,omitempty"`
-	LiveState          string                         `json:"live_state,omitempty"`
-	ConntrackMark      int64                          `json:"conntrack_mark,omitempty"`
-	DesiredGeneration  isolatedstate.Generation       `json:"desired_generation,omitempty"`
-	AppliedGeneration  isolatedstate.Generation       `json:"applied_generation,omitempty"`
-	ObservedGeneration isolatedstate.Generation       `json:"observed_generation,omitempty"`
-	LiveError          string                         `json:"live_error,omitempty"`
+	State         isolatedstate.NATState `json:"state,omitempty"`
+	LiveState     string                 `json:"live_state,omitempty"`
+	ConntrackMark int64                  `json:"conntrack_mark,omitempty"`
+	LiveError     string                 `json:"live_error,omitempty"`
 }
 
 type isolatedVMJSON struct {
-	ID                 string                         `json:"id"`
-	OrchestratorID     string                         `json:"orchestrator_id"`
-	NetworkID          string                         `json:"network_id"`
-	DisplayName        string                         `json:"display_name"`
-	HyperVName         string                         `json:"hyperv_name"`
-	HyperVVMID         *string                        `json:"hyperv_vm_id,omitempty"`
-	HyperVAdapterID    *string                        `json:"hyperv_adapter_id,omitempty"`
-	Incarnation        isolatedstate.Incarnation      `json:"incarnation"`
-	NodeName           string                         `json:"node_name"`
-	GuestOS            isolatedstate.GuestOS          `json:"guest_os"`
-	ProfileName        string                         `json:"profile_name"`
-	IPv4               string                         `json:"ipv4"`
-	MAC                string                         `json:"mac"`
-	PrefixLength       int                            `json:"prefix_length"`
-	GatewayIPv4        string                         `json:"gateway_ipv4"`
-	DNSServers         []string                       `json:"dns_servers"`
-	DNSDrift           bool                           `json:"dns_drift"`
-	DNSUpdatePending   bool                           `json:"dns_update_pending"`
-	DNSLastError       string                         `json:"dns_last_error,omitempty"`
-	DesiredGeneration  isolatedstate.Generation       `json:"desired_generation"`
-	AppliedGeneration  isolatedstate.Generation       `json:"applied_generation"`
-	ObservedGeneration isolatedstate.Generation       `json:"observed_generation"`
-	LifecycleState     isolatedstate.VMLifecycleState `json:"lifecycle_state"`
-	LiveState          string                         `json:"live_state,omitempty"`
-	LiveError          string                         `json:"live_error,omitempty"`
-	TLS                isolatedTLSIdentityJSON        `json:"tls"`
-	NAT                *isolatedNATJSON               `json:"nat,omitempty"`
-	RelayID            string                         `json:"relay_id,omitempty"`
-	RelayListenPort    int                            `json:"relay_listen_port,omitempty"`
+	ID              string                         `json:"id"`
+	OrchestratorID  string                         `json:"orchestrator_id"`
+	NetworkID       string                         `json:"network_id"`
+	DisplayName     string                         `json:"display_name"`
+	HyperVName      string                         `json:"hyperv_name"`
+	HyperVVMID      *string                        `json:"hyperv_vm_id,omitempty"`
+	HyperVAdapterID *string                        `json:"hyperv_adapter_id,omitempty"`
+	NodeName        string                         `json:"node_name"`
+	GuestOS         isolatedstate.GuestOS          `json:"guest_os"`
+	ProfileName     string                         `json:"profile_name"`
+	IPv4            string                         `json:"ipv4"`
+	MAC             string                         `json:"mac"`
+	PrefixLength    int                            `json:"prefix_length"`
+	GatewayIPv4     string                         `json:"gateway_ipv4"`
+	DNSServers      []string                       `json:"dns_servers"`
+	DNSDrift        bool                           `json:"dns_drift"`
+	LifecycleState  isolatedstate.VMLifecycleState `json:"lifecycle_state"`
+	LiveState       string                         `json:"live_state,omitempty"`
+	LiveError       string                         `json:"live_error,omitempty"`
+	TLS             isolatedTLSIdentityJSON        `json:"tls"`
+	NAT             *isolatedNATJSON               `json:"nat,omitempty"`
+	RelayID         string                         `json:"relay_id,omitempty"`
+	RelayListenPort int                            `json:"relay_listen_port,omitempty"`
 }
 
 type isolatedRelayStatsJSON struct {
@@ -273,26 +254,21 @@ type isolatedRelayStatsJSON struct {
 	LastSuccessfulConnectionUnix int64  `json:"last_successful_connection_unix,omitempty"`
 	TargetDialFailureCount       uint64 `json:"target_dial_failure_count"`
 	LastFailure                  string `json:"last_failure,omitempty"`
-	RelayGeneration              uint64 `json:"relay_generation"`
-	ApplianceGeneration          uint64 `json:"appliance_generation"`
 	Error                        string `json:"error,omitempty"`
 }
 
 type isolatedRelayJSON struct {
-	ID                 string                            `json:"id"`
-	VMID               string                            `json:"vm_id"`
-	OrchestratorID     string                            `json:"orchestrator_id"`
-	ListenPort         int                               `json:"listen_port"`
-	TargetIPv4         string                            `json:"target_ipv4"`
-	TargetPort         int                               `json:"target_port"`
-	DesiredGeneration  isolatedstate.Generation          `json:"desired_generation"`
-	AppliedGeneration  isolatedstate.Generation          `json:"applied_generation"`
-	ObservedGeneration isolatedstate.Generation          `json:"observed_generation"`
-	LifecycleState     isolatedstate.RelayLifecycleState `json:"lifecycle_state"`
-	LiveState          string                            `json:"live_state,omitempty"`
-	BoundMainIP        string                            `json:"bound_main_ip,omitempty"`
-	LiveError          string                            `json:"live_error,omitempty"`
-	Stats              *isolatedRelayStatsJSON           `json:"stats,omitempty"`
+	ID             string                            `json:"id"`
+	VMID           string                            `json:"vm_id"`
+	OrchestratorID string                            `json:"orchestrator_id"`
+	ListenPort     int                               `json:"listen_port"`
+	TargetIPv4     string                            `json:"target_ipv4"`
+	TargetPort     int                               `json:"target_port"`
+	LifecycleState isolatedstate.RelayLifecycleState `json:"lifecycle_state"`
+	LiveState      string                            `json:"live_state,omitempty"`
+	BoundMainIP    string                            `json:"bound_main_ip,omitempty"`
+	LiveError      string                            `json:"live_error,omitempty"`
+	Stats          *isolatedRelayStatsJSON           `json:"stats,omitempty"`
 }
 
 type isolatedPageJSON struct {
@@ -311,19 +287,8 @@ type isolatedSnapshotJSON struct {
 	Errors        []isolatedErrorJSON        `json:"errors"`
 }
 
-type natRow struct {
-	isolatedstate.NATAllocation
-}
-
-type pendingDNSRow struct {
-	VMID      string
-	LastError string
-}
-
 func (s *Server) registerIsolatedHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/isolated", s.handleIsolated)
-	mux.HandleFunc("/api/isolated/operations", s.handleIsolatedOperations)
-	mux.HandleFunc("/api/isolated/operation", s.handleIsolatedOperation)
 }
 
 func (s *Server) handleIsolated(w http.ResponseWriter, r *http.Request) {
@@ -373,13 +338,9 @@ func (s *Server) loadIsolatedSnapshot(
 	if err != nil {
 		result.Errors = append(result.Errors, isolatedErrorJSON{Scope: "relays", Error: err.Error()})
 	}
-	nats, err := loadNATRows(ctx, state)
+	nats, err := state.ListNAT(ctx, "", "", "")
 	if err != nil {
 		result.Errors = append(result.Errors, isolatedErrorJSON{Scope: "nat", Error: err.Error()})
-	}
-	pendingDNS, err := loadPendingDNSRows(ctx, state)
-	if err != nil {
-		result.Errors = append(result.Errors, isolatedErrorJSON{Scope: "dns_updates", Error: err.Error()})
 	}
 
 	networkByID := make(map[string]isolatedstate.PrivateNetwork, len(networks))
@@ -426,8 +387,6 @@ func (s *Server) loadIsolatedSnapshot(
 					ready.Available = true
 					ready.Ready = live.Ready
 					ready.ApplianceSchema = live.SchemaVersion
-					ready.ApplianceGeneration = live.ApplianceGeneration
-					ready.InventoryGeneration = live.InventoryGeneration
 					ready.PolicyVerified = live.PolicyVerified
 					ready.IPv4Forwarding = live.IPv4Forwarding
 					if strings.TrimSpace(live.MainIPv4) != "" {
@@ -436,16 +395,16 @@ func (s *Server) loadIsolatedSnapshot(
 							live.MainIPv4, strconv.Itoa(endpoint.AgentPort),
 						)
 					}
-					for _, item := range live.Desired.Networks {
+					for _, item := range live.Config.Networks {
 						liveNetworks[item.ID] = item
 					}
-					for _, item := range live.Desired.Guests {
+					for _, item := range live.Config.Guests {
 						liveGuests[item.ID] = item
 					}
-					for _, item := range live.Desired.Relays {
+					for _, item := range live.Config.Relays {
 						liveRelays[item.ID] = item
 					}
-					for _, item := range live.Desired.NAT {
+					for _, item := range live.Config.NAT {
 						liveNAT[item.VMID] = item
 					}
 				}
@@ -457,9 +416,7 @@ func (s *Server) loadIsolatedSnapshot(
 			HyperVName: value.HyperVName, HyperVVMID: value.HyperVVMID,
 			ProfileName: value.ProfileName, MainVSwitch: value.MainVSwitch,
 			MainMAC: value.MainMAC, LifecycleState: value.LifecycleState,
-			HealthState: value.HealthState, DesiredGeneration: value.DesiredGeneration,
-			AppliedGeneration:  value.AppliedGeneration,
-			ObservedGeneration: value.ObservedGeneration, LastSeenAt: value.LastSeenAt,
+			HealthState: value.HealthState, LastSeenAt: value.LastSeenAt,
 			Endpoint:  endpoint,
 			Readiness: ready,
 			Capacity:  isolatedCapacity(value, networkCount[value.ID], vmCount[value.ID], relayCount[value.ID]),
@@ -478,12 +435,9 @@ func (s *Server) loadIsolatedSnapshot(
 			SubnetIndex:           value.SubnetIndex, CIDR: value.CIDR,
 			GatewayIPv4: value.GatewayIPv4, OrchestratorMAC: value.OrchestratorMAC,
 			DNSServers: desiredDNS, ObservedDNSServers: observedDNS,
-			DNSDrift:           live.ID != "" && !sameStrings(desiredDNS, observedDNS),
-			DesiredGeneration:  value.DesiredGeneration,
-			AppliedGeneration:  value.AppliedGeneration,
-			ObservedGeneration: value.ObservedGeneration,
-			LifecycleState:     value.LifecycleState,
-			LiveState:          live.State, LiveError: live.LastError,
+			DNSDrift:       live.ID != "" && !sameStrings(desiredDNS, observedDNS),
+			LifecycleState: value.LifecycleState,
+			LiveState:      live.State, LiveError: live.LastError,
 		})
 	}
 
@@ -495,31 +449,22 @@ func (s *Server) loadIsolatedSnapshot(
 	}
 	natByVM := make(map[string]isolatedstate.NATAllocation, len(nats))
 	for _, value := range nats {
-		natByVM[value.VMID] = value.NATAllocation
-	}
-	pendingByVM := make(map[string]pendingDNSRow, len(pendingDNS))
-	for _, value := range pendingDNS {
-		pendingByVM[value.VMID] = value
+		natByVM[value.VMID] = value
 	}
 	for _, value := range vms {
 		parent := networkByID[value.NetworkID]
 		live := liveGuests[value.ID]
-		pending := pendingByVM[value.ID]
 		item := isolatedVMJSON{
 			ID: value.ID, OrchestratorID: value.OrchestratorID,
 			NetworkID: value.NetworkID, DisplayName: value.DisplayName,
 			HyperVName: value.HyperVName, HyperVVMID: value.HyperVVMID,
-			HyperVAdapterID: value.HyperVAdapterID, Incarnation: value.Incarnation,
-			NodeName: value.NodeName, GuestOS: value.GuestOS,
+			HyperVAdapterID: value.HyperVAdapterID,
+			NodeName:        value.NodeName, GuestOS: value.GuestOS,
 			ProfileName: value.ProfileName, IPv4: value.IPv4, MAC: value.MAC,
 			PrefixLength: value.PrefixLength, GatewayIPv4: value.GatewayIPv4,
-			DNSServers:       dnsList(value.DNSServersJSON),
-			DNSDrift:         !sameStrings(dnsList(value.DNSServersJSON), dnsList(parent.DNSServersJSON)),
-			DNSUpdatePending: pending.VMID != "", DNSLastError: pending.LastError,
-			DesiredGeneration:  value.DesiredGeneration,
-			AppliedGeneration:  value.AppliedGeneration,
-			ObservedGeneration: value.ObservedGeneration,
-			LifecycleState:     value.LifecycleState, LiveState: live.State,
+			DNSServers:     dnsList(value.DNSServersJSON),
+			DNSDrift:       !sameStrings(dnsList(value.DNSServersJSON), dnsList(parent.DNSServersJSON)),
+			LifecycleState: value.LifecycleState, LiveState: live.State,
 			LiveError: live.LastError, TLS: s.isolatedTLS(value.NodeName),
 		}
 		if relay, ok := relayByVM[value.ID]; ok {
@@ -529,12 +474,9 @@ func (s *Server) loadIsolatedSnapshot(
 		if nat, ok := natByVM[value.ID]; ok {
 			liveValue := liveNAT[value.ID]
 			item.NAT = &isolatedNATJSON{
-				DesiredState: nat.DesiredState, ObservedState: nat.ObservedState,
-				LiveState: liveValue.State, ConntrackMark: nat.ConntrackMark,
-				DesiredGeneration:  nat.DesiredGeneration,
-				AppliedGeneration:  nat.AppliedGeneration,
-				ObservedGeneration: nat.ObservedGeneration,
-				LiveError:          liveValue.LastError,
+				State: nat.State, LiveState: liveValue.State,
+				ConntrackMark: nat.ConntrackMark,
+				LiveError:     liveValue.LastError,
 			}
 		}
 		result.VMs = append(result.VMs, item)
@@ -551,10 +493,8 @@ func (s *Server) loadIsolatedSnapshot(
 		item := isolatedRelayJSON{
 			ID: value.ID, VMID: value.VMID, OrchestratorID: value.OrchestratorID,
 			ListenPort: value.ListenPort, TargetIPv4: value.TargetIPv4,
-			TargetPort: value.TargetPort, DesiredGeneration: value.DesiredGeneration,
-			AppliedGeneration:  value.AppliedGeneration,
-			ObservedGeneration: value.ObservedGeneration,
-			LifecycleState:     value.LifecycleState, LiveState: live.State,
+			TargetPort:     value.TargetPort,
+			LifecycleState: value.LifecycleState, LiveState: live.State,
 			BoundMainIP: live.BoundMainIP, LiveError: live.LastBindError,
 		}
 		if index >= statsStart && index < statsEnd && s.isolated.appliance != nil {
@@ -608,9 +548,8 @@ func readinessJSON(value isolated.ApplianceReadiness, err error) isolatedReadine
 	result := isolatedReadinessJSON{
 		Available: value.Node != "", Ready: value.Ready, Node: value.Node,
 		AgentVersion: value.AgentVersion, Capabilities: capabilities,
-		ProtocolVersion:     value.ProtocolVersion,
-		ApplianceGeneration: value.ApplianceGeneration,
-		Error:               strings.TrimSpace(value.Error),
+		ProtocolVersion: value.ProtocolVersion,
+		Error:           strings.TrimSpace(value.Error),
 	}
 	if err != nil {
 		result.Error = err.Error()
@@ -639,334 +578,6 @@ func isolatedCapacity(
 		FreeRelayPorts: max(0, appliance.RelayPortMax-appliance.RelayPortMin+1-relayCount),
 		FreeGuestIPs:   guestSlots, FreeMACs: guestSlots, FreeConntrackMarks: guestSlots,
 	}
-}
-
-func loadNATRows(ctx context.Context, state isolatedStateReader) ([]natRow, error) {
-	rows, err := state.QueryContext(ctx, `
-		SELECT vm_id, orchestrator_id, desired_state, observed_state,
-		       conntrack_mark, desired_generation, applied_generation,
-		       observed_generation, drain_started_unix, updated_at_unix
-		FROM nat_allocations ORDER BY vm_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := []natRow{}
-	for rows.Next() {
-		var value natRow
-		if err := rows.Scan(
-			&value.VMID, &value.OrchestratorID, &value.DesiredState,
-			&value.ObservedState, &value.ConntrackMark, &value.DesiredGeneration,
-			&value.AppliedGeneration, &value.ObservedGeneration,
-			&value.DrainStartedAt, &value.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
-}
-
-func loadPendingDNSRows(ctx context.Context, state isolatedStateReader) ([]pendingDNSRow, error) {
-	rows, err := state.QueryContext(ctx, `
-		SELECT vm_id, COALESCE(last_error, '')
-		FROM guest_pending_updates
-		WHERE lower(update_kind) LIKE '%dns%'
-		ORDER BY vm_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := []pendingDNSRow{}
-	for rows.Next() {
-		var value pendingDNSRow
-		if err := rows.Scan(&value.VMID, &value.LastError); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
-}
-
-type isolatedOperationJSON struct {
-	ID             string                        `json:"id"`
-	ResumeID       string                        `json:"resume_id"`
-	Kind           string                        `json:"kind"`
-	ResourceType   string                        `json:"resource_type"`
-	ResourceID     string                        `json:"resource_id"`
-	HostNode       *string                       `json:"host_node,omitempty"`
-	OrchestratorID *string                       `json:"orchestrator_id,omitempty"`
-	NetworkID      *string                       `json:"network_id,omitempty"`
-	PlanRevision   *string                       `json:"plan_revision,omitempty"`
-	Status         isolatedstate.OperationStatus `json:"status"`
-	CurrentPhase   string                        `json:"current_phase"`
-	ErrorCode      *string                       `json:"error_code,omitempty"`
-	ErrorText      *string                       `json:"error_text,omitempty"`
-	CreatedAt      isolatedstate.UnixSeconds     `json:"created_at_unix"`
-	UpdatedAt      isolatedstate.UnixSeconds     `json:"updated_at_unix"`
-	FinishedAt     *isolatedstate.UnixSeconds    `json:"finished_at_unix,omitempty"`
-	Phases         []isolatedOperationPhaseJSON  `json:"phases"`
-}
-
-type isolatedOperationPhaseJSON struct {
-	PhaseIndex int                                `json:"phase_index"`
-	PhaseName  string                             `json:"phase_name"`
-	Generation *isolatedstate.Generation          `json:"generation,omitempty"`
-	Status     isolatedstate.OperationPhaseStatus `json:"status"`
-	Attempt    int                                `json:"attempt"`
-	StartedAt  *isolatedstate.UnixSeconds         `json:"started_at_unix,omitempty"`
-	FinishedAt *isolatedstate.UnixSeconds         `json:"finished_at_unix,omitempty"`
-	ErrorText  *string                            `json:"error_text,omitempty"`
-}
-
-type isolatedOperationsJSON struct {
-	Operations []isolatedOperationJSON `json:"operations"`
-	Page       isolatedPageJSON        `json:"page"`
-	Errors     []isolatedErrorJSON     `json:"errors"`
-}
-
-func (s *Server) handleIsolatedOperations(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	state, err := s.isolated.reader()
-	if err != nil {
-		writePortalJSON(w, http.StatusServiceUnavailable, isolatedOperationsJSON{
-			Operations: []isolatedOperationJSON{},
-			Errors:     []isolatedErrorJSON{{Scope: "state", Error: err.Error()}},
-		})
-		return
-	}
-	limit, offset := isolatedPage(r, "", defaultIsolatedLimit)
-	phaseLimit := isolatedLimit(r, "phase_limit", 100, 500)
-	operations, total, hasMore, err := loadOperations(r.Context(), state, limit, offset)
-	result := isolatedOperationsJSON{
-		Operations: operations,
-		Page: isolatedPageJSON{
-			Limit: limit, Offset: offset, Total: total, HasMore: hasMore,
-		},
-		Errors: []isolatedErrorJSON{},
-	}
-	if err != nil {
-		result.Operations = []isolatedOperationJSON{}
-		result.Errors = append(result.Errors, isolatedErrorJSON{Scope: "operations", Error: err.Error()})
-		writePortalJSON(w, http.StatusOK, result)
-		return
-	}
-	for index := range result.Operations {
-		phases, phaseErr := loadOperationPhases(
-			r.Context(), state, result.Operations[index].ID, phaseLimit, 0,
-		)
-		if phaseErr != nil {
-			result.Errors = append(result.Errors, isolatedErrorJSON{
-				Scope: "operation:" + result.Operations[index].ID, Error: phaseErr.Error(),
-			})
-			continue
-		}
-		result.Operations[index].Phases = phases
-	}
-	writePortalJSON(w, http.StatusOK, result)
-}
-
-func (s *Server) handleIsolatedOperation(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	id := strings.TrimSpace(r.URL.Query().Get("id"))
-	if id == "" {
-		http.Error(w, "missing id", http.StatusBadRequest)
-		return
-	}
-	state, err := s.isolated.reader()
-	if err != nil {
-		writePortalJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
-		return
-	}
-	operation, err := loadOperation(r.Context(), state, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		http.Error(w, "operation not found", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		writePortalJSON(w, http.StatusOK, map[string]any{"error": err.Error()})
-		return
-	}
-	limit, offset := isolatedPage(r, "phase_", 100)
-	phases, phaseErr := loadOperationPhases(r.Context(), state, id, limit+1, offset)
-	hasMore := len(phases) > limit
-	if hasMore {
-		phases = phases[:limit]
-	}
-	phaseTotal, countErr := countOperationPhases(r.Context(), state, id)
-	if phaseErr == nil {
-		phaseErr = countErr
-	}
-	operation.Phases = phases
-	writePortalJSON(w, http.StatusOK, map[string]any{
-		"operation": operation,
-		"phases_page": isolatedPageJSON{
-			Limit: limit, Offset: offset, Total: phaseTotal, HasMore: hasMore,
-		},
-		"error": errorText(phaseErr),
-	})
-}
-
-func loadOperations(
-	ctx context.Context,
-	state isolatedStateReader,
-	limit, offset int,
-) ([]isolatedOperationJSON, int, bool, error) {
-	total, err := countOperations(ctx, state)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	rows, err := state.QueryContext(ctx, `
-		SELECT id, kind, resource_type, resource_id, host_node, orchestrator_id,
-		       network_id, plan_revision, status, current_phase, error_code,
-		       error_text, created_at_unix, updated_at_unix, finished_at_unix
-		FROM operations
-		ORDER BY created_at_unix DESC, id DESC
-		LIMIT ? OFFSET ?`, limit+1, offset)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	defer rows.Close()
-	values := []isolatedOperationJSON{}
-	for rows.Next() {
-		value, err := scanOperation(rows)
-		if err != nil {
-			return nil, 0, false, err
-		}
-		values = append(values, value)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, false, err
-	}
-	hasMore := len(values) > limit
-	if hasMore {
-		values = values[:limit]
-	}
-	return values, total, hasMore, nil
-}
-
-func countOperations(ctx context.Context, state isolatedStateReader) (int, error) {
-	rows, err := state.QueryContext(ctx, `SELECT COUNT(*) FROM operations`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return 0, err
-		}
-		return 0, sql.ErrNoRows
-	}
-	var total int
-	if err := rows.Scan(&total); err != nil {
-		return 0, err
-	}
-	return total, rows.Err()
-}
-
-func loadOperation(
-	ctx context.Context,
-	state isolatedStateReader,
-	id string,
-) (isolatedOperationJSON, error) {
-	rows, err := state.QueryContext(ctx, `
-		SELECT id, kind, resource_type, resource_id, host_node, orchestrator_id,
-		       network_id, plan_revision, status, current_phase, error_code,
-		       error_text, created_at_unix, updated_at_unix, finished_at_unix
-		FROM operations WHERE id=?`, strings.ToLower(id))
-	if err != nil {
-		return isolatedOperationJSON{}, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return isolatedOperationJSON{}, err
-		}
-		return isolatedOperationJSON{}, sql.ErrNoRows
-	}
-	return scanOperation(rows)
-}
-
-type rowScanner interface {
-	Scan(...any) error
-}
-
-func scanOperation(row rowScanner) (isolatedOperationJSON, error) {
-	var value isolatedOperationJSON
-	err := row.Scan(
-		&value.ID, &value.Kind, &value.ResourceType, &value.ResourceID,
-		&value.HostNode, &value.OrchestratorID, &value.NetworkID,
-		&value.PlanRevision, &value.Status, &value.CurrentPhase,
-		&value.ErrorCode, &value.ErrorText, &value.CreatedAt,
-		&value.UpdatedAt, &value.FinishedAt,
-	)
-	value.ResumeID = value.ID
-	value.Phases = []isolatedOperationPhaseJSON{}
-	return value, err
-}
-
-func loadOperationPhases(
-	ctx context.Context,
-	state isolatedStateReader,
-	operationID string,
-	limit, offset int,
-) ([]isolatedOperationPhaseJSON, error) {
-	rows, err := state.QueryContext(ctx, `
-		SELECT phase_index, phase_name, generation, status, attempt,
-		       started_at_unix, finished_at_unix, error_text
-		FROM operation_phases
-		WHERE operation_id=?
-		ORDER BY phase_index, attempt
-		LIMIT ? OFFSET ?`, strings.ToLower(operationID), limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := []isolatedOperationPhaseJSON{}
-	for rows.Next() {
-		var value isolatedOperationPhaseJSON
-		if err := rows.Scan(
-			&value.PhaseIndex, &value.PhaseName, &value.Generation,
-			&value.Status, &value.Attempt, &value.StartedAt,
-			&value.FinishedAt, &value.ErrorText,
-		); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
-}
-
-func countOperationPhases(
-	ctx context.Context,
-	state isolatedStateReader,
-	operationID string,
-) (int, error) {
-	rows, err := state.QueryContext(ctx, `
-		SELECT COUNT(*) FROM operation_phases WHERE operation_id=?`,
-		strings.ToLower(operationID),
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return 0, err
-		}
-		return 0, sql.ErrNoRows
-	}
-	var total int
-	if err := rows.Scan(&total); err != nil {
-		return 0, err
-	}
-	return total, rows.Err()
 }
 
 func isolatedPage(r *http.Request, prefix string, fallback int) (int, int) {
@@ -1001,8 +612,7 @@ func relayStatsJSON(value appliance.RelayStats, err error) *isolatedRelayStatsJS
 		BytesMainToGuest:             value.BytesMainToGuest,
 		LastSuccessfulConnectionUnix: value.LastSuccessfulConnectionUnix,
 		TargetDialFailureCount:       value.TargetDialFailureCount,
-		LastFailure:                  value.LastFailure, RelayGeneration: value.RelayGeneration,
-		ApplianceGeneration: value.ApplianceGeneration,
+		LastFailure:                  value.LastFailure,
 	}
 	if err != nil {
 		result.Error = err.Error()
@@ -1042,13 +652,6 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
-}
-
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }
 
 func writePortalJSON(w http.ResponseWriter, status int, value any) {

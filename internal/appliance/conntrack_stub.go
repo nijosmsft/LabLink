@@ -18,3 +18,7 @@ func NewLinuxConntrack(LinuxConntrackConfig) (*LinuxConntrack, error) {
 func (*LinuxConntrack) Count(context.Context, ConntrackFilter) (int, error) {
 	return 0, ErrUnsupportedPlatform
 }
+
+func (*LinuxConntrack) RetireExact(context.Context, ConntrackFilter) error {
+	return ErrUnsupportedPlatform
+}

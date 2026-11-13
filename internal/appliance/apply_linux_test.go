@@ -99,9 +99,7 @@ func TestEmergencyPolicyIsAtomicDropFirstAndDisablesForwarding(t *testing.T) {
 }
 
 func TestFullPolicyPrivateICMPAndRelayOrdering(t *testing.T) {
-	snapshot := DesiredSnapshot{
-		Status:    Status{InventoryGeneration: 6},
-		Authority: Authority{Fence: 4, ParentGeneration: 2, ParentState: "active"},
+	snapshot := StaticSnapshot{
 		Networks: []Network{{
 			ID: "network-1", GatewayIPv4: "10.80.0.1",
 			InterfaceName: "eth1", State: "active",
@@ -165,7 +163,7 @@ func TestFullPolicyPrivateICMPAndRelayOrdering(t *testing.T) {
 }
 
 func TestNATPolicyGatesNewAndEstablishedFlowsByExactVMState(t *testing.T) {
-	base := DesiredSnapshot{
+	base := StaticSnapshot{
 		Networks: []Network{{
 			ID: "network-1", GatewayIPv4: "10.80.0.1",
 			InterfaceName: "eth1", State: "active",

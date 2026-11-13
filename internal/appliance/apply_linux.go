@@ -114,10 +114,9 @@ func NewLinuxCompiler(config LinuxCompilerConfig) (*LinuxCompiler, error) {
 
 func (c *LinuxCompiler) Compile(
 	_ context.Context,
-	snapshot DesiredSnapshot,
-	intent Intent,
+	snapshot StaticSnapshot,
 ) (CompiledApply, error) {
-	snapshotHash, err := HashDesiredSnapshot(snapshot)
+	snapshotHash, err := HashStaticSnapshot(snapshot)
 	if err != nil {
 		return CompiledApply{}, err
 	}
@@ -126,8 +125,11 @@ func (c *LinuxCompiler) Compile(
 	if err != nil {
 		return CompiledApply{}, err
 	}
+	compiledHash := hashBytes([]byte(ruleset))
+	ruleset = strings.ReplaceAll(ruleset, compiledHashToken, compiledHash)
 	return CompiledApply{
-		Intent:           intent,
+		SnapshotHash:     snapshotHash,
+		CompiledHash:     compiledHash,
 		Artifacts:        map[string][]byte{NFTablesArtifact: []byte(ruleset)},
 		EnableForwarding: forwarding,
 	}, nil
@@ -246,7 +248,7 @@ func (t *LinuxApplyTarget) Verify(
 }
 
 func compileFullRuleset(
-	snapshot DesiredSnapshot,
+	snapshot StaticSnapshot,
 	mainInterface, _ string, compiledHash string,
 ) (string, bool, error) {
 	if err := validateInterfaceName(mainInterface); err != nil {
@@ -255,7 +257,7 @@ func compileFullRuleset(
 	networks := make(map[string]linuxPrivateNetwork)
 	var private []linuxPrivateNetwork
 	for _, network := range snapshot.Networks {
-		if network.RetiredAtUnix != nil || network.State == "retired" {
+		if network.State == "retired" {
 			continue
 		}
 		if err := validateInterfaceName(network.InterfaceName); err != nil {
@@ -274,7 +276,7 @@ func compileFullRuleset(
 
 	guests := make(map[string]Guest)
 	for _, guest := range snapshot.Guests {
-		if guest.RetiredAtUnix != nil || guest.State == "retired" {
+		if guest.State == "retired" {
 			continue
 		}
 		address, err := netip.ParseAddr(guest.IPv4)
@@ -312,11 +314,6 @@ func compileFullRuleset(
 				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
 			enabledMappings = append(enabledMappings,
 				quoteNFT(network.Interface)+" . "+guest.IPv4+" : "+mark)
-		case "draining":
-			activeMappings = append(activeMappings,
-				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
-			natPairs = append(natPairs,
-				quoteNFT(network.Interface)+" . "+guest.IPv4+" . "+mark)
 		case "disabled":
 		default:
 			return "", false, fmt.Errorf("NAT state for %s has invalid state %q",
@@ -329,7 +326,7 @@ func compileFullRuleset(
 
 	var relayRules []string
 	for _, relay := range snapshot.Relays {
-		if relay.RetiredAtUnix != nil || relay.State == "retired" ||
+		if relay.State == "retired" ||
 			relay.State == "disabled" {
 			continue
 		}

@@ -4,46 +4,26 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-const (
-	CurrentSchemaVersion = 2
-	schemaVersionKey     = "schema_version"
-)
+const CurrentSchemaVersion = 1
 
 //go:embed schema.sql
-var initialSchemaSQL string
+var schemaSQL string
 
-//go:embed migration_v2.sql
-var migrationV2SQL string
-
-type migration struct {
-	version int
-	sql     string
-}
-
-var schemaMigrations = []migration{
-	{version: 1, sql: initialSchemaSQL},
-	{version: 2, sql: migrationV2SQL},
-}
-
-// Store is one process-local handle to the shared isolated state database.
-// SQLite WAL and BEGIN IMMEDIATE coordinate independent LabLink processes.
 type Store struct {
 	db   *sql.DB
 	path string
 }
 
-// DefaultDBPath returns the isolated state path under LABLINK_HOME.
 func DefaultDBPath() string {
 	if home := strings.TrimSpace(os.Getenv("LABLINK_HOME")); home != "" {
 		return filepath.Join(home, "isolated.db")
@@ -55,155 +35,54 @@ func DefaultDBPath() string {
 	return filepath.Join(home, ".lablink", "isolated.db")
 }
 
-// Open opens the shared database, configures SQLite, and applies every
-// forward migration in one transaction. No database backup is created.
 func Open(path string) (*Store, error) {
-	return openWithMigrations(path, schemaMigrations)
-}
-
-func openWithMigrations(path string, migrations []migration) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
 		path = DefaultDBPath()
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, fmt.Errorf("isolatedstate: mkdir %s: %w", dir, err)
-		}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
 	}
-
-	dsn := fmt.Sprintf(
-		"file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_txlock=immediate",
-		path,
-	)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", fmt.Sprintf(
+		"file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)",
+		path))
 	if err != nil {
-		return nil, fmt.Errorf("isolatedstate: open: %w", err)
+		return nil, err
 	}
-	closeOnError := func(err error) (*Store, error) {
+	store := &Store{db: db, path: path}
+	if err := store.initialize(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-
-	if err := db.Ping(); err != nil {
-		return closeOnError(fmt.Errorf("isolatedstate: ping: %w", err))
-	}
-	for _, pragma := range []string{
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-	} {
-		if err := execOpenPragma(db, pragma); err != nil {
-			return closeOnError(fmt.Errorf("isolatedstate: %s: %w", pragma, err))
-		}
-	}
-
-	if err := applyMigrations(context.Background(), db, migrations); err != nil {
-		return closeOnError(err)
-	}
-	return &Store{db: db, path: path}, nil
+	return store, nil
 }
 
-func execOpenPragma(db *sql.DB, pragma string) error {
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, err := db.Exec(pragma)
-		if err == nil {
-			return nil
-		}
-		message := strings.ToLower(err.Error())
-		if (!strings.Contains(message, "sqlite_busy") &&
-			!strings.Contains(message, "database is locked")) ||
-			time.Now().After(deadline) {
+func (s *Store) initialize(ctx context.Context) error {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='schema_meta'
+	`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 			return err
 		}
-		time.Sleep(25 * time.Millisecond)
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO schema_meta(key,value) VALUES ('schema_version',?)`,
+			strconv.Itoa(CurrentSchemaVersion))
+		return err
 	}
-}
-
-func applyMigrations(ctx context.Context, db *sql.DB, migrations []migration) error {
-	migrations = append([]migration(nil), migrations...)
-	sort.Slice(migrations, func(i, j int) bool {
-		return migrations[i].version < migrations[j].version
-	})
-	for i, m := range migrations {
-		if m.version != i+1 {
-			return fmt.Errorf("isolatedstate: migrations must be contiguous from version 1; found version %d at index %d", m.version, i)
-		}
-		if strings.TrimSpace(m.sql) == "" {
-			return fmt.Errorf("isolatedstate: migration %d is empty", m.version)
-		}
-	}
-
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("isolatedstate: begin migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	current, err := schemaVersionInTx(ctx, tx)
+	version, err := s.SchemaVersion(ctx)
 	if err != nil {
 		return err
 	}
-	if current > len(migrations) {
+	if version != CurrentSchemaVersion {
 		return fmt.Errorf(
-			"isolatedstate: database schema version %d is newer than supported version %d",
-			current, len(migrations),
-		)
-	}
-
-	for _, m := range migrations {
-		if m.version <= current {
-			continue
-		}
-		if m.version != current+1 {
-			return fmt.Errorf("isolatedstate: missing migration from version %d to %d", current, m.version)
-		}
-		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-			return fmt.Errorf("isolatedstate: apply migration %d: %w", m.version, err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO schema_meta(key, value) VALUES (?, ?)
-			ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-			schemaVersionKey, strconv.Itoa(m.version),
-		); err != nil {
-			return fmt.Errorf("isolatedstate: record migration %d: %w", m.version, err)
-		}
-		current = m.version
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("isolatedstate: commit migration: %w", err)
+			"isolatedstate: schema %d is unsupported; back up and remove the disposable isolated.db before using schema %d",
+			version, CurrentSchemaVersion)
 	}
 	return nil
-}
-
-func schemaVersionInTx(ctx context.Context, tx *sql.Tx) (int, error) {
-	var exists int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM sqlite_master
-		WHERE type='table' AND name='schema_meta'`).Scan(&exists); err != nil {
-		return 0, fmt.Errorf("isolatedstate: find schema metadata: %w", err)
-	}
-	if exists == 0 {
-		return 0, nil
-	}
-
-	var value string
-	err := tx.QueryRowContext(ctx,
-		`SELECT value FROM schema_meta WHERE key=?`, schemaVersionKey,
-	).Scan(&value)
-	if err == sql.ErrNoRows {
-		return 0, fmt.Errorf("isolatedstate: schema_meta exists without %q", schemaVersionKey)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("isolatedstate: read schema version: %w", err)
-	}
-	version, err := strconv.Atoi(value)
-	if err != nil || version < 0 {
-		return 0, fmt.Errorf("isolatedstate: invalid schema version %q", value)
-	}
-	return version, nil
 }
 
 func (s *Store) Close() error {
@@ -213,39 +92,29 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) Path() string {
-	if s == nil {
-		return ""
-	}
-	return s.path
-}
+func (s *Store) Path() string { return s.path }
 
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
-	var value string
+	var raw string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT value FROM schema_meta WHERE key=?`, schemaVersionKey,
-	).Scan(&value); err != nil {
+		`SELECT value FROM schema_meta WHERE key='schema_version'`,
+	).Scan(&raw); err != nil {
 		return 0, err
 	}
-	version, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("isolatedstate: invalid schema version %q", value)
-	}
-	return version, nil
+	return strconv.Atoi(raw)
 }
 
-func (s *Store) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
-	return s.db.BeginTx(ctx, opts)
-}
-
-func (s *Store) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.db.ExecContext(ctx, query, args...)
-}
-
-func (s *Store) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+func (s *Store) QueryContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) (*sql.Rows, error) {
 	return s.db.QueryContext(ctx, query, args...)
 }
 
-func (s *Store) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.db.QueryRowContext(ctx, query, args...)
+func noRows(kind, id string, err error) error {
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("isolatedstate: %s %q not found", kind, id)
+	}
+	return err
 }

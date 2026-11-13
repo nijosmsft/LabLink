@@ -36,7 +36,7 @@ func NewLinuxCompiler(LinuxCompilerConfig) (*LinuxCompiler, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
-func (*LinuxCompiler) Compile(context.Context, DesiredSnapshot, Intent) (CompiledApply, error) {
+func (*LinuxCompiler) Compile(context.Context, StaticSnapshot) (CompiledApply, error) {
 	return CompiledApply{}, ErrUnsupportedPlatform
 }
 

@@ -55,8 +55,7 @@ func TestMissingCapabilitiesFailClosedWithUpdateGuidance(t *testing.T) {
 		CapabilityRelayV1,
 		CapabilityNATV1,
 		CapabilityStatsV1,
-		CapabilityAuthorityReleaseV1,
-		CapabilityParentLifecycleV1,
+		CapabilityStaticConfigV1,
 	}
 	if len(compatibilityErr.MissingCapabilities) != len(wantMissing) {
 		t.Fatalf("missing capabilities = %v, want %v", compatibilityErr.MissingCapabilities, wantMissing)

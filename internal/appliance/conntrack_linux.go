@@ -61,6 +61,34 @@ func (c *LinuxConntrack) Count(
 	return count, nil
 }
 
+func (c *LinuxConntrack) RetireExact(
+	ctx context.Context,
+	filter ConntrackFilter,
+) error {
+	if err := validateConntrackFilter(filter); err != nil {
+		return err
+	}
+	mark := strconv.FormatUint(uint64(filter.ConntrackMark), 10)
+	result, runErr := c.executor.Run(ctx, "conntrack", "-D", "-f", "ipv4",
+		"--mark", mark, "-s", filter.GuestIPv4.String())
+	if runErr != nil {
+		return runErr
+	}
+	count, countErr := c.Count(ctx, filter)
+	if countErr != nil {
+		return countErr
+	}
+	if count == 0 {
+		return nil
+	}
+	if result.ExitCode != 0 {
+		return commandFailure(
+			"conntrack -D -f ipv4 --mark "+mark+" -s "+filter.GuestIPv4.String(),
+			result)
+	}
+	return fmt.Errorf("conntrack exact retirement left %d matching entries", count)
+}
+
 func ParseConntrackOutput(output string) ([]ConntrackEntry, error) {
 	return conntrackTextParser{}.Parse(output)
 }

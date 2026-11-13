@@ -7,22 +7,6 @@ import (
 	"sync/atomic"
 )
 
-type RelayStats struct {
-	RelayID                      string
-	ListenerState                string
-	BindAddress                  string
-	BindError                    string
-	ActiveConnections            uint64
-	TotalAcceptedConnections     uint64
-	BytesGuestToMain             uint64
-	BytesMainToGuest             uint64
-	LastSuccessfulConnectionUnix int64
-	TargetDialFailureCount       uint64
-	LastFailure                  string
-	RelayGeneration              uint64
-	ApplianceGeneration          uint64
-}
-
 type relayCounters struct {
 	active       atomic.Uint64
 	accepted     atomic.Uint64
@@ -50,51 +34,43 @@ func (c *relayCounters) failure() string {
 	return c.lastFailure
 }
 
-func (m *RelayManager) Stats(ctx context.Context, relayID string) (RelayStats, error) {
+func (m *RelayManager) Stats(
+	ctx context.Context,
+	relayID string,
+) (RelayStats, error) {
 	m.mu.RLock()
 	runtime := m.relays[relayID]
-	if runtime == nil {
-		runtime = m.retiring[relayID]
-	}
 	m.mu.RUnlock()
 	if runtime == nil {
-		return RelayStats{}, storeError(CodeNotFound, "relay %q is not managed", relayID)
+		return RelayStats{}, storeError(
+			CodeNotFound, "relay %q is not managed", relayID)
 	}
-	runtime.mu.Lock()
-	relay := runtime.relay
-	runtime.mu.Unlock()
-	validated, err := m.store.ValidateRelayCurrent(
-		ctx, relay.ID, relay.DesiredGeneration)
+	relay, found, err := m.store.Relay(ctx, relayID)
 	if err != nil {
 		return RelayStats{}, err
 	}
-	runtime.mu.Lock()
-	runtime.relay = validated
-	runtime.mu.Unlock()
-	status, err := m.store.Status(ctx)
-	if err != nil {
-		return RelayStats{}, err
+	if !found {
+		return RelayStats{}, storeError(
+			CodeNotFound, "relay %q is not configured", relayID)
 	}
-	return runtime.stats(status.InventoryGeneration), nil
+	runtime.mu.Lock()
+	runtime.relay = relay
+	runtime.mu.Unlock()
+	return runtime.stats(), nil
 }
 
-func (m *RelayManager) AllStats(ctx context.Context) ([]RelayStats, error) {
-	status, err := m.store.Status(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (m *RelayManager) AllStats(
+	_ context.Context,
+) ([]RelayStats, error) {
 	m.mu.RLock()
-	runtimes := make([]*relayRuntime, 0, len(m.relays)+len(m.retiring))
+	runtimes := make([]*relayRuntime, 0, len(m.relays))
 	for _, runtime := range m.relays {
-		runtimes = append(runtimes, runtime)
-	}
-	for _, runtime := range m.retiring {
 		runtimes = append(runtimes, runtime)
 	}
 	m.mu.RUnlock()
 	stats := make([]RelayStats, 0, len(runtimes))
 	for _, runtime := range runtimes {
-		stats = append(stats, runtime.stats(status.InventoryGeneration))
+		stats = append(stats, runtime.stats())
 	}
 	sort.Slice(stats, func(i, j int) bool {
 		return stats[i].RelayID < stats[j].RelayID
@@ -102,26 +78,24 @@ func (m *RelayManager) AllStats(ctx context.Context) ([]RelayStats, error) {
 	return stats, nil
 }
 
-func (m *RelayManager) AggregateStats(ctx context.Context) (RelayStats, error) {
+func (m *RelayManager) AggregateStats(
+	ctx context.Context,
+) (RelayStats, error) {
 	stats, err := m.AllStats(ctx)
 	if err != nil {
 		return RelayStats{}, err
 	}
-	aggregate := RelayStats{
-		RelayID:       "*",
-		ListenerState: "ready",
-	}
+	aggregate := RelayStats{RelayID: "*", ListenerState: "ready"}
 	for _, relay := range stats {
 		aggregate.ActiveConnections += relay.ActiveConnections
 		aggregate.TotalAcceptedConnections += relay.TotalAcceptedConnections
 		aggregate.BytesGuestToMain += relay.BytesGuestToMain
 		aggregate.BytesMainToGuest += relay.BytesMainToGuest
 		aggregate.TargetDialFailureCount += relay.TargetDialFailureCount
-		if relay.LastSuccessfulConnectionUnix > aggregate.LastSuccessfulConnectionUnix {
-			aggregate.LastSuccessfulConnectionUnix = relay.LastSuccessfulConnectionUnix
-		}
-		if relay.ApplianceGeneration > aggregate.ApplianceGeneration {
-			aggregate.ApplianceGeneration = relay.ApplianceGeneration
+		if relay.LastSuccessfulConnectionUnix >
+			aggregate.LastSuccessfulConnectionUnix {
+			aggregate.LastSuccessfulConnectionUnix =
+				relay.LastSuccessfulConnectionUnix
 		}
 		if relay.ListenerState != "ready" {
 			aggregate.ListenerState = "degraded"
@@ -133,19 +107,16 @@ func (m *RelayManager) AggregateStats(ctx context.Context) (RelayStats, error) {
 	return aggregate, nil
 }
 
-func (r *relayRuntime) stats(applianceGeneration uint64) RelayStats {
+func (r *relayRuntime) stats() RelayStats {
 	r.mu.Lock()
 	relayID := r.relay.ID
 	listenerState := r.listenerState
 	bindAddress := r.boundMainIP
 	bindError := r.bindError
-	generation := r.relay.DesiredGeneration
 	r.mu.Unlock()
 	return RelayStats{
-		RelayID:                      relayID,
-		ListenerState:                listenerState,
-		BindAddress:                  bindAddress,
-		BindError:                    bindError,
+		RelayID: relayID, ListenerState: listenerState,
+		BindAddress: bindAddress, BindError: bindError,
 		ActiveConnections:            r.counters.active.Load(),
 		TotalAcceptedConnections:     r.counters.accepted.Load(),
 		BytesGuestToMain:             r.counters.guestToMain.Load(),
@@ -153,7 +124,5 @@ func (r *relayRuntime) stats(applianceGeneration uint64) RelayStats {
 		LastSuccessfulConnectionUnix: r.counters.lastSuccess.Load(),
 		TargetDialFailureCount:       r.counters.dialFailures.Load(),
 		LastFailure:                  r.counters.failure(),
-		RelayGeneration:              generation,
-		ApplianceGeneration:          applianceGeneration,
 	}
 }

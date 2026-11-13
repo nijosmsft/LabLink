@@ -8,18 +8,15 @@ import (
 type Capability string
 
 const (
-	CapabilityApplianceV1        Capability = "isolated.appliance.v1"
-	CapabilityNetworkV1          Capability = "isolated.network.v1"
-	CapabilityRelayV1            Capability = "isolated.relay.v1"
-	CapabilityNATV1              Capability = "isolated.nat.v1"
-	CapabilityStatsV1            Capability = "isolated.stats.v1"
-	CapabilityAuthorityReleaseV1 Capability = "isolated.authority-release.v1"
-	CapabilityParentLifecycleV1  Capability = "isolated.parent-lifecycle.v1"
+	CapabilityApplianceV1    Capability = "isolated.appliance.v1"
+	CapabilityNetworkV1      Capability = "isolated.network.v1"
+	CapabilityRelayV1        Capability = "isolated.relay.v1"
+	CapabilityNATV1          Capability = "isolated.nat.v1"
+	CapabilityStatsV1        Capability = "isolated.stats.v1"
+	CapabilityStaticConfigV1 Capability = "isolated.static-config.v1"
 
-	// Isolated orchestrators have no legacy fallback: authority release and
-	// frozen-parent lifecycle are mandatory protocol-v2 operations.
-	MinimumProtocolVersion uint32 = 2
-	MaximumProtocolVersion uint32 = 2
+	MinimumProtocolVersion uint32 = 3
+	MaximumProtocolVersion uint32 = 3
 )
 
 type ProtocolRange struct {
@@ -57,8 +54,7 @@ func RequiredOrchestratorCapabilities() []Capability {
 		CapabilityRelayV1,
 		CapabilityNATV1,
 		CapabilityStatsV1,
-		CapabilityAuthorityReleaseV1,
-		CapabilityParentLifecycleV1,
+		CapabilityStaticConfigV1,
 	}
 }
 
@@ -205,7 +201,7 @@ func (e *CompatibilityError) Error() string {
 		)
 	case "AGENT_UPGRADE_REQUIRED":
 		return fmt.Sprintf(
-			"%s: node %q agent version %q reports protocol version %d but isolated appliance protocol v%d or newer is required for authority release and frozen lifecycle; server version %q; run update_agent(node=%s)",
+			"%s: node %q agent version %q reports protocol version %d but isolated appliance protocol v%d or newer is required for static configuration; server version %q; run update_agent(node=%s)",
 			e.Code,
 			node,
 			agentVersion,

@@ -168,18 +168,7 @@ func (m *RelayManager) Restore(ctx context.Context, mainIPv4 string) error {
 
 	var restoreErrors []error
 	for _, relay := range snapshot.Relays {
-		if relay.RetiredAtUnix != nil || relay.State == "retiring" ||
-			relay.State == "removing" || relay.State == "removed" {
-			continue
-		}
-		validated, validateErr := m.store.ValidateRelayCurrent(
-			ctx, relay.ID, relay.DesiredGeneration)
-		if validateErr != nil {
-			restoreErrors = append(restoreErrors,
-				fmt.Errorf("relay %s: %w", relay.ID, validateErr))
-			continue
-		}
-		runtime := newRelayRuntime(m, validated)
+		runtime := newRelayRuntime(m, relay)
 		m.mu.Lock()
 		m.relays[relay.ID] = runtime
 		m.mu.Unlock()
@@ -199,10 +188,13 @@ func (m *RelayManager) Restore(ctx context.Context, mainIPv4 string) error {
 func (m *RelayManager) Apply(
 	ctx context.Context,
 	relayID string,
-	expectedGeneration, fence uint64,
+	_, _ uint64,
 ) error {
-	relay, err := m.store.ValidateRelay(ctx, relayID, expectedGeneration, fence)
-	if err != nil {
+	relay, found, err := m.store.Relay(ctx, relayID)
+	if err != nil || !found {
+		if err == nil {
+			err = storeError(CodeNotFound, "relay %q not found", relayID)
+		}
 		return err
 	}
 	m.mu.RLock()
@@ -288,10 +280,13 @@ func (m *RelayManager) Rebind(ctx context.Context, mainIPv4 string) error {
 func (m *RelayManager) Retire(
 	ctx context.Context,
 	relayID string,
-	expectedGeneration, fence uint64,
+	_, _ uint64,
 ) (Relay, error) {
-	relay, err := m.store.BeginRelayRetirement(ctx, relayID, expectedGeneration, fence)
-	if err != nil {
+	relay, found, err := m.store.Relay(ctx, relayID)
+	if err != nil || !found {
+		if err == nil {
+			err = storeError(CodeNotFound, "relay %q not found", relayID)
+		}
 		return Relay{}, err
 	}
 
@@ -334,27 +329,16 @@ func (m *RelayManager) Retire(
 				return relay, storeError(CodeResourceInUse,
 					"relay %q cleanup timed out after forced connection close", relayID)
 			}
-			retired, err := m.store.FinalizeRelayRetirement(
-				cleanupCtx, relayID, expectedGeneration, fence)
-			if err != nil {
-				return Relay{}, err
-			}
 			m.mu.Lock()
 			delete(m.retiring, relayID)
 			m.mu.Unlock()
-			return retired, nil
+			return relay, nil
 		}
-	}
-
-	retired, err := m.store.FinalizeRelayRetirement(
-		ctx, relayID, expectedGeneration, fence)
-	if err != nil {
-		return Relay{}, err
 	}
 	m.mu.Lock()
 	delete(m.retiring, relayID)
 	m.mu.Unlock()
-	return retired, nil
+	return relay, nil
 }
 
 func (m *RelayManager) RemoveRelay(
@@ -436,9 +420,11 @@ func (m *RelayManager) bindRuntime(
 	oldBound := runtime.boundMainIP
 	runtime.mu.Unlock()
 
-	validated, err := m.store.ValidateRelayCurrent(
-		ctx, relay.ID, relay.DesiredGeneration)
-	if err != nil {
+	validated, found, err := m.store.Relay(ctx, relay.ID)
+	if err != nil || !found {
+		if err == nil {
+			err = storeError(CodeNotFound, "relay %q not found", relay.ID)
+		}
 		return err
 	}
 	relay = validated
@@ -449,13 +435,13 @@ func (m *RelayManager) bindRuntime(
 		runtime.listenerState = "degraded"
 		runtime.bindError = err.Error()
 		runtime.mu.Unlock()
-		_ = m.store.SetRelayBindStatus(ctx, relay.ID, relay.DesiredGeneration,
-			oldBound, err.Error(), "degraded")
+		_ = m.store.SetRelayBindStatus(
+			ctx, relay.ID, oldBound, err.Error(), "degraded")
 		return fmt.Errorf("bind %s: %w", address, err)
 	}
 	session := &relayListener{Listener: listener}
-	if err := m.store.SetRelayBindStatus(ctx, relay.ID, relay.DesiredGeneration,
-		mainIPv4, "", "ready"); err != nil {
+	if err := m.store.SetRelayBindStatus(
+		ctx, relay.ID, mainIPv4, "", "ready"); err != nil {
 		_ = listener.Close()
 		return err
 	}
@@ -496,7 +482,7 @@ func (r *relayRuntime) acceptLoop(listener *relayListener) {
 				relay := r.relay
 				r.mu.Unlock()
 				_ = r.manager.store.SetRelayBindStatus(
-					context.Background(), relay.ID, relay.DesiredGeneration,
+					context.Background(), relay.ID,
 					"", err.Error(), "degraded")
 			} else {
 				r.mu.Unlock()
@@ -520,9 +506,11 @@ func (r *relayRuntime) handleAccepted(incoming net.Conn) {
 	}
 	defer cancel()
 
-	validated, err := r.manager.store.ValidateRelayCurrent(
-		dialCtx, relay.ID, relay.DesiredGeneration)
-	if err != nil {
+	validated, found, err := r.manager.store.Relay(dialCtx, relay.ID)
+	if err != nil || !found {
+		if err == nil {
+			err = storeError(CodeNotFound, "relay %q not found", relay.ID)
+		}
 		r.finishDial(dialID, nil)
 		r.counters.setFailure(err)
 		_ = incoming.Close()
@@ -530,8 +518,7 @@ func (r *relayRuntime) handleAccepted(incoming net.Conn) {
 	}
 	r.mu.Lock()
 	if !r.retiring && !r.stopping &&
-		r.relay.ID == validated.ID &&
-		r.relay.DesiredGeneration == validated.DesiredGeneration {
+		r.relay.ID == validated.ID {
 		r.relay = validated
 	}
 	r.mu.Unlock()

@@ -8,12 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- End-to-end isolated Windows and Linux guest lifecycle tools. Guests receive
-  appliance-authoritative static `/26` addressing, a private-only Hyper-V NIC,
-  relay-first mTLS enrollment, pre-boot NAT verification, durable resumable
-  phases, exact owned-storage deletion, and repair with automatic incarnation
-  recreation. Orchestrator cascade deletion now executes approved guest and
-  network cleanup.
+- Isolated Windows and Linux lifecycle tools as thin synchronous wrappers
+  around the ordinary VM create/delete flows. Isolation adds only private
+  vSwitches, static `/26` addressing, relay-first mTLS enrollment, optional
+  NAT, and one persisted full appliance configuration. The public surface has
+  no operation IDs, generations, incarnations, approvals, repair tools, or
+  desired-state reconciliation.
 - Backward-compatible `profile_usage` classification for VM profiles.
   `ordinary` remains the default; `linux_image_builder` profiles are accepted
   only by internal Linux image preparation and are rejected by public
@@ -35,6 +35,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Isolated private NIC configuration now waits for Linux hot-plug readiness,
+  accepts compact and colon-delimited MAC addresses, and sets each guest's
+  deterministic Hyper-V MAC before first boot.
+- Full appliance configuration replacement now bounds relay shutdown and
+  force-closes persistent gRPC connections after a short grace period instead
+  of hanging while another guest remains connected.
+- Retrying a failed same-name isolated guest creation cleans the partial normal
+  VM and starts fresh. Deletion disables relay/NAT first but marks inventory
+  deleted only after ordinary VM deletion succeeds.
 - `save_credential` no longer accepts passwords through MCP arguments. It opens
   the packaged masked local prompt, stores passwords in a separate encrypted
   credential secret store, and keeps only usernames and opaque secret

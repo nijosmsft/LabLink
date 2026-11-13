@@ -443,24 +443,6 @@ func TestCompletedLinuxVMMetadataAllowsEmptyOptionalPaths(t *testing.T) {
 		t.Fatal("cleanup resume does not handle completed empty CIDATA metadata")
 	}
 
-	if runtime.GOOS == "windows" {
-		isolatedMetadata := `{"schema_version":1,"physical_host_id":"` + strings.Repeat("a", 64) +
-			`","orchestrator_id":"11111111-1111-4111-8111-111111111111",` +
-			`"owner_marker":"owner","host_fence":1,"lifecycle_state":"ready",` +
-			`"managed_root":"C:\\VM","expected_vhd_paths":["C:\\VM\\orchestrator\\disk.vhdx"],` +
-			`"node_name":"orchestrator","vm_guid":"22222222-2222-4222-8222-222222222222",` +
-			`"generation":1}`
-		preamble := `function Get-VM { [pscustomobject]@{ Name='orchestrator'; State='Off'; Notes='` +
-			IsolatedOrchestratorMetadataPrefix + isolatedMetadata + `' } }` + "\n" +
-			`function Get-VMDvdDrive { @() }` + "\n"
-		output, runErr := exec.Command(
-			"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-			preamble+inspect,
-		).CombinedOutput()
-		if runErr != nil || !strings.Contains(string(output), `"expected_iso_exists":false`) {
-			t.Fatalf("completed empty-path inspection failed: %v\n%s", runErr, output)
-		}
-	}
 }
 
 func TestOwnedArtifactCleanupNeverDeletesReferencedVHD(t *testing.T) {

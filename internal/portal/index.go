@@ -131,36 +131,30 @@ const indexHTML = `<!doctype html>
 <h2 class="section-title">Orchestrators</h2>
 <div class="section-meta">Durable identity, main endpoint, appliance readiness, capabilities, and cached capacity.</div>
 <table>
-  <thead><tr><th>State</th><th>Identity</th><th>Main endpoint</th><th>Readiness</th><th>Capacity</th><th>Generation</th></tr></thead>
+  <thead><tr><th>State</th><th>Identity</th><th>Main endpoint</th><th>Readiness</th><th>Capacity</th></tr></thead>
   <tbody id="isolated-orchestrators"></tbody>
 </table>
 
 <h2 class="section-title">Private networks</h2>
 <div class="section-meta">Subnet and Hyper-V switch identity are immutable orchestration inputs.</div>
 <table>
-  <thead><tr><th>State</th><th>Identity</th><th>Subnet</th><th>Switch identity</th><th>DNS</th><th>Generation</th></tr></thead>
+  <thead><tr><th>State</th><th>Identity</th><th>Subnet</th><th>Switch identity</th><th>DNS</th></tr></thead>
   <tbody id="isolated-networks"></tbody>
 </table>
 
 <h2 class="section-title">Isolated VMs</h2>
 <table>
-  <thead><tr><th>State</th><th>Identity</th><th>Network</th><th>IP / MAC</th><th>Relay / TLS</th><th>NAT / DNS</th><th>Generation</th></tr></thead>
+  <thead><tr><th>State</th><th>Identity</th><th>Network</th><th>IP / MAC</th><th>Relay / TLS</th><th>NAT / DNS</th></tr></thead>
   <tbody id="isolated-vms"></tbody>
 </table>
 
 <h2 class="section-title">Relays</h2>
 <div class="section-meta" id="isolated-relay-page"></div>
 <table>
-  <thead><tr><th>State</th><th>Identity</th><th>Listener</th><th>Target</th><th>Traffic</th><th>Errors</th><th>Generation</th></tr></thead>
+  <thead><tr><th>State</th><th>Identity</th><th>Listener</th><th>Target</th><th>Traffic</th><th>Errors</th></tr></thead>
   <tbody id="isolated-relays"></tbody>
 </table>
 
-<h2 class="section-title">Durable operations</h2>
-<div class="section-meta" id="isolated-operations-page"></div>
-<table>
-  <thead><tr><th>Status</th><th>Resume ID</th><th>Resource</th><th>Current phase</th><th>Phase history</th><th>Error</th><th>Updated</th></tr></thead>
-  <tbody id="isolated-operations"></tbody>
-</table>
 <div id="isolated-empty" class="empty">No isolated orchestration state.</div>
 </section>
 
@@ -525,13 +519,10 @@ function appendRow(tableID, cells) {
   for (const cell of cells) row.appendChild(cell);
   document.getElementById(tableID).appendChild(row);
 }
-function generationText(v) {
-  return (v.desired_generation || 0) + ' / ' + (v.applied_generation || 0) + ' / ' + (v.observed_generation || 0);
-}
 function dnsText(values) { return (values || []).join(', ') || 'none'; }
-function renderIsolated(data, opsData) {
-  ['isolated-orchestrators','isolated-networks','isolated-vms','isolated-relays','isolated-operations'].forEach(clearTable);
-  const errors = [...(data.errors || []), ...(opsData.errors || [])];
+function renderIsolated(data) {
+  ['isolated-orchestrators','isolated-networks','isolated-vms','isolated-relays'].forEach(clearTable);
+  const errors = [...(data.errors || [])];
   isolatedErrors.textContent = errors.map(e => e.scope + ': ' + e.error).join('\n');
 
   for (const o of (data.orchestrators || [])) {
@@ -543,8 +534,7 @@ function renderIsolated(data, opsData) {
       stackTD([o.display_name || o.id, o.id, 'host ' + o.physical_host_id, 'VM ' + o.hyperv_name], 'identity'),
       stackTD([endpoint.address || 'unassigned', endpoint.node_name, 'TLS ' + (endpoint.tls_name || 'missing'), endpoint.identity_ok ? 'mTLS identity verified' : 'mTLS identity unavailable'], endpoint.identity_ok ? 'ok' : 'drift'),
       stackTD(['health ' + (o.health_state || 'unknown'), ready.ready ? 'appliance ready' : 'appliance not ready', ready.agent_version || '', 'protocol ' + (ready.protocol_version || 0), (ready.capabilities || []).join(', ') || 'no capabilities']),
-      stackTD([cap.used_networks + '/' + cap.max_networks + ' networks', cap.used_vms + '/' + cap.max_vms + ' VMs', cap.free_relay_ports + ' relay ports free']),
-      td(generationText(o), 'identity')
+      stackTD([cap.used_networks + '/' + cap.max_networks + ' networks', cap.used_vms + '/' + cap.max_vms + ' VMs', cap.free_relay_ports + ' relay ports free'])
     ]);
   }
   for (const n of (data.networks || [])) {
@@ -553,8 +543,7 @@ function renderIsolated(data, opsData) {
       stackTD([n.display_name || n.id, n.id, 'orchestrator ' + n.orchestrator_id], 'identity'),
       stackTD(['index ' + n.subnet_index, n.cidr, 'gateway ' + n.gateway_ipv4, 'MAC ' + n.orchestrator_mac]),
       stackTD([n.hyperv_switch_name, n.hyperv_switch_guid || 'GUID pending', n.orchestrator_adapter_id || 'adapter pending'], 'identity'),
-      stackTD(['desired ' + dnsText(n.dns_servers), 'observed ' + dnsText(n.observed_dns_servers), n.dns_drift ? 'DNS drift' : 'DNS aligned'], n.dns_drift ? 'drift' : 'ok'),
-      td(generationText(n), 'identity')
+      stackTD(['configured ' + dnsText(n.dns_servers), 'runtime ' + dnsText(n.observed_dns_servers), n.dns_drift ? 'DNS drift' : 'DNS aligned'], n.dns_drift ? 'drift' : 'ok')
     ]);
   }
   for (const v of (data.vms || [])) {
@@ -562,12 +551,11 @@ function renderIsolated(data, opsData) {
     const nat = v.nat || {};
     appendRow('isolated-vms', [
       stateTD(v.live_state || v.lifecycle_state, v.live_error),
-      stackTD([v.display_name || v.id, v.id, 'incarnation ' + v.incarnation, v.hyperv_name], 'identity'),
+      stackTD([v.display_name || v.id, v.id, v.hyperv_name], 'identity'),
       stackTD([v.network_id, v.guest_os + ' / ' + v.profile_name], 'identity'),
       stackTD([v.ipv4 + '/' + v.prefix_length, v.mac, 'gateway ' + v.gateway_ipv4], 'identity'),
       stackTD([v.relay_id ? v.relay_id + ' :' + v.relay_listen_port : 'no relay', tls.node_name, 'TLS ' + (tls.tls_name || 'missing'), tls.identity_ok ? 'mTLS identity verified' : 'mTLS identity unavailable'], tls.identity_ok ? 'ok' : 'drift'),
-      stackTD([nat.desired_state ? 'NAT ' + nat.desired_state + ' / ' + (nat.live_state || nat.observed_state) : 'NAT unallocated', 'DNS ' + dnsText(v.dns_servers), v.dns_drift || v.dns_update_pending ? 'DNS drift/pending' : 'DNS aligned', v.dns_last_error || nat.live_error || ''], v.dns_drift || v.dns_update_pending ? 'drift' : ''),
-      td(generationText(v), 'identity')
+      stackTD([nat.state ? 'NAT ' + nat.state + ' / ' + (nat.live_state || '') : 'NAT unallocated', 'DNS ' + dnsText(v.dns_servers), v.dns_drift ? 'DNS drift' : 'DNS aligned', nat.live_error || ''], v.dns_drift ? 'drift' : '')
     ]);
   }
   for (const r of (data.relays || [])) {
@@ -578,44 +566,24 @@ function renderIsolated(data, opsData) {
       stackTD([stats.bind_address || r.bound_main_ip || 'unbound', 'port ' + r.listen_port]),
       stackTD([r.target_ipv4 + ':' + r.target_port]),
       stackTD([(stats.active_connections || 0) + ' active', (stats.total_accepted_connections || 0) + ' accepted', (stats.bytes_guest_to_main || 0) + ' / ' + (stats.bytes_main_to_guest || 0) + ' bytes']),
-      stackTD([stats.bind_error || '', stats.last_failure || '', (stats.target_dial_failure_count || 0) + ' dial failures'], stats.bind_error || stats.last_failure ? 'drift' : ''),
-      stackTD([generationText(r), 'runtime ' + (stats.relay_generation || 0), 'appliance ' + (stats.appliance_generation || 0)], 'identity')
+      stackTD([stats.bind_error || '', stats.last_failure || '', (stats.target_dial_failure_count || 0) + ' dial failures'], stats.bind_error || stats.last_failure ? 'drift' : '')
     ]);
   }
   const relayPage = data.relay_stats_page || {};
   document.getElementById('isolated-relay-page').textContent =
     (relayPage.total || 0) + ' relays; runtime stats limited to ' + (relayPage.limit || 0) + ' from offset ' + (relayPage.offset || 0);
 
-  for (const o of (opsData.operations || [])) {
-    const phaseText = (o.phases || []).map(p => p.phase_index + ':' + p.phase_name + '#' + p.attempt + '=' + p.status).join(' • ');
-    appendRow('isolated-operations', [
-      stateTD(o.status, o.error_text),
-      td(o.resume_id, 'identity'),
-      stackTD([o.kind, o.resource_type + ' ' + o.resource_id, o.plan_revision ? 'plan ' + o.plan_revision : ''], 'identity'),
-      td(o.current_phase || 'not started'),
-      td(phaseText || 'none', 'identity'),
-      stackTD([o.error_code || '', o.error_text || ''], 'err'),
-      td(o.updated_at_unix ? new Date(o.updated_at_unix * 1000).toLocaleString() : '')
-    ]);
-  }
-  const opPage = opsData.page || {};
-  document.getElementById('isolated-operations-page').textContent =
-    'Showing up to ' + (opPage.limit || 0) + ' operations from offset ' + (opPage.offset || 0) + (opPage.has_more ? '; more available via API pagination' : '');
   const count = (data.orchestrators || []).length + (data.networks || []).length +
-    (data.vms || []).length + (data.relays || []).length + (opsData.operations || []).length;
+    (data.vms || []).length + (data.relays || []).length;
   isolatedEmpty.style.display = count ? 'none' : 'block';
 }
 async function loadIsolated() {
   isolatedConn.textContent = 'loading…';
   try {
-    const [stateResponse, operationsResponse] = await Promise.all([
-      fetch('/api/isolated?stats_limit=100'),
-      fetch('/api/isolated/operations?limit=100&phase_limit=100')
-    ]);
+    const stateResponse = await fetch('/api/isolated?stats_limit=100');
     const stateData = await stateResponse.json();
-    const operationsData = await operationsResponse.json();
-    renderIsolated(stateData, operationsData);
-    isolatedConn.textContent = stateResponse.ok && operationsResponse.ok ? 'current' : 'partial';
+    renderIsolated(stateData);
+    isolatedConn.textContent = stateResponse.ok ? 'current' : 'partial';
     isolatedLoaded = true;
   } catch (e) {
     isolatedConn.textContent = 'unavailable';
