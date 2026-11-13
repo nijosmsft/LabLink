@@ -1,11 +1,28 @@
 {
   "default_profile": "windows-lab",
   "default_linux_profile": "ubuntu-lab",
+  "default_isolated_orchestrator_profile": "isolated-orchestrator",
   "target_defaults": {
     "hyperv-host-1": "windows-lab"
   },
   "linux_target_defaults": {
     "hyperv-host-1": "ubuntu-lab"
+  },
+  "isolated_orchestrator_profiles": {
+    "isolated-orchestrator": {
+      "linux_profile": "ubuntu-lab",
+      "main_vswitch": "extswitch",
+      "cpu_count": 4,
+      "memory_mb": 8192,
+      "dynamic_memory": false,
+      "max_networks": 16,
+      "max_vms": 100,
+      "relay_port_min": 20000,
+      "relay_port_max": 39999,
+      "subnet_pool": "192.168.240.0/20",
+      "subnet_prefix": 26,
+      "package_source": "online"
+    }
   },
   "profiles": {
     "windows-lab": {

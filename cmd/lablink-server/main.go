@@ -15,6 +15,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/healthmon"
+	"github.com/nijosmsft/lablink/internal/isolatedstate"
 	"github.com/nijosmsft/lablink/internal/leasing"
 	"github.com/nijosmsft/lablink/internal/mcptools"
 	"github.com/nijosmsft/lablink/internal/ops"
@@ -168,6 +169,14 @@ func main() {
 		AuthToken:        token,
 	}
 
+	isolatedDBPath := filepath.Join(configDir, "isolated.db")
+	isolatedStore, err := isolatedstate.Open(isolatedDBPath)
+	if err != nil {
+		log.Fatalf("open isolated lifecycle store at %s: %v", isolatedDBPath, err)
+	}
+	defer isolatedStore.Close()
+	log.Printf("LabLink isolated lifecycle store: %s", isolatedDBPath)
+
 	// Health monitor — background keepalive for all nodes.
 	monitor := healthmon.New(reg, pool, serverVersion)
 	monitor.Start()
@@ -262,6 +271,14 @@ ANTI-PATTERNS — DO NOT do these things:
 	}
 	mcptools.RegisterSecrets(s, secrets, secretHelper)
 	mcptools.RegisterVM(s, reg, pool, creds, secrets, vmDefaults, auditLog, vmEnrollment, leaseCfg)
+	isolatedDeps, err := mcptools.NewIsolatedLifecycleDependencies(
+		s, isolatedStore, reg, pool, vmDefaults, creds, secrets, auditLog,
+		vmEnrollment, leaseCfg, serverVersion,
+	)
+	if err != nil {
+		log.Fatalf("initialize isolated lifecycle tools: %v", err)
+	}
+	mcptools.RegisterIsolatedLifecycleTools(s, isolatedDeps)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

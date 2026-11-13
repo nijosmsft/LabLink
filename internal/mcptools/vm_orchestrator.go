@@ -63,6 +63,8 @@ type windowsVMPlan struct {
 	CreationOwnershipMarker           string                      `json:"-"`
 	CreationOwnershipPath             string                      `json:"-"`
 	ManagedMetadata                   string                      `json:"-"`
+	DeferBoot                         bool                        `json:"-"`
+	NetworkFirstBoot                  bool                        `json:"-"`
 }
 
 func createWindowsVMHandler(
@@ -455,7 +457,11 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 	firstBootScript := plan.FirstBootScript
 	autoLogon := plan.AutoLogon
 	if plan.RegisterWithLabLink {
-		firstBootScript = enrollmentFirstBootScript(plan.FirstBootScript)
+		if plan.NetworkFirstBoot {
+			firstBootScript = firstBootScriptBeforeEnrollment(plan.FirstBootScript)
+		} else {
+			firstBootScript = enrollmentFirstBootScript(plan.FirstBootScript)
+		}
 		autoLogon = true
 	}
 	provisionReq.Params.Arguments = map[string]any{
@@ -500,6 +506,10 @@ func executeWindowsVMPlan(ctx context.Context, plan windowsVMPlan, reg *registry
 		return windowsVMCreateFailureResult(ctx, plan, created, err, reg, pool, creds), nil
 	}
 	removeWindowsVMCreationOwnership(ctx, plan, reg, pool)
+	if plan.DeferBoot {
+		plan.State = "Off"
+		return vmResult(fmt.Sprintf("**Windows VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+	}
 	if plan.RegisterWithLabLink {
 		started, err := startVMAndDiscoverIP(ctx, plan, reg, pool)
 		if err != nil {

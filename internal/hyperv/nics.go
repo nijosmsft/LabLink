@@ -9,6 +9,8 @@ import (
 // NIC is a parsed physical network adapter row from list_physical_nics.
 type NIC struct {
 	Name                 string `json:"name"`
+	InterfaceGUID        string `json:"interface_guid"`
+	InterfaceIndex       int    `json:"interface_index"`
 	InterfaceDescription string `json:"interface_description"`
 	MAC                  string `json:"mac"`
 	Status               string `json:"status"`
@@ -62,6 +64,8 @@ $rows = foreach ($a in $adapters) {
     $rec = ($a.Status -eq 'Up' -and -not $bound -and -not $isMgmt)
     [pscustomobject]@{
         name                     = $a.Name
+        interface_guid           = [string]$a.InterfaceGuid
+        interface_index          = [int]$a.ifIndex
         interface_description    = $a.InterfaceDescription
         mac                      = $a.MacAddress
         status                   = "$($a.Status)"

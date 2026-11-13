@@ -216,6 +216,21 @@ function Stage-Bundle {
         if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
         Copy-Item -Force $src $dst
     }
+
+    $orchestratorSource = Join-Path $repoRoot 'internal\orchestratorseed\assets'
+    $orchestratorDestination = Join-Path $Stage 'assets\orchestrator'
+    if (-not (Test-Path -LiteralPath $orchestratorSource -PathType Container)) {
+        throw "missing orchestrator assets: $orchestratorSource"
+    }
+    New-Item -ItemType Directory -Path $orchestratorDestination -Force | Out-Null
+    Copy-Item -Path (Join-Path $orchestratorSource '*') -Destination $orchestratorDestination -Force
+    $assetSums = Get-ChildItem -LiteralPath $orchestratorDestination -File |
+        Sort-Object Name |
+        ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+        }
+    $assetSums | Set-Content -LiteralPath (Join-Path $orchestratorDestination 'SHA256SUMS.txt') -Encoding ASCII
 }
 
 $sums = @()

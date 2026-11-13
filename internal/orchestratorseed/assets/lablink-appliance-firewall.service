@@ -1,0 +1,15 @@
+[Unit]
+Description=LabLink isolated appliance emergency firewall
+DefaultDependencies=no
+Requires=lablink-disable-conflicting-firewalls.service
+After=lablink-disable-conflicting-firewalls.service
+Before=network-pre.target systemd-networkd.service network-online.target lablink-agent.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/lablink/orchestrator/load-emergency-policy.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=network-pre.target

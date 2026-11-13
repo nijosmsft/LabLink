@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "distribution": "ubuntu",
+  "release": "24.04",
+  "architecture": "amd64",
+  "snapshot": {
+    "identity": "ubuntu-noble-2026-11-01",
+    "base_url": "https://snapshot.ubuntu.com/ubuntu/20261101T000000Z",
+    "suites": [
+      "noble",
+      "noble-updates",
+      "noble-security"
+    ],
+    "components": [
+      "main",
+      "universe"
+    ],
+    "signed_metadata_required": true
+  },
+  "packages": [
+    {
+      "name": "nftables",
+      "version": "1.0.9-1ubuntu0.1",
+      "facilities": [
+        "nft"
+      ]
+    },
+    {
+      "name": "conntrack",
+      "version": "1:1.4.8-1ubuntu1",
+      "facilities": [
+        "conntrack"
+      ]
+    },
+    {
+      "name": "iproute2",
+      "version": "6.1.0-1ubuntu6.4",
+      "facilities": [
+        "ip",
+        "ss"
+      ]
+    },
+    {
+      "name": "systemd",
+      "version": "255.4-1ubuntu8.18",
+      "facilities": [
+        "networkctl",
+        "systemd-networkd"
+      ]
+    },
+    {
+      "name": "systemd-resolved",
+      "version": "255.4-1ubuntu8.18",
+      "facilities": [
+        "resolvectl"
+      ]
+    },
+    {
+      "name": "ca-certificates",
+      "version": "20260816ubuntu0.24.04.1",
+      "facilities": [
+        "signed-repository-metadata"
+      ]
+    }
+  ],
+  "verification": {
+    "exact_versions_required": true,
+    "offline_bundle_complete_dependency_closure_required": true,
+    "offline_bundle_checksum_algorithm": "sha256",
+    "offline_bundle_architecture_required": "amd64"
+  }
+}

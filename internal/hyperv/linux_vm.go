@@ -3,6 +3,8 @@ package hyperv
 import (
 	"encoding/json"
 	"fmt"
+	"path"
+	"sort"
 	"strings"
 )
 
@@ -29,7 +31,36 @@ type LinuxVMOwnership struct {
 }
 
 type LinuxVMOwnershipParams struct {
-	Ownership LinuxVMOwnership
+	Ownership        LinuxVMOwnership
+	StageDirectories []string
+}
+
+func normalizeLinuxVMStageDirectories(directories []string) ([]string, error) {
+	unique := make(map[string]struct{}, len(directories))
+	for _, directory := range directories {
+		normalized := path.Clean(strings.ReplaceAll(strings.TrimSpace(directory), `\`, "/"))
+		if normalized == "." || normalized == "" {
+			continue
+		}
+		if normalized == ".." || strings.HasPrefix(normalized, "../") ||
+			strings.HasPrefix(normalized, "/") || strings.Contains(normalized, ":") {
+			return nil, fmt.Errorf("invalid Linux VM stage directory %q", directory)
+		}
+		unique[normalized] = struct{}{}
+	}
+	result := make([]string, 0, len(unique))
+	for directory := range unique {
+		result = append(result, directory)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftDepth := strings.Count(result[i], "/")
+		rightDepth := strings.Count(result[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return result[i] < result[j]
+	})
+	return result, nil
 }
 
 func normalizeLinuxVMOwnership(ownership LinuxVMOwnership) (LinuxVMOwnership, error) {
@@ -153,6 +184,16 @@ func BuildPrepareLinuxVMStageScript(p LinuxVMOwnershipParams) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	directories, err := normalizeLinuxVMStageDirectories(p.StageDirectories)
+	if err != nil {
+		return "", err
+	}
+	var createDirectories strings.Builder
+	for _, directory := range directories {
+		fmt.Fprintf(&createDirectories,
+			"New-Item -ItemType Directory -Path %s -ErrorAction Stop | Out-Null\n",
+			PSLit(ownership.StageDir+`\`+strings.ReplaceAll(directory, "/", `\`)))
+	}
 	body := fmt.Sprintf(`
 $ownershipPath = Join-Path %s %s
 $stageDir = %s
@@ -166,9 +207,11 @@ if (Test-Path -LiteralPath $stageDir) { Remove-Item -LiteralPath $stageDir -Recu
 New-Item -ItemType Directory -Path $stageDir -ErrorAction Stop | Out-Null
 %s
 Set-LabLinkRestrictedAcl $stageDir $true
+%s
 [pscustomobject]@{ status='stage_ready'; stage_dir=$stageDir } | ConvertTo-Json -Compress
 `, PSLit(ownership.VMLocation), PSLit(LinuxVMOwnershipFile), PSLit(ownership.StageDir),
-		LinuxVMOwnershipSchema, PSLit(ownership.VMName), restrictiveACLPowerShell())
+		LinuxVMOwnershipSchema, PSLit(ownership.VMName), restrictiveACLPowerShell(),
+		createDirectories.String())
 	return wrapTagged(body), nil
 }
 
@@ -727,9 +770,14 @@ if (-not $notes.StartsWith($prefix, [StringComparison]::Ordinal)) {
 $metadata = $notes.Substring($prefix.Length) | ConvertFrom-Json
 $attached = @(Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue |
     Where-Object Path | ForEach-Object { [string]$_.Path })
+$expectedISO = [string]$metadata.expected_cidata_iso
+$expectedISOExists = [bool](
+    -not [string]::IsNullOrWhiteSpace($expectedISO) -and
+    (Test-Path -LiteralPath $expectedISO -PathType Leaf)
+)
 [pscustomobject]@{
     exists=$true; metadata=$metadata; attached_isos=$attached
-    expected_iso_exists=(Test-Path -LiteralPath ([string]$metadata.expected_cidata_iso) -PathType Leaf)
+    expected_iso_exists=$expectedISOExists
 } | ConvertTo-Json -Depth 6 -Compress
 `, PSLit(name), PSLit(LinuxVMMetadataPrefix))
 	return wrapTagged(body), nil
@@ -742,6 +790,7 @@ func BuildInspectVMManagementScript(name string) (string, error) {
 	body := fmt.Sprintf(`
 $name = %s
 $prefix = %s
+$isolatedPrefix = %s
 $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
 if (-not $vm) {
     [pscustomobject]@{ exists=$false } | ConvertTo-Json -Compress
@@ -751,6 +800,21 @@ $metadata = $null
 $notes = [string]$vm.Notes
 if ($notes.StartsWith($prefix, [StringComparison]::Ordinal)) {
     $metadata = $notes.Substring($prefix.Length) | ConvertFrom-Json
+} elseif ($notes.StartsWith($isolatedPrefix, [StringComparison]::Ordinal)) {
+    $isolated = $notes.Substring($isolatedPrefix.Length) | ConvertFrom-Json
+    if ([string]$isolated.lifecycle_state -eq 'deleted') {
+        throw 'VM_IDENTITY_MISMATCH: isolated orchestrator metadata is already deleted'
+    }
+    $expectedVHDs = @($isolated.expected_vhd_paths)
+    if ($expectedVHDs.Count -ne 1) {
+        throw 'VM_IDENTITY_MISMATCH: isolated orchestrator must have exactly one expected OS VHD'
+    }
+    $metadata = [pscustomobject]@{
+        schema_version=%d; guest_os='linux'; vm_name=[string]$vm.Name
+        node_name=[string]$isolated.node_name; managed_root=[string]$isolated.managed_root
+        parent_vhdx=''; child_vhdx=[string]$expectedVHDs[0]
+        expected_cidata_iso=''; cleanup_phase='complete'; registered=$true
+    }
 }
 $attached = @(Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue |
     Where-Object Path | ForEach-Object { [string]$_.Path })
@@ -759,12 +823,18 @@ $ownershipPath = if ($metadata) {
 } else {
     $null
 }
+$expectedISO = if ($metadata) { [string]$metadata.expected_cidata_iso } else { '' }
+$expectedISOExists = [bool](
+    -not [string]::IsNullOrWhiteSpace($expectedISO) -and
+    (Test-Path -LiteralPath $expectedISO -PathType Leaf)
+)
 [pscustomobject]@{
     exists=$true; state=[string]$vm.State; metadata=$metadata; attached_isos=$attached
-    expected_iso_exists=[bool]($metadata -and (Test-Path -LiteralPath ([string]$metadata.expected_cidata_iso) -PathType Leaf))
+    expected_iso_exists=$expectedISOExists
     ownership_exists=[bool]($ownershipPath -and (Test-Path -LiteralPath $ownershipPath -PathType Leaf))
 } | ConvertTo-Json -Depth 6 -Compress
-`, PSLit(name), PSLit(LinuxVMMetadataPrefix), PSLit(LinuxVMOwnershipFile))
+`, PSLit(name), PSLit(LinuxVMMetadataPrefix), PSLit(IsolatedOrchestratorMetadataPrefix),
+		LinuxVMMetadataSchema, PSLit(LinuxVMOwnershipFile))
 	return wrapTagged(body), nil
 }
 
@@ -922,7 +992,12 @@ if (-not $notes.StartsWith($prefix, [StringComparison]::Ordinal)) {
     throw "VM_MANAGED_METADATA_MISSING: '$name'"
 }
 $metadata = $notes.Substring($prefix.Length) | ConvertFrom-Json
-if ([IO.Path]::GetFullPath([string]$metadata.expected_cidata_iso) -cne [IO.Path]::GetFullPath($isoPath)) {
+$persistedISO = [string]$metadata.expected_cidata_iso
+if ([string]::IsNullOrWhiteSpace($persistedISO)) {
+    if ([string]$metadata.cleanup_phase -cne %s) {
+        throw "CIDATA_METADATA_MISMATCH: empty expected ISO is valid only after completed cleanup"
+    }
+} elseif ([IO.Path]::GetFullPath($persistedISO) -cne [IO.Path]::GetFullPath($isoPath)) {
     throw "CIDATA_METADATA_MISMATCH: refusing cleanup outside the persisted expected ISO"
 }
 $drives = @(Get-VMDvdDrive -VMName $name -ErrorAction SilentlyContinue | Where-Object Path -eq $isoPath)
@@ -945,7 +1020,7 @@ if (Test-Path -LiteralPath $ownershipPath -PathType Leaf) {
     expected_iso=$isoPath; cleanup_phase=[string]$metadata.cleanup_phase
     registered=[bool]$metadata.registered
 } | ConvertTo-Json -Compress
-`, PSLit(name), PSLit(isoPath), PSLit(LinuxVMMetadataPrefix),
+`, PSLit(name), PSLit(isoPath), PSLit(LinuxVMMetadataPrefix), PSLit(LinuxVMCleanupComplete),
 		PSLit(LinuxVMCleanupDetached), PSLit(LinuxVMCleanupComplete), PSLit(LinuxVMOwnershipFile))
 	return wrapTagged(body), nil
 }

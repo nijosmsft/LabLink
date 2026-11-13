@@ -108,7 +108,14 @@ foreach ($required in @(
     'bin/lablink-secret.exe',
     'bin/linux-amd64/lablink-agent',
     'configs/vm-defaults.example.json',
-    'docs/linux-vm.md'
+    'docs/linux-vm.md',
+    'assets/orchestrator/dependency-manifest.json',
+    'assets/orchestrator/emergency.nft',
+    'assets/orchestrator/lablink-appliance-firewall.service',
+    'assets/orchestrator/lablink-appliance-watchdog.service',
+    'assets/orchestrator/lablink-agent-appliance.conf',
+    'assets/orchestrator/offline-bundle-manifest.example.json',
+    'assets/orchestrator/SHA256SUMS.txt'
 )) {
     if ($windowsEntries -notcontains $required) {
         throw "Windows archive missing $required"
@@ -121,7 +128,14 @@ foreach ($required in @(
     'bin/lablink-probe',
     'bin/lablink-ca',
     'configs/vm-defaults.example.json',
-    'docs/linux-vm.md'
+    'docs/linux-vm.md',
+    'assets/orchestrator/dependency-manifest.json',
+    'assets/orchestrator/emergency.nft',
+    'assets/orchestrator/lablink-appliance-firewall.service',
+    'assets/orchestrator/lablink-appliance-watchdog.service',
+    'assets/orchestrator/lablink-agent-appliance.conf',
+    'assets/orchestrator/offline-bundle-manifest.example.json',
+    'assets/orchestrator/SHA256SUMS.txt'
 )) {
     if ($linuxEntries -notcontains $required) {
         throw "Linux archive missing $required"
@@ -137,6 +151,20 @@ $windowsGuestHash = Get-BytesSHA256 $windowsGuestAgent
 $linuxNativeHash = Get-BytesSHA256 $linuxNativeAgent
 if ($windowsGuestHash -ne $linuxNativeHash) {
     throw "embedded Windows guest agent does not match Linux archive agent: $windowsGuestHash != $linuxNativeHash"
+}
+
+foreach ($archive in @($windows, $linux)) {
+    $sumsText = [Text.Encoding]::ASCII.GetString((Get-EntryBytes $archive 'assets/orchestrator/SHA256SUMS.txt'))
+    foreach ($line in ($sumsText -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -notmatch '^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$') {
+            throw "$archive contains an invalid orchestrator asset checksum line: $line"
+        }
+        $actual = Get-BytesSHA256 (Get-EntryBytes $archive ("assets/orchestrator/" + $Matches[2]))
+        if ($actual -ne $Matches[1]) {
+            throw "$archive orchestrator asset checksum mismatch for $($Matches[2])"
+        }
+    }
 }
 $versionBytes = [Text.Encoding]::UTF8.GetBytes($Version)
 function Test-ContainsBytes([byte[]]$haystack, [byte[]]$needle) {
@@ -175,6 +203,7 @@ try {
         linux_archive = $linux
         installer = (Join-Path $ReleaseDir 'install.ps1')
         windows_linux_agent = 'bin/linux-amd64/lablink-agent'
+        orchestrator_assets = 'assets/orchestrator'
         linux_agent_sha256 = $linuxNativeHash
         version = $Version
     } | ConvertTo-Json -Compress

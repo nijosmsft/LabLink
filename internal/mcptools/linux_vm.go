@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/linuximage"
 	"github.com/nijosmsft/lablink/internal/linuxvm"
+	"github.com/nijosmsft/lablink/internal/orchestratorseed"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	"github.com/nijosmsft/lablink/internal/winpath"
@@ -71,41 +74,44 @@ func (l vmLifecycleLock) release(reg *registry.Registry, pool *agentclient.Pool,
 }
 
 type linuxVMPlan struct {
-	Profile                   string  `json:"profile,omitempty"`
-	Target                    string  `json:"target"`
-	Name                      string  `json:"name"`
-	Hostname                  string  `json:"hostname"`
-	LinuxUsername             string  `json:"linux_username"`
-	SSHPublicKey              string  `json:"ssh_public_key"`
-	SSHPublicKeyFile          string  `json:"ssh_public_key_file,omitempty"`
-	LinuxPasswordCredential   string  `json:"linux_password_credential,omitempty"`
-	AllowSSHPasswordAuth      bool    `json:"allow_ssh_password_auth"`
-	NetworkConfig             string  `json:"network_config,omitempty"`
-	PasswordHash              string  `json:"-"`
-	ImageCacheRoot            string  `json:"image_cache_root"`
-	VMRoot                    string  `json:"vm_root"`
-	VMLocation                string  `json:"vm_location"`
-	VHDPath                   string  `json:"vhd_path"`
-	CIDATAPath                string  `json:"cidata_path"`
-	VSwitch                   string  `json:"vswitch"`
-	MemoryMB                  float64 `json:"memory_mb"`
-	CPUCount                  float64 `json:"cpu_count"`
-	DynamicMemory             bool    `json:"dynamic_memory"`
-	DynamicMinMB              float64 `json:"dynamic_min_mb,omitempty"`
-	DynamicMaxMB              float64 `json:"dynamic_max_mb,omitempty"`
-	DynamicBufferPct          float64 `json:"dynamic_buffer_pct,omitempty"`
-	DiskSizeGB                float64 `json:"disk_size_gb"`
-	RegisterWithLabLink       bool    `json:"register_with_lablink"`
-	LabLinkNodeName           string  `json:"lablink_node_name"`
-	LabLinkRole               string  `json:"lablink_role"`
-	LabLinkPort               int     `json:"lablink_port"`
-	MinHostReservePct         float64 `json:"min_host_reserve_pct"`
-	AllowHostResourcePressure bool    `json:"allow_host_resource_pressure"`
-	PreparedVHDX              string  `json:"prepared_vhdx,omitempty"`
-	LabLinkAddress            string  `json:"lablink_address,omitempty"`
-	State                     string  `json:"state,omitempty"`
-	Registered                bool    `json:"registered"`
+	Profile                   string                   `json:"profile,omitempty"`
+	Target                    string                   `json:"target"`
+	Name                      string                   `json:"name"`
+	Hostname                  string                   `json:"hostname"`
+	LinuxUsername             string                   `json:"linux_username"`
+	SSHPublicKey              string                   `json:"ssh_public_key"`
+	SSHPublicKeyFile          string                   `json:"ssh_public_key_file,omitempty"`
+	LinuxPasswordCredential   string                   `json:"linux_password_credential,omitempty"`
+	AllowSSHPasswordAuth      bool                     `json:"allow_ssh_password_auth"`
+	NetworkConfig             string                   `json:"network_config,omitempty"`
+	NetworkBootstrapScript    string                   `json:"-"`
+	PasswordHash              string                   `json:"-"`
+	ImageCacheRoot            string                   `json:"image_cache_root"`
+	VMRoot                    string                   `json:"vm_root"`
+	VMLocation                string                   `json:"vm_location"`
+	VHDPath                   string                   `json:"vhd_path"`
+	CIDATAPath                string                   `json:"cidata_path"`
+	VSwitch                   string                   `json:"vswitch"`
+	MemoryMB                  float64                  `json:"memory_mb"`
+	CPUCount                  float64                  `json:"cpu_count"`
+	DynamicMemory             bool                     `json:"dynamic_memory"`
+	DynamicMinMB              float64                  `json:"dynamic_min_mb,omitempty"`
+	DynamicMaxMB              float64                  `json:"dynamic_max_mb,omitempty"`
+	DynamicBufferPct          float64                  `json:"dynamic_buffer_pct,omitempty"`
+	DiskSizeGB                float64                  `json:"disk_size_gb"`
+	RegisterWithLabLink       bool                     `json:"register_with_lablink"`
+	LabLinkNodeName           string                   `json:"lablink_node_name"`
+	LabLinkRole               string                   `json:"lablink_role"`
+	LabLinkPort               int                      `json:"lablink_port"`
+	MinHostReservePct         float64                  `json:"min_host_reserve_pct"`
+	AllowHostResourcePressure bool                     `json:"allow_host_resource_pressure"`
+	PreparedVHDX              string                   `json:"prepared_vhdx,omitempty"`
+	LabLinkAddress            string                   `json:"lablink_address,omitempty"`
+	State                     string                   `json:"state,omitempty"`
+	Registered                bool                     `json:"registered"`
+	Orchestrator              *orchestratorseed.Config `json:"-"`
 	sshPasswordAuthExplicit   bool
+	DeferBoot                 bool `json:"-"`
 }
 
 func registerCreateLinuxVMTool(
@@ -517,6 +523,10 @@ func executeLinuxVMPlan(
 					fmt.Errorf("finish existing managed Linux VM configuration: %w", err)), nil
 			}
 		}
+		if plan.DeferBoot {
+			plan.State = existing.State
+			return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+		}
 		return finishLinuxVM(ctx, plan, existing.Metadata.ExpectedCIDATAISO, target, reg, pool, progress)
 	}
 	progress.Update("reconcile", "reconciling stale pre-VM CIDATA ownership and exact managed artifacts")
@@ -655,6 +665,11 @@ func executeLinuxVMPlan(
 		return mcp.NewToolResultError(fmt.Sprintf("create Linux VM: %v", err)), nil
 	}
 	preVMCleanup.vmCreated = true
+	if plan.DeferBoot {
+		plan.CIDATAPath = stage.isoPath
+		plan.State = "Off"
+		return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+	}
 	return finishLinuxVM(ctx, plan, stage.isoPath, target, reg, pool, progress)
 }
 
@@ -739,10 +754,12 @@ func finishLinuxVM(
 	if _, _, err := runPS(ctx, reg, pool, target, registrationScript, vmDefaultTimeoutSec); err != nil {
 		return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verification succeeded but managed registration metadata update failed: %w", err)), nil
 	}
-	progress.Update("cleanup", "registration verified; detaching and deleting the owned CIDATA ISO")
-	cleanupISO, _ := hyperv.BuildLinuxVMCIDATACleanupScript(plan.Name, isoPath)
-	if _, _, err := runPS(ctx, reg, pool, target, cleanupISO, vmDefaultTimeoutSec); err != nil {
-		return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verified but CIDATA cleanup failed: %w", err)), nil
+	if strings.TrimSpace(isoPath) != "" {
+		progress.Update("cleanup", "registration verified; detaching and deleting the owned CIDATA ISO")
+		cleanupISO, _ := hyperv.BuildLinuxVMCIDATACleanupScript(plan.Name, isoPath)
+		if _, _, err := runPS(ctx, reg, pool, target, cleanupISO, vmDefaultTimeoutSec); err != nil {
+			return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verified but CIDATA cleanup failed: %w", err)), nil
+		}
 	}
 	plan.CIDATAPath = ""
 	plan.LabLinkAddress = fmt.Sprintf("%s:%d", started.IPAddress, plan.LabLinkPort)
@@ -886,9 +903,11 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 	seedFiles, err := linuxvm.Files(linuxvm.SeedConfig{
 		Hostname: plan.Hostname, Username: plan.LinuxUsername,
 		SSHPublicKey: plan.SSHPublicKey, PasswordHash: plan.PasswordHash,
-		AllowSSHPasswordAuth: plan.AllowSSHPasswordAuth,
-		NetworkConfig:        plan.NetworkConfig,
-		NodeName:             plan.LabLinkNodeName, Port: plan.LabLinkPort,
+		AllowSSHPasswordAuth:   plan.AllowSSHPasswordAuth,
+		NetworkConfig:          plan.NetworkConfig,
+		NetworkBootstrapScript: plan.NetworkBootstrapScript,
+		NodeName:               plan.LabLinkNodeName, Port: plan.LabLinkPort,
+		Orchestrator: plan.Orchestrator,
 	})
 	if err != nil {
 		cleanupLocal()
@@ -905,7 +924,14 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 	seedFiles["server.key"] = keyPEM
 	seedFiles["agent.token"] = []byte(config.AuthToken)
 
-	prepareStage, err := hyperv.BuildPrepareLinuxVMStageScript(hyperv.LinuxVMOwnershipParams{Ownership: ownership})
+	stageDirectories, err := prepareLocalLinuxSeedDirectories(localDir, seedFiles)
+	if err != nil {
+		cleanupLocal()
+		return linuxSeedStage{}, err
+	}
+	prepareStage, err := hyperv.BuildPrepareLinuxVMStageScript(hyperv.LinuxVMOwnershipParams{
+		Ownership: ownership, StageDirectories: stageDirectories,
+	})
 	if err != nil {
 		cleanupLocal()
 		return linuxSeedStage{}, err
@@ -948,6 +974,38 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 		remoteDir: ownership.StageDir, isoPath: ownership.ISOPath, ownershipPath: ownershipPath,
 		cleanupLocal: cleanupLocal, cleanupRemote: cleanupRemote,
 	}, nil
+}
+
+func prepareLocalLinuxSeedDirectories(localDir string, seedFiles map[string][]byte) ([]string, error) {
+	directories := make(map[string]struct{})
+	for name := range seedFiles {
+		normalized := path.Clean(strings.ReplaceAll(name, `\`, "/"))
+		if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") ||
+			strings.HasPrefix(normalized, "/") || strings.Contains(normalized, ":") {
+			return nil, fmt.Errorf("invalid Linux seed file path %q", name)
+		}
+		for directory := path.Dir(normalized); directory != "."; directory = path.Dir(directory) {
+			directories[directory] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(directories))
+	for directory := range directories {
+		result = append(result, directory)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftDepth := strings.Count(result[i], "/")
+		rightDepth := strings.Count(result[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return result[i] < result[j]
+	})
+	for _, directory := range result {
+		if err := os.MkdirAll(filepath.Join(localDir, filepath.FromSlash(directory)), 0700); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func linuxVMOwnership(plan linuxVMPlan, persistedISO string) (hyperv.LinuxVMOwnership, error) {

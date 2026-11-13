@@ -36,6 +36,11 @@ const indexHTML = `<!doctype html>
   .pill.canceled  { color:#fff; background:var(--warn); }
   .pill.orphaned  { color:#fff; background:var(--muted); }
   .pill.unknown   { color:#fff; background:var(--muted); }
+  .pill.ready     { color:#fff; background:var(--ok); }
+  .pill.degraded  { color:#fff; background:var(--bad); }
+  .pill.lost      { color:#fff; background:var(--bad); }
+  .pill.planned   { color:#fff; background:var(--muted); }
+  .pill.paused    { color:#fff; background:var(--warn); }
   .summary { font-family: ui-monospace,Menlo,Consolas,monospace; color:var(--fg); white-space:pre-wrap; word-break:break-word; }
   .args { color:var(--muted); font-size:12px; margin-top:4px; font-family: ui-monospace,Menlo,Consolas,monospace; }
   .err  { color:var(--bad); font-size:12px; margin-top:4px; }
@@ -60,6 +65,13 @@ const indexHTML = `<!doctype html>
   .modal .footer { padding:12px 18px; border-top:1px solid var(--line); display:flex; justify-content:flex-end; gap:8px; }
   .truncate { max-width:400px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .node-errors { padding:8px 24px; color:var(--bad); font-size:12px; }
+  .section-title { padding:18px 24px 8px; margin:0; font-size:14px; }
+  .section-meta { padding:0 24px 10px; color:var(--muted); font-size:12px; }
+  .identity { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }
+  .stack { display:flex; flex-direction:column; gap:3px; }
+  .drift { color:var(--warn); font-weight:600; }
+  .ok { color:var(--ok); }
+  .isolated-errors { padding:10px 24px; color:var(--bad); white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -69,6 +81,7 @@ const indexHTML = `<!doctype html>
   <nav class="tabs">
     <button id="tab-ops" class="active" onclick="showTab('ops')">Operations</button>
     <button id="tab-jobs" onclick="showTab('jobs')">Jobs</button>
+    <button id="tab-isolated" onclick="showTab('isolated')">Isolated</button>
   </nav>
 </header>
 
@@ -106,6 +119,49 @@ const indexHTML = `<!doctype html>
   <tbody id="jobs-rows"></tbody>
 </table>
 <div id="jobs-empty" class="empty">No jobs yet.</div>
+</section>
+
+<section id="pane-isolated" class="tab-pane">
+<div class="filters">
+  <button class="primary" onclick="loadIsolated()">Refresh</button>
+  <span class="sub" id="isolated-conn" style="color:var(--muted);font-size:12px;">idle</span>
+</div>
+<div id="isolated-errors" class="isolated-errors"></div>
+
+<h2 class="section-title">Orchestrators</h2>
+<div class="section-meta">Durable identity, main endpoint, appliance readiness, capabilities, and cached capacity.</div>
+<table>
+  <thead><tr><th>State</th><th>Identity</th><th>Main endpoint</th><th>Readiness</th><th>Capacity</th><th>Generation</th></tr></thead>
+  <tbody id="isolated-orchestrators"></tbody>
+</table>
+
+<h2 class="section-title">Private networks</h2>
+<div class="section-meta">Subnet and Hyper-V switch identity are immutable orchestration inputs.</div>
+<table>
+  <thead><tr><th>State</th><th>Identity</th><th>Subnet</th><th>Switch identity</th><th>DNS</th><th>Generation</th></tr></thead>
+  <tbody id="isolated-networks"></tbody>
+</table>
+
+<h2 class="section-title">Isolated VMs</h2>
+<table>
+  <thead><tr><th>State</th><th>Identity</th><th>Network</th><th>IP / MAC</th><th>Relay / TLS</th><th>NAT / DNS</th><th>Generation</th></tr></thead>
+  <tbody id="isolated-vms"></tbody>
+</table>
+
+<h2 class="section-title">Relays</h2>
+<div class="section-meta" id="isolated-relay-page"></div>
+<table>
+  <thead><tr><th>State</th><th>Identity</th><th>Listener</th><th>Target</th><th>Traffic</th><th>Errors</th><th>Generation</th></tr></thead>
+  <tbody id="isolated-relays"></tbody>
+</table>
+
+<h2 class="section-title">Durable operations</h2>
+<div class="section-meta" id="isolated-operations-page"></div>
+<table>
+  <thead><tr><th>Status</th><th>Resume ID</th><th>Resource</th><th>Current phase</th><th>Phase history</th><th>Error</th><th>Updated</th></tr></thead>
+  <tbody id="isolated-operations"></tbody>
+</table>
+<div id="isolated-empty" class="empty">No isolated orchestration state.</div>
 </section>
 
 <div id="modal" class="modal-backdrop" onclick="if(event.target===this)closeModal()">
@@ -414,10 +470,156 @@ async function refreshOutput() {
 function showTab(name) {
   document.getElementById('tab-ops').classList.toggle('active', name === 'ops');
   document.getElementById('tab-jobs').classList.toggle('active', name === 'jobs');
+  document.getElementById('tab-isolated').classList.toggle('active', name === 'isolated');
   document.getElementById('pane-ops').classList.toggle('active', name === 'ops');
   document.getElementById('pane-jobs').classList.toggle('active', name === 'jobs');
+  document.getElementById('pane-isolated').classList.toggle('active', name === 'isolated');
   if (name === 'jobs' && !jobsEventSource) {
     loadJobsSnapshot().then(connectJobsStream);
+  }
+  if (name === 'isolated' && !isolatedLoaded) loadIsolated();
+}
+
+// ---------- Isolated orchestration (read-only) ----------
+const isolatedConn = document.getElementById('isolated-conn');
+const isolatedErrors = document.getElementById('isolated-errors');
+const isolatedEmpty = document.getElementById('isolated-empty');
+let isolatedLoaded = false;
+
+function clearTable(id) { document.getElementById(id).replaceChildren(); }
+function td(value, cls) {
+  const cell = document.createElement('td');
+  if (cls) cell.className = cls;
+  cell.textContent = value == null ? '' : String(value);
+  return cell;
+}
+function stackTD(lines, cls) {
+  const cell = document.createElement('td');
+  const box = document.createElement('div');
+  box.className = 'stack' + (cls ? ' ' + cls : '');
+  for (const line of lines.filter(v => v !== '' && v != null)) {
+    const item = document.createElement('span');
+    item.textContent = String(line);
+    box.appendChild(item);
+  }
+  cell.appendChild(box);
+  return cell;
+}
+function stateTD(state, error) {
+  const cell = document.createElement('td');
+  const pill = document.createElement('span');
+  const normalized = String(state || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  pill.className = 'pill ' + normalized;
+  pill.textContent = state || 'unknown';
+  cell.appendChild(pill);
+  if (error) {
+    const detail = document.createElement('div');
+    detail.className = 'err';
+    detail.textContent = error;
+    cell.appendChild(detail);
+  }
+  return cell;
+}
+function appendRow(tableID, cells) {
+  const row = document.createElement('tr');
+  for (const cell of cells) row.appendChild(cell);
+  document.getElementById(tableID).appendChild(row);
+}
+function generationText(v) {
+  return (v.desired_generation || 0) + ' / ' + (v.applied_generation || 0) + ' / ' + (v.observed_generation || 0);
+}
+function dnsText(values) { return (values || []).join(', ') || 'none'; }
+function renderIsolated(data, opsData) {
+  ['isolated-orchestrators','isolated-networks','isolated-vms','isolated-relays','isolated-operations'].forEach(clearTable);
+  const errors = [...(data.errors || []), ...(opsData.errors || [])];
+  isolatedErrors.textContent = errors.map(e => e.scope + ': ' + e.error).join('\n');
+
+  for (const o of (data.orchestrators || [])) {
+    const ready = o.readiness || {};
+    const endpoint = o.endpoint || {};
+    const cap = o.capacity || {};
+    appendRow('isolated-orchestrators', [
+      stateTD(o.lifecycle_state, ready.error),
+      stackTD([o.display_name || o.id, o.id, 'host ' + o.physical_host_id, 'VM ' + o.hyperv_name], 'identity'),
+      stackTD([endpoint.address || 'unassigned', endpoint.node_name, 'TLS ' + (endpoint.tls_name || 'missing'), endpoint.identity_ok ? 'mTLS identity verified' : 'mTLS identity unavailable'], endpoint.identity_ok ? 'ok' : 'drift'),
+      stackTD(['health ' + (o.health_state || 'unknown'), ready.ready ? 'appliance ready' : 'appliance not ready', ready.agent_version || '', 'protocol ' + (ready.protocol_version || 0), (ready.capabilities || []).join(', ') || 'no capabilities']),
+      stackTD([cap.used_networks + '/' + cap.max_networks + ' networks', cap.used_vms + '/' + cap.max_vms + ' VMs', cap.free_relay_ports + ' relay ports free']),
+      td(generationText(o), 'identity')
+    ]);
+  }
+  for (const n of (data.networks || [])) {
+    appendRow('isolated-networks', [
+      stateTD(n.live_state || n.lifecycle_state, n.live_error),
+      stackTD([n.display_name || n.id, n.id, 'orchestrator ' + n.orchestrator_id], 'identity'),
+      stackTD(['index ' + n.subnet_index, n.cidr, 'gateway ' + n.gateway_ipv4, 'MAC ' + n.orchestrator_mac]),
+      stackTD([n.hyperv_switch_name, n.hyperv_switch_guid || 'GUID pending', n.orchestrator_adapter_id || 'adapter pending'], 'identity'),
+      stackTD(['desired ' + dnsText(n.dns_servers), 'observed ' + dnsText(n.observed_dns_servers), n.dns_drift ? 'DNS drift' : 'DNS aligned'], n.dns_drift ? 'drift' : 'ok'),
+      td(generationText(n), 'identity')
+    ]);
+  }
+  for (const v of (data.vms || [])) {
+    const tls = v.tls || {};
+    const nat = v.nat || {};
+    appendRow('isolated-vms', [
+      stateTD(v.live_state || v.lifecycle_state, v.live_error),
+      stackTD([v.display_name || v.id, v.id, 'incarnation ' + v.incarnation, v.hyperv_name], 'identity'),
+      stackTD([v.network_id, v.guest_os + ' / ' + v.profile_name], 'identity'),
+      stackTD([v.ipv4 + '/' + v.prefix_length, v.mac, 'gateway ' + v.gateway_ipv4], 'identity'),
+      stackTD([v.relay_id ? v.relay_id + ' :' + v.relay_listen_port : 'no relay', tls.node_name, 'TLS ' + (tls.tls_name || 'missing'), tls.identity_ok ? 'mTLS identity verified' : 'mTLS identity unavailable'], tls.identity_ok ? 'ok' : 'drift'),
+      stackTD([nat.desired_state ? 'NAT ' + nat.desired_state + ' / ' + (nat.live_state || nat.observed_state) : 'NAT unallocated', 'DNS ' + dnsText(v.dns_servers), v.dns_drift || v.dns_update_pending ? 'DNS drift/pending' : 'DNS aligned', v.dns_last_error || nat.live_error || ''], v.dns_drift || v.dns_update_pending ? 'drift' : ''),
+      td(generationText(v), 'identity')
+    ]);
+  }
+  for (const r of (data.relays || [])) {
+    const stats = r.stats || {};
+    appendRow('isolated-relays', [
+      stateTD(stats.listener_state || r.live_state || r.lifecycle_state, stats.error || r.live_error),
+      stackTD([r.id, 'VM ' + r.vm_id, 'orchestrator ' + r.orchestrator_id], 'identity'),
+      stackTD([stats.bind_address || r.bound_main_ip || 'unbound', 'port ' + r.listen_port]),
+      stackTD([r.target_ipv4 + ':' + r.target_port]),
+      stackTD([(stats.active_connections || 0) + ' active', (stats.total_accepted_connections || 0) + ' accepted', (stats.bytes_guest_to_main || 0) + ' / ' + (stats.bytes_main_to_guest || 0) + ' bytes']),
+      stackTD([stats.bind_error || '', stats.last_failure || '', (stats.target_dial_failure_count || 0) + ' dial failures'], stats.bind_error || stats.last_failure ? 'drift' : ''),
+      stackTD([generationText(r), 'runtime ' + (stats.relay_generation || 0), 'appliance ' + (stats.appliance_generation || 0)], 'identity')
+    ]);
+  }
+  const relayPage = data.relay_stats_page || {};
+  document.getElementById('isolated-relay-page').textContent =
+    (relayPage.total || 0) + ' relays; runtime stats limited to ' + (relayPage.limit || 0) + ' from offset ' + (relayPage.offset || 0);
+
+  for (const o of (opsData.operations || [])) {
+    const phaseText = (o.phases || []).map(p => p.phase_index + ':' + p.phase_name + '#' + p.attempt + '=' + p.status).join(' • ');
+    appendRow('isolated-operations', [
+      stateTD(o.status, o.error_text),
+      td(o.resume_id, 'identity'),
+      stackTD([o.kind, o.resource_type + ' ' + o.resource_id, o.plan_revision ? 'plan ' + o.plan_revision : ''], 'identity'),
+      td(o.current_phase || 'not started'),
+      td(phaseText || 'none', 'identity'),
+      stackTD([o.error_code || '', o.error_text || ''], 'err'),
+      td(o.updated_at_unix ? new Date(o.updated_at_unix * 1000).toLocaleString() : '')
+    ]);
+  }
+  const opPage = opsData.page || {};
+  document.getElementById('isolated-operations-page').textContent =
+    'Showing up to ' + (opPage.limit || 0) + ' operations from offset ' + (opPage.offset || 0) + (opPage.has_more ? '; more available via API pagination' : '');
+  const count = (data.orchestrators || []).length + (data.networks || []).length +
+    (data.vms || []).length + (data.relays || []).length + (opsData.operations || []).length;
+  isolatedEmpty.style.display = count ? 'none' : 'block';
+}
+async function loadIsolated() {
+  isolatedConn.textContent = 'loading…';
+  try {
+    const [stateResponse, operationsResponse] = await Promise.all([
+      fetch('/api/isolated?stats_limit=100'),
+      fetch('/api/isolated/operations?limit=100&phase_limit=100')
+    ]);
+    const stateData = await stateResponse.json();
+    const operationsData = await operationsResponse.json();
+    renderIsolated(stateData, operationsData);
+    isolatedConn.textContent = stateResponse.ok && operationsResponse.ok ? 'current' : 'partial';
+    isolatedLoaded = true;
+  } catch (e) {
+    isolatedConn.textContent = 'unavailable';
+    isolatedErrors.textContent = String(e);
   }
 }
 </script>

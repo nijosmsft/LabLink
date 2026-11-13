@@ -1,0 +1,11 @@
+[Unit]
+Description=Disable firewall managers that conflict with the LabLink appliance
+DefaultDependencies=no
+Before=lablink-appliance-firewall.service systemd-networkd.service network-online.target lablink-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/lablink/orchestrator/disable-conflicting-firewalls.sh
+
+[Install]
+WantedBy=network-pre.target

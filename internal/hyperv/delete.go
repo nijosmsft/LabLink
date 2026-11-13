@@ -12,6 +12,7 @@ type DeleteVMParams struct {
 	ForceStop          bool
 	DeleteStorage      bool
 	ExpectedParentVHDX string
+	ExpectedVMGUID     string
 }
 
 // BuildDeleteVMScript builds a dry-run-first VM deletion script. Storage
@@ -19,11 +20,24 @@ type DeleteVMParams struct {
 // approved managed root. Differencing parent paths are reported but never
 // deleted.
 func BuildDeleteVMScript(p DeleteVMParams) (string, error) {
+	body, err := buildDeleteVMBody(p)
+	if err != nil {
+		return "", err
+	}
+	return wrapTagged(body), nil
+}
+
+func buildDeleteVMBody(p DeleteVMParams) (string, error) {
 	if strings.TrimSpace(p.Name) == "" {
 		return "", fmt.Errorf("vm name is required")
 	}
 	if p.DeleteStorage && strings.TrimSpace(p.ManagedRoot) == "" {
 		return "", fmt.Errorf("managed_root is required when delete_storage=true")
+	}
+	if p.ExpectedVMGUID != "" {
+		if err := validateGUID("VM", p.ExpectedVMGUID); err != nil {
+			return "", err
+		}
 	}
 
 	var b strings.Builder
@@ -34,9 +48,17 @@ func BuildDeleteVMScript(p DeleteVMParams) (string, error) {
 	fmt.Fprintf(&b, "$forceStop = %s\n", PSBool(p.ForceStop))
 	fmt.Fprintf(&b, "$deleteStorage = %s\n", PSBool(p.DeleteStorage))
 	fmt.Fprintf(&b, "$expectedParentVHDX = %s\n", PSLit(p.ExpectedParentVHDX))
+	fmt.Fprintf(&b, "$expectedVMGUID = %s\n", PSLit(normalizedGUIDOrEmpty(p.ExpectedVMGUID)))
 	b.WriteString(`
-$vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+$vm = if ($expectedVMGUID) {
+    Get-VM -Id $expectedVMGUID -ErrorAction SilentlyContinue
+} else {
+    Get-VM -Name $name -ErrorAction SilentlyContinue
+}
 if (-not $vm) { throw "VM_NOT_FOUND: VM '$name' does not exist" }
+if ($expectedVMGUID -and [string]$vm.Name -cne $name) {
+    throw "VM_IDENTITY_MISMATCH: exact VM GUID belongs to '$($vm.Name)', expected '$name'"
+}
 
 function Get-CanonicalPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
@@ -146,11 +168,11 @@ if ($vm.State -ne 'Off') {
     if (-not $forceStop) {
         throw "VM_RUNNING: VM '$name' is $($vm.State); pass force_stop=true to turn it off"
     }
-    Stop-VM -Name $name -TurnOff -Force
+    Stop-VM -VM $vm -TurnOff -Force
 }
 
-Get-VMSnapshot -VMName $name -ErrorAction SilentlyContinue | Remove-VMSnapshot -Confirm:$false
-Remove-VM -Name $name -Force
+Get-VMSnapshot -VM $vm -ErrorAction SilentlyContinue | Remove-VMSnapshot -Confirm:$false
+Remove-VM -VM $vm -Force
 
 $deleted = @()
 if ($deleteStorage) {
@@ -169,5 +191,5 @@ if ($deleteStorage) {
 $summary.deleted_paths = $deleted
 [pscustomobject]$summary | ConvertTo-Json -Depth 8
 `)
-	return wrapTagged(b.String()), nil
+	return b.String(), nil
 }

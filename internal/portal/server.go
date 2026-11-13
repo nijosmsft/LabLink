@@ -1,6 +1,6 @@
-// Package portal exposes a small local HTTP UI listing in-flight LabLink
-// operations and offering a Cancel button. It binds to 127.0.0.1 only and
-// requires a per-process key (issued at startup) on every request.
+// Package portal exposes a local HTTP UI for in-flight LabLink operations,
+// remote jobs, and read-only isolated orchestration state. It binds to
+// 127.0.0.1 only and requires a per-process key on every request.
 package portal
 
 import (
@@ -21,14 +21,15 @@ import (
 	"github.com/nijosmsft/lablink/internal/registry"
 )
 
-// Server is a per-process portal.
+// Server is a per-process, loopback-only portal.
 type Server struct {
-	reg     *registry.Registry
-	pool    *agentclient.Pool
-	opsReg  *ops.Registry
-	key     string
-	addr    string
-	httpSrv *http.Server
+	reg      *registry.Registry
+	pool     *agentclient.Pool
+	opsReg   *ops.Registry
+	isolated *isolatedPortal
+	key      string
+	addr     string
+	httpSrv  *http.Server
 }
 
 // New constructs a Server bound to a random 127.0.0.1 port. listenAddr may be
@@ -53,11 +54,12 @@ func New(opsReg *ops.Registry, reg *registry.Registry, pool *agentclient.Pool, l
 		return nil, fmt.Errorf("portal: listen: %w", err)
 	}
 	s := &Server{
-		opsReg: opsReg,
-		reg:    reg,
-		pool:   pool,
-		key:    key,
-		addr:   ln.Addr().String(),
+		opsReg:   opsReg,
+		reg:      reg,
+		pool:     pool,
+		isolated: newIsolatedPortal(reg, pool),
+		key:      key,
+		addr:     ln.Addr().String(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
@@ -65,6 +67,7 @@ func New(opsReg *ops.Registry, reg *registry.Registry, pool *agentclient.Pool, l
 	mux.HandleFunc("/api/ops/cancel", s.handleCancel)
 	mux.HandleFunc("/api/ops/stream", s.handleStream)
 	s.registerJobsHandlers(mux)
+	s.registerIsolatedHandlers(mux)
 	s.httpSrv = &http.Server{
 		Handler:           s.requireKey(mux),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -88,7 +91,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.httpSrv == nil {
 		return nil
 	}
-	return s.httpSrv.Shutdown(ctx)
+	httpErr := s.httpSrv.Shutdown(ctx)
+	stateErr := s.isolated.close()
+	if httpErr != nil {
+		return httpErr
+	}
+	return stateErr
 }
 
 func (s *Server) requireKey(next http.Handler) http.Handler {

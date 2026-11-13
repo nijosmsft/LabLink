@@ -861,3 +861,26 @@ func TestManagedLinuxVMStorageMismatchStopsBeforeBootAndMTLS(t *testing.T) {
 		}
 	}
 }
+
+func TestPrepareLocalLinuxSeedDirectories(t *testing.T) {
+	root := t.TempDir()
+	directories, err := prepareLocalLinuxSeedDirectories(root, map[string][]byte{
+		"user-data":                         nil,
+		"orchestrator/install.sh":           nil,
+		"orchestrator/assets/manifest.json": nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(directories, ","), "orchestrator,orchestrator/assets"; got != want {
+		t.Fatalf("directories=%q want %q", got, want)
+	}
+	for _, directory := range directories {
+		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(directory))); err != nil || !info.IsDir() {
+			t.Fatalf("nested local directory %q was not created: info=%v err=%v", directory, info, err)
+		}
+	}
+	if _, err := prepareLocalLinuxSeedDirectories(root, map[string][]byte{"../escape": nil}); err == nil {
+		t.Fatal("accepted unsafe local seed path")
+	}
+}

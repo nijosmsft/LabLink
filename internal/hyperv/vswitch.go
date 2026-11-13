@@ -9,6 +9,7 @@ import (
 // VSwitch is a parsed Hyper-V virtual switch row.
 type VSwitch struct {
 	Name              string `json:"name"`
+	ID                string `json:"id"`
 	Type              string `json:"type"`
 	NetAdapter        string `json:"net_adapter"`
 	AllowManagementOS bool   `json:"allow_management_os"`
@@ -20,6 +21,7 @@ func BuildListVSwitchesScript() string {
 $rows = foreach ($sw in @(Get-VMSwitch -ErrorAction SilentlyContinue)) {
     [pscustomobject]@{
         name                = $sw.Name
+        id                  = [string]$sw.Id
         type                = "$($sw.SwitchType)"
         net_adapter         = $sw.NetAdapterInterfaceDescription
         allow_management_os = [bool]$sw.AllowManagementOS
@@ -194,6 +196,7 @@ if (-not $existing) {
 $sw = Get-VMSwitch -Name $name
 [pscustomobject]@{
     name                = $sw.Name
+    id                  = [string]$sw.Id
     type                = "$($sw.SwitchType)"
     net_adapter         = $sw.NetAdapterInterfaceDescription
     allow_management_os = [bool]$sw.AllowManagementOS
