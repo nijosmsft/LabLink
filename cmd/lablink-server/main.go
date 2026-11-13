@@ -238,6 +238,10 @@ ANTI-PATTERNS — DO NOT do these things:
 		Registry: reg,
 		Enabled:  leaseEnabled,
 	}
+	secretHelper := filepath.Join(installRoot, "bin", "lablink-secret")
+	if runtime.GOOS == "windows" {
+		secretHelper += ".exe"
+	}
 
 	// Register all tools.
 	mcptools.RegisterInventory(s, reg, pool)
@@ -248,7 +252,7 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterContext(s, reg, leaseCfg)
 	mcptools.RegisterMultiNode(s, reg, pool, auditLog, leaseCfg)
 	mcptools.RegisterHistory(s, auditLog)
-	mcptools.RegisterDeploy(s, reg, pool, creds, token)
+	mcptools.RegisterDeploy(s, reg, pool, creds, token, secretHelper)
 	mcptools.RegisterAgentUpdate(s, reg, pool, mcptools.AgentUpdateConfig{
 		ServerVersion:      serverVersion,
 		WindowsAgentBinary: vmEnrollment.AgentBinary,
@@ -265,10 +269,6 @@ ANTI-PATTERNS — DO NOT do these things:
 	mcptools.RegisterPortal(s)
 	mcptools.RegisterForward(s, reg, pool, leaseCfg)
 	mcptools.RegisterLeasing(s, reg, leaseStore)
-	secretHelper := filepath.Join(installRoot, "bin", "lablink-secret")
-	if runtime.GOOS == "windows" {
-		secretHelper += ".exe"
-	}
 	mcptools.RegisterSecrets(s, secrets, secretHelper)
 	mcptools.RegisterVM(s, reg, pool, creds, secrets, vmDefaults, auditLog, vmEnrollment, leaseCfg)
 	isolatedDeps, err := mcptools.NewIsolatedLifecycleDependencies(

@@ -698,9 +698,20 @@ diagnosis. See
 | Tool | What it does |
 |------|--------------|
 | `deploy_agent` | Deploy the agent to a new Windows node via PS Remoting. |
-| `save_credential` / `list_credentials` | Manage named WinRM credential profiles for `deploy_agent`. |
+| `save_credential` | Save or replace a named WinRM credential through a local masked terminal. The password never passes through MCP. |
+| `list_credentials` | List credential names and usernames without decrypting or returning passwords. |
 
-For day-to-day onboarding, the bootstrap scripts are recommended over `deploy_agent` because they don't require persisting WinRM credentials on the operator machine.
+`credentials.json` contains only profile metadata and opaque encrypted-secret
+references. Passwords are encrypted in `credential-secrets.json` using the
+same user-scoped DPAPI/AES-GCM protection as arbitrary secrets. Profiles from
+older releases that still contain a plaintext `password` field are disabled
+and must be replaced with `save_credential`; LabLink never migrates or uses the
+legacy plaintext automatically.
+
+The automatic separate-console prompt is currently supported on Windows.
+
+For day-to-day onboarding, the bootstrap scripts remain available when you do
+not want to persist reusable WinRM credentials on the operator machine.
 
 ## Leasing and mutating tools
 
