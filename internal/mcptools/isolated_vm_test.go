@@ -382,7 +382,7 @@ func TestDeleteIsolatedVMUsesExactReservationsAndDoesNotReleaseRelayTwice(t *tes
 		ID: orchestratorID, PhysicalHostID: strings.Repeat("a", 64),
 		HostNode: "localhost", HyperVName: "orchestrator", HyperVVMID: &orchestratorGUID,
 		NodeName: "orchestrator-node", MainIP: &mainIP, AgentPort: 9091,
-		DesiredGeneration: 1, AppliedGeneration: 1, ObservedGeneration: 1,
+		DesiredGeneration: 3, AppliedGeneration: 3, ObservedGeneration: 3,
 		LifecycleState: isolatedstate.OrchestratorReady, CreatedAt: 1, UpdatedAt: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -509,6 +509,9 @@ func TestDeleteIsolatedVMUsesExactReservationsAndDoesNotReleaseRelayTwice(t *tes
 	if parentID := applianceClient.natInputs[0].Header.Header.ParentResourceID; parentID != vmID {
 		t.Fatalf("NAT parent resource = %q, want guest %q", parentID, vmID)
 	}
+	if parentGeneration := applianceClient.natInputs[0].Header.Header.ExpectedParentGeneration; parentGeneration != 2 {
+		t.Fatalf("NAT parent generation = %d, want guest generation 2", parentGeneration)
+	}
 	if len(applianceClient.guestInputs) != 1 {
 		t.Fatalf("guest retirement calls = %d, want one replay-safe call", len(applianceClient.guestInputs))
 	}
@@ -516,6 +519,10 @@ func TestDeleteIsolatedVMUsesExactReservationsAndDoesNotReleaseRelayTwice(t *tes
 	if guestHeader.ExpectedGeneration != 1 || guestHeader.NewGeneration != 2 {
 		t.Fatalf("guest appliance generation = %d -> %d, want 1 -> 2 with local VM generation 2",
 			guestHeader.ExpectedGeneration, guestHeader.NewGeneration)
+	}
+	if guestHeader.ExpectedParentGeneration != 1 {
+		t.Fatalf("guest parent generation = %d, want network generation 1",
+			guestHeader.ExpectedParentGeneration)
 	}
 	if len(applianceClient.releaseRequests) != 2 {
 		t.Fatalf("release requests = %+v", applianceClient.releaseRequests)

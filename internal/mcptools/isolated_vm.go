@@ -903,6 +903,10 @@ func deleteIsolatedVMCore(
 	if err != nil {
 		return isolatedError(err)
 	}
+	network, err := deps.state.GetNetwork(ctx, vm.NetworkID)
+	if err != nil {
+		return isolatedError(err)
+	}
 	target, err := resolvePlanTarget(orchestrator.HostNode, deps.registry)
 	if err != nil {
 		return isolatedError(err)
@@ -953,6 +957,10 @@ func deleteIsolatedVMCore(
 	}
 	semantic, _ := isolatedstate.SemanticHash(map[string]any{"vm_id": vm.ID, "delete_storage": deleteStorage})
 	envelope := func(resourceID, parentID, action, phase string, generation isolatedstate.Generation) isolated.MutationEnvelope {
+		parentGeneration := vm.DesiredGeneration
+		if parentID == vm.NetworkID {
+			parentGeneration = network.DesiredGeneration
+		}
 		result := isolated.MutationEnvelope{
 			Header: appliance.MutationHeader{
 				ParentOperationID: operationID,
@@ -960,7 +968,7 @@ func deleteIsolatedVMCore(
 				SemanticHash:      semantic, ResourceID: resourceID, ParentResourceID: parentID,
 				ExpectedGeneration: uint64(generation), NewGeneration: uint64(generation + 1),
 				HostFence:                uint64(hostLease.Fence),
-				ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
+				ExpectedParentGeneration: uint64(parentGeneration),
 			},
 			PhysicalHostID: orchestrator.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
 			HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),

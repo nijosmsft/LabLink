@@ -1836,7 +1836,8 @@ func consumedApprovedCascadePlan(
 			fmt.Sprint(approved["action"]) != string(child.Action) ||
 			fmt.Sprint(approved["host_identity"]) != child.ExpectedHostIdentity ||
 			fmt.Sprint(approved["appliance_identity"]) != child.ExpectedApplianceIdentity ||
-			isolatedstate.Generation(generation) != child.ExpectedGeneration ||
+			!cascadeGenerationMatches(
+				isolatedstate.Generation(generation), child.ExpectedGeneration) ||
 			(incarnationOK && isolatedstate.Incarnation(incarnation) != child.ExpectedIncarnation) ||
 			fmt.Sprint(approved["immutable_identity"]) != child.ExpectedImmutableIdentity {
 			return isolated.RevisionedPlan{}, false, fmt.Errorf(
@@ -1845,6 +1846,13 @@ func consumedApprovedCascadePlan(
 		}
 	}
 	return stored, true, nil
+}
+
+func cascadeGenerationMatches(
+	approved, current isolatedstate.Generation,
+) bool {
+	return current == approved ||
+		(current > approved && current-approved == 1)
 }
 
 func cascadeChildren(
@@ -1983,7 +1991,8 @@ func validateApprovedCascadeChild(
 			if err != nil {
 				return err
 			}
-			if current.DesiredGeneration != approved.ExpectedGeneration ||
+			if !cascadeGenerationMatches(
+				approved.ExpectedGeneration, current.DesiredGeneration) ||
 				current.Incarnation != approved.ExpectedIncarnation ||
 				valueOrEmpty(current.HyperVVMID) != approved.ExpectedHostIdentity ||
 				cascadeVMIdentity(current) != approved.ExpectedImmutableIdentity {
@@ -1996,7 +2005,8 @@ func validateApprovedCascadeChild(
 			if err != nil {
 				return err
 			}
-			if current.DesiredGeneration != approved.ExpectedGeneration ||
+			if !cascadeGenerationMatches(
+				approved.ExpectedGeneration, current.DesiredGeneration) ||
 				valueOrEmpty(current.HyperVSwitchGUID) != approved.ExpectedHostIdentity ||
 				cascadeNetworkIdentity(current) != approved.ExpectedImmutableIdentity {
 				return fmt.Errorf(
@@ -2008,11 +2018,25 @@ func validateApprovedCascadeChild(
 			if err != nil {
 				return err
 			}
-			if current.DesiredGeneration != approved.ExpectedGeneration ||
+			if !cascadeGenerationMatches(
+				approved.ExpectedGeneration, current.DesiredGeneration) ||
 				fmt.Sprint(current.ListenPort) != approved.ExpectedApplianceIdentity ||
 				cascadeRelayIdentity(current) != approved.ExpectedImmutableIdentity {
 				return fmt.Errorf(
 					"CASCADE_INVENTORY_CHANGED: approved relay %s generation or immutable identity changed",
+					resourceID)
+			}
+		case "nat":
+			current, err := state.GetNAT(ctx, resourceID)
+			if err != nil {
+				return err
+			}
+			if !cascadeGenerationMatches(
+				approved.ExpectedGeneration, current.DesiredGeneration) ||
+				fmt.Sprint(current.ConntrackMark) != approved.ExpectedApplianceIdentity ||
+				cascadeNATIdentity(current) != approved.ExpectedImmutableIdentity {
+				return fmt.Errorf(
+					"CASCADE_INVENTORY_CHANGED: approved NAT %s generation or immutable identity changed",
 					resourceID)
 			}
 		default:

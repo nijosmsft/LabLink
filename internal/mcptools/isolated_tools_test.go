@@ -1016,6 +1016,37 @@ func TestCascadeCoordinatorDoesNotAcquireChildHostFence(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	nat, err := store.GetNAT(context.Background(), vmID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	natPlan := isolated.RevisionedPlan{Inputs: map[string]any{
+		"children": []map[string]any{{
+			"resource_type": "nat", "resource_id": vmID,
+			"action":             string(cascadeauth.ActionNATDisable),
+			"appliance_identity": "101",
+			"generation":         nat.DesiredGeneration,
+			"immutable_identity": cascadeNATIdentity(nat),
+		}},
+	}}
+	if err := validateApprovedCascadeChild(
+		context.Background(), store, natPlan, "nat", vmID,
+	); err != nil {
+		t.Fatalf("approved NAT validation = %v", err)
+	}
+	nat.DesiredGeneration++
+	nat.AppliedGeneration++
+	nat.ObservedGeneration++
+	nat.DesiredState = isolatedstate.NATDesiredDisabled
+	nat.ObservedState = isolatedstate.NATObservedDisabled
+	if err := store.PutNAT(context.Background(), nat); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateApprovedCascadeChild(
+		context.Background(), store, natPlan, "nat", vmID,
+	); err != nil {
+		t.Fatalf("progressed approved NAT validation = %v", err)
+	}
 	host := &countingCascadeHost{}
 	order := []string{}
 	deps := &isolatedLifecycleDeps{
