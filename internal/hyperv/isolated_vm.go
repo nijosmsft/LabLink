@@ -38,6 +38,8 @@ type DeleteIsolatedVMParams struct {
 	ExpectedAdapterID  string
 	ExpectedVHDPath    string
 	ExpectedVMPath     string
+	ExpectedCIDATAPath string
+	ExpectedOwnership  string
 	DeleteStorage      bool
 }
 
@@ -93,7 +95,8 @@ try {
     $expected = %s | ConvertFrom-Json
     $orchestratorVMGUID = %s
     $parent = Get-VM -Id $orchestratorVMGUID -ErrorAction Stop
-    Assert-LabLinkIsolatedParent $parent %s $script:guardFence
+    $parentMetadata = Get-LabLinkIsolatedVMNotes $parent %s
+    $cascadeItem = Assert-LabLinkParentAllowsMutation $parentMetadata
     $vm = @(Get-VM -Name %s -ErrorAction SilentlyContinue)
     if ($vm.Count -ne 1) { throw 'VM_IDENTITY_MISMATCH: expected exactly one generated VM name' }
     if ([string]$vm[0].State -ne 'Off') { throw 'ISOLATED_VM_MUST_BE_OFF: claim and network fencing must precede boot' }
@@ -109,9 +112,9 @@ try {
     Enable-VMIntegrationService -VM $vm[0] -Name 'Time Synchronization' -ErrorAction Stop
     $adapter = @(Get-VMNetworkAdapter -VM $vm[0] -Name %s -ErrorAction Stop)
     if ($adapter.Count -ne 1) { throw 'ADAPTER_IDENTITY_MISMATCH' }
-    $expected.vm_guid = [string]$vm[0].Id
-    $expected.adapter_id = [string]$adapter[0].Id
-    $expected.switch_guid = [string]$switch[0].Id
+    $expected | Add-Member -NotePropertyName vm_guid -NotePropertyValue ([string]$vm[0].Id) -Force
+    $expected | Add-Member -NotePropertyName adapter_id -NotePropertyValue ([string]$adapter[0].Id) -Force
+    $expected | Add-Member -NotePropertyName switch_guid -NotePropertyValue ([string]$switch[0].Id) -Force
     Set-VM -VM $vm[0] -Notes (%s + ($expected | ConvertTo-Json -Depth 20 -Compress)) -ErrorAction Stop
     [pscustomobject]@{
         action='claimed'; vm_id=[string]$expected.vm_id; vm_name=[string]$vm[0].Name
@@ -121,9 +124,9 @@ try {
         state=[string]$vm[0].State
     } | ConvertTo-Json -Compress
 } finally {
-    Exit-LabLinkIsolatedMutationGuard
+    $__isolatedGate.Dispose()
 }
-`, PSLit(metadataJSON), PSLit(p.OrchestratorVMGUID), PSLit(p.Metadata.OrchestratorID),
+`, PSLit(metadataJSON), PSLit(p.OrchestratorVMGUID), PSLit(IsolatedOrchestratorMetadataPrefix),
 		PSLit(p.VMName), PSLit(p.SwitchGUID), PSLit(p.AdapterName), PSLit(p.MAC),
 		PSLit(p.AdapterName), PSLit(IsolatedVMMetadataPrefix))
 	return wrapTagged(body), nil
@@ -199,11 +202,13 @@ func BuildDeleteIsolatedVMScript(p DeleteIsolatedVMParams) (string, error) {
 	}
 	for kind, value := range map[string]string{
 		"orchestrator VM": p.OrchestratorVMGUID, "VM": p.ExpectedVMGUID,
-		"adapter": p.ExpectedAdapterID,
 	} {
 		if err := validateGUID(kind, value); err != nil {
 			return "", err
 		}
+	}
+	if err := validateAdapterID(p.ExpectedAdapterID); err != nil {
+		return "", err
 	}
 	guard, err := isolatedMutationGuardPowerShell(p.Guard)
 	if err != nil {
@@ -212,18 +217,41 @@ func BuildDeleteIsolatedVMScript(p DeleteIsolatedVMParams) (string, error) {
 	body := PreflightScript() + isolatedHostMetadataPowerShell() + isolatedParentGuardPowerShell() + guard + fmt.Sprintf(`
 try {
     $parent = Get-VM -Id %s -ErrorAction Stop
-    Assert-LabLinkIsolatedParent $parent %s $script:guardFence
-    $vm = @(Get-VM -Name %s -ErrorAction SilentlyContinue)
-    if ($vm.Count -eq 0) {
-        $deletedStorage = $false
-        if (%s -and (Test-Path -LiteralPath %s -PathType Leaf)) {
+    $parentMetadata = Get-LabLinkIsolatedVMNotes $parent %s
+    $cascadeItem = Assert-LabLinkParentAllowsMutation $parentMetadata
+    $deleteStorage = %s
+    $expectedVHDPath = %s
+    $expectedVMPath = %s
+    $cidataPath = %s
+    $ownershipPath = %s
+    function Remove-LabLinkOwnedVMArtifacts {
+        $deletedVHD = $false
+        if ($deleteStorage -and (Test-Path -LiteralPath $expectedVHDPath -PathType Leaf)) {
             $referenced = @(Get-VM -ErrorAction SilentlyContinue | Get-VMHardDiskDrive -ErrorAction SilentlyContinue | Where-Object {
-                $_.Path -and [IO.Path]::GetFullPath([string]$_.Path) -ieq [IO.Path]::GetFullPath(%s)
+                $_.Path -and [IO.Path]::GetFullPath([string]$_.Path) -ieq [IO.Path]::GetFullPath($expectedVHDPath)
             }).Count -gt 0
             if ($referenced) { throw 'VM_STORAGE_IN_USE: exact owned child VHD is attached to another VM' }
-            Remove-Item -LiteralPath %s -Force -ErrorAction Stop
-            $deletedStorage = $true
+            Remove-Item -LiteralPath $expectedVHDPath -Force -ErrorAction Stop
+            $deletedVHD = $true
         }
+        if ($deleteStorage -and $cidataPath -and (Test-Path -LiteralPath $cidataPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $cidataPath -Force -ErrorAction Stop
+        }
+        if ($deleteStorage -and $ownershipPath -and (Test-Path -LiteralPath $ownershipPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $ownershipPath -Force -ErrorAction Stop
+        }
+        if ($deleteStorage -and $expectedVMPath -and (Test-Path -LiteralPath $expectedVMPath -PathType Container)) {
+            $files = @(Get-ChildItem -LiteralPath $expectedVMPath -Recurse -Force -File -ErrorAction Stop)
+            $reparse = @(Get-ChildItem -LiteralPath $expectedVMPath -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+            if ($files.Count -eq 0 -and $reparse.Count -eq 0) {
+                Remove-Item -LiteralPath $expectedVMPath -Recurse -Force -ErrorAction Stop
+            }
+        }
+        return $deletedVHD
+    }
+    $vm = @(Get-VM -Name %s -ErrorAction SilentlyContinue)
+    if ($vm.Count -eq 0) {
+        $deletedStorage = Remove-LabLinkOwnedVMArtifacts
         [pscustomobject]@{ action='already_absent'; vm_id=%s; vhd_path=%s; deleted_storage=$deletedStorage } | ConvertTo-Json -Compress
         return
     }
@@ -238,27 +266,18 @@ try {
     }
     if ([string]$vm[0].State -ne 'Off') { Stop-VM -VM $vm[0] -TurnOff -Force -ErrorAction Stop }
     Remove-VM -VM $vm[0] -Force -ErrorAction Stop
-    $deletedStorage = $false
-    if (%s -and (Test-Path -LiteralPath %s -PathType Leaf)) {
-        Remove-Item -LiteralPath %s -Force -ErrorAction Stop
-        $deletedStorage = $true
-    }
-    if (%s -and %s -and (Test-Path -LiteralPath %s -PathType Container)) {
-        $remaining = @(Get-ChildItem -LiteralPath %s -Force -ErrorAction Stop)
-        if ($remaining.Count -eq 0) { Remove-Item -LiteralPath %s -Force -ErrorAction Stop }
-    }
+    $deletedStorage = Remove-LabLinkOwnedVMArtifacts
     [pscustomobject]@{ action='deleted'; vm_id=%s; vm_guid=%s; vhd_path=%s; vm_path=%s; deleted_storage=$deletedStorage } | ConvertTo-Json -Compress
 } finally {
-    Exit-LabLinkIsolatedMutationGuard
+    $__isolatedGate.Dispose()
 }
-`, PSLit(p.OrchestratorVMGUID), PSLit(p.Guard.OrchestratorID), PSLit(p.VMName),
-		PSBool(p.DeleteStorage), PSLit(p.ExpectedVHDPath), PSLit(p.ExpectedVHDPath),
-		PSLit(p.ExpectedVHDPath), PSLit(p.ExpectedVMID), PSLit(p.ExpectedVHDPath),
+`, PSLit(p.OrchestratorVMGUID), PSLit(IsolatedOrchestratorMetadataPrefix),
+		PSBool(p.DeleteStorage), PSLit(p.ExpectedVHDPath), PSLit(p.ExpectedVMPath),
+		PSLit(p.ExpectedCIDATAPath), PSLit(p.ExpectedOwnership), PSLit(p.VMName),
+		PSLit(p.ExpectedVMID), PSLit(p.ExpectedVHDPath),
 		PSLit(p.ExpectedVMGUID), PSLit(IsolatedVMMetadataPrefix),
 		PSLit(IsolatedVMMetadataPrefix), PSLit(p.ExpectedVMID), PSLit(p.ExpectedAdapterID),
-		PSLit(p.ExpectedVHDPath), PSBool(p.DeleteStorage), PSLit(p.ExpectedVHDPath),
-		PSLit(p.ExpectedVHDPath), PSBool(p.DeleteStorage), PSBool(p.ExpectedVMPath != ""),
-		PSLit(p.ExpectedVMPath), PSLit(p.ExpectedVMPath), PSLit(p.ExpectedVMPath),
+		PSLit(p.ExpectedVHDPath),
 		PSLit(p.ExpectedVMID), PSLit(p.ExpectedVMGUID), PSLit(p.ExpectedVHDPath), PSLit(p.ExpectedVMPath))
 	return wrapTagged(body), nil
 }

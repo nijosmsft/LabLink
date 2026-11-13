@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 )
 
 const (
@@ -147,6 +149,114 @@ func TestIsolatedMetadataRoundTripAndDeterministicMAC(t *testing.T) {
 	}
 }
 
+func TestReconcileAdapterMetadataRequiresExactUnambiguousEvidence(t *testing.T) {
+	mac, err := DeterministicIsolatedMAC(testNetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := BuildReconcileIsolatedAdapterMetadataScript(
+		ReconcileIsolatedAdapterMetadataParams{
+			Guard:              testGuard("network", testNetworkID, "reconcile_adapter_metadata"),
+			NetworkID:          testNetworkID,
+			ResourceType:       "network",
+			ResourceID:         testNetworkID,
+			OrchestratorVMGUID: testVMGUID,
+			VMGUID:             testVMGUID,
+			AdapterName:        "isolated-network-bbbbbbbbaaaa",
+			ExpectedAdapterID:  testAdapterID,
+			SwitchName:         "isolated-network-bbbbbbbbaaaa",
+			ExpectedSwitchGUID: testSwitchGUID,
+			ExpectedMAC:        mac,
+			ExpectedGeneration: 1,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"exact network ownership record does not match",
+		"exact private switch identity is missing or ambiguous",
+		"exact adapter ID/name/MAC is missing or ambiguous",
+		"adapter switch, static MAC, or immutable identity differs",
+		"parent metadata has ambiguous network adapter references",
+		"parent metadata has foreign adapter identity",
+		"existing adapter ownership record conflicts",
+		"Write-LabLinkOwnedMetadata $recordPath $expected",
+		"Set-LabLinkVMAdapterMetadata $parentVM $expected",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("reconciliation script missing %q", required)
+		}
+	}
+	definition := strings.Index(script, "\nfunction Assert-LabLinkAdapterIdentity(")
+	call := strings.LastIndex(script, "\n        Assert-LabLinkAdapterIdentity $record $expected")
+	if definition < 0 || call < 0 || definition >= call ||
+		strings.Count(script, "function Assert-LabLinkAdapterIdentity(") != 1 {
+		t.Fatalf("adapter identity helper is not top-level and defined before invocation")
+	}
+}
+
+func TestAdapterDeleteAuthorizationDoesNotReplaceCreationProvenance(t *testing.T) {
+	mac, err := DeterministicIsolatedMAC(testNetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createGuard := testGuard("network", testNetworkID, "attach_nic")
+	createGuard.MutationID = "11111111-aaaa-4bbb-8ccc-222222222222"
+	createScript, err := BuildAttachIsolatedNICScript(AttachIsolatedNICParams{
+		Guard: createGuard, NetworkID: testNetworkID,
+		ResourceType: "network", ResourceID: testNetworkID,
+		OrchestratorVMGUID: testVMGUID, VMGUID: testVMGUID,
+		AdapterName: "network-bbbbbbbbaaaa", SwitchGUID: testSwitchGUID,
+		MAC: mac, Generation: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(createScript, "'mutation_id'") ||
+		!strings.Contains(createScript, "Assert-LabLinkAdapterRecord $record $expected") {
+		t.Fatal("creation replay no longer validates authoritative provenance")
+	}
+
+	deleteGuard := testGuard("network", testNetworkID, "remove_nic")
+	deleteGuard.MutationID = "33333333-aaaa-4bbb-8ccc-444444444444"
+	deleteScript, err := BuildRemoveIsolatedNICScript(RemoveIsolatedNICParams{
+		Guard: deleteGuard, NetworkID: testNetworkID,
+		ResourceType: "network", ResourceID: testNetworkID,
+		OrchestratorVMGUID: testVMGUID, VMGUID: testVMGUID,
+		AdapterName: "network-bbbbbbbbaaaa", ExpectedAdapterID: testAdapterID,
+		ExpectedSwitchGUID: testSwitchGUID, ExpectedMAC: mac,
+		ExpectedGeneration: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(deleteScript, "$record.mutation_id") {
+		t.Fatal("delete path compared persisted creation provenance to delete mutation")
+	}
+	if !strings.Contains(deleteScript, "$record.owner_marker -cne $ownerMarker") {
+		t.Fatal("delete path no longer rejects tampered ownership marker")
+	}
+
+	reconcileGuard := testGuard("network", testNetworkID, "reconcile_adapter_metadata")
+	reconcileGuard.MutationID = deleteGuard.MutationID
+	reconcileScript, err := BuildReconcileIsolatedAdapterMetadataScript(
+		ReconcileIsolatedAdapterMetadataParams{
+			Guard: reconcileGuard, NetworkID: testNetworkID,
+			ResourceType: "network", ResourceID: testNetworkID,
+			OrchestratorVMGUID: testVMGUID, VMGUID: testVMGUID,
+			AdapterName: "network-bbbbbbbbaaaa", ExpectedAdapterID: testAdapterID,
+			SwitchName:         "isolated-network-bbbbbbbbaaaa",
+			ExpectedSwitchGUID: testSwitchGUID, ExpectedMAC: mac,
+			ExpectedGeneration: 1,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reconcileScript, "Assert-LabLinkAdapterIdentity $record $expected") {
+		t.Fatal("reconciliation still conflates creation provenance with current mutation")
+	}
+}
+
 func TestIsolatedLockHierarchy(t *testing.T) {
 	host, err := HostOrchestratorCreateLockKey(testHostID)
 	if err != nil {
@@ -181,11 +291,22 @@ func TestIsolatedHostLeaseScriptsRenewReclaimAndFence(t *testing.T) {
 	for _, want := range []string{
 		"isolated-orchestrator-", "handoff_pending.json", "external-mutation.lock",
 		"lock_reclaimed", "$nextFence", "Get-LabLinkPhysicalHostID",
-		"LOCK_RACE", "Flush($true)",
+		"LOCK_RACE", "Flush($true)", "current_operation_id",
+		"HOST_LOCK_ADMISSION_TIMEOUT", "HOST_LOCK_EXTERNAL_TIMEOUT",
 	} {
 		if !strings.Contains(acquire, want) {
 			t.Errorf("acquire/reclaim script missing %q", want)
 		}
+	}
+	inspectOwner := strings.Index(acquire, "$currentBeforeWait = Read-LabLinkJSON")
+	waitAdmission := -1
+	if inspectOwner >= 0 {
+		if relative := strings.Index(acquire[inspectOwner:], "$admission = Open-LabLinkExclusiveFile"); relative >= 0 {
+			waitAdmission = inspectOwner + relative
+		}
+	}
+	if inspectOwner < 0 || waitAdmission < 0 || inspectOwner >= waitAdmission {
+		t.Fatal("acquire waits on admission before inspecting the authoritative owner")
 	}
 	base.Fence = 7
 	renew, err := BuildRenewIsolatedHostLockScript(base)
@@ -294,6 +415,7 @@ func TestFreezeInstallsRevisionBoundCleanupOnlyAuthority(t *testing.T) {
 			Action: "delete_private_switch", Generation: 1, SwitchGUID: testSwitchGUID,
 		}},
 	}
+
 	script, err := BuildSetIsolatedParentLifecycleScript(SetIsolatedParentLifecycleParams{
 		Guard:              testGuard("orchestrator", testOrchID, "set_parent_lifecycle"),
 		OrchestratorVMGUID: testVMGUID, ExpectedGeneration: 1, NewGeneration: 2,
@@ -307,6 +429,80 @@ func TestFreezeInstallsRevisionBoundCleanupOnlyAuthority(t *testing.T) {
 			t.Errorf("freeze script missing %q", want)
 		}
 	}
+
+	t.Run("canonical scoped operations", func(t *testing.T) {
+		windowsVMID := "44444444-4444-4444-8444-444444444444"
+		linuxVMID := "55555555-5555-4555-8555-555555555555"
+		relayID := "66666666-6666-4666-8666-666666666666"
+		items := []CascadeAuthorityItem{}
+		appendOperations := func(resourceType, resourceID string, generation int64) {
+			operations, err := cascadeauth.OperationsForResource(resourceType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, operation := range operations {
+				if !cascadeauth.IsHostAction(operation.Action) {
+					continue
+				}
+				items = append(items, CascadeAuthorityItem{
+					ResourceType: operation.ResourceType,
+					ResourceID:   resourceID,
+					Action:       operation.Action,
+					Generation:   generation,
+				})
+			}
+		}
+		appendOperations("vm", windowsVMID, 3)
+		appendOperations("vm", linuxVMID, 4)
+		appendOperations("nat", windowsVMID, 2)
+		appendOperations("relay", relayID, 5)
+		appendOperations("network", testNetworkID, 6)
+		for _, operation := range cascadeauth.OrchestratorOperations() {
+			items = append(items, CascadeAuthorityItem{
+				ResourceType: operation.ResourceType,
+				ResourceID:   testOrchID,
+				Action:       operation.Action,
+				Generation:   7,
+			})
+		}
+		authority := CascadeAuthority{
+			OrchestratorID: testOrchID, FrozenGeneration: 7,
+			OperationID: testOperationID, PlanRevision: "rev-complete",
+			PlanHash: "hash-complete", HostFence: 7, LeaseID: testLeaseID,
+			Items: items,
+		}
+		script, err := BuildSetIsolatedParentLifecycleScript(SetIsolatedParentLifecycleParams{
+			Guard:              testGuard("orchestrator", testOrchID, "set_parent_lifecycle"),
+			OrchestratorVMGUID: testVMGUID,
+			ExpectedGeneration: 6,
+			NewGeneration:      7,
+			NewState:           "frozen",
+			CascadeAuthority:   &authority,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range []cascadeauth.Action{
+			cascadeauth.ActionGuestDeleteExact,
+			cascadeauth.ActionAdapterMetadataReconcile,
+			cascadeauth.ActionAdapterRemove,
+			cascadeauth.ActionPrivateSwitchDelete,
+			cascadeauth.ActionNetworkMetadataCleanup,
+			cascadeauth.ActionOrchestratorMetadataClean,
+			cascadeauth.ActionOrchestratorVMDelete,
+		} {
+			if !strings.Contains(script, string(action)) {
+				t.Errorf("cascade lifecycle script missing %q", action)
+			}
+		}
+		for _, resourceID := range []string{
+			windowsVMID, linuxVMID, testNetworkID, testOrchID,
+		} {
+			if !strings.Contains(script, resourceID) {
+				t.Errorf("cascade lifecycle script missing resource %q", resourceID)
+			}
+		}
+	})
 
 	authority.Items[0].Action = "attach_nic"
 	if _, err := BuildSetIsolatedParentLifecycleScript(SetIsolatedParentLifecycleParams{
@@ -357,7 +553,7 @@ func TestAdapterScriptsUseImmutableAdapterIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"Add-VMNetworkAdapter -VM $vm", "Set-VMNetworkAdapter -StaticMacAddress",
+		"Add-VMNetworkAdapter -VM $vm", "-StaticMacAddress ([string]$expected.mac)",
 		"[string]$adapter.Id", "[string]$adapter.SwitchId",
 		"ADAPTER_OWNERSHIP_MISMATCH", "same-name adapter was replaced",
 		"Set-LabLinkVMAdapterMetadata",
@@ -384,6 +580,94 @@ func TestAdapterScriptsUseImmutableAdapterIdentity(t *testing.T) {
 	}
 	if strings.Contains(remove, "Remove-VMNetworkAdapter -VMName") {
 		t.Fatal("NIC removal must not be authorized by VM/display name")
+	}
+}
+
+func TestDeletedNetworkAndOrchestratorMetadataCleanupIsExact(t *testing.T) {
+	mac, err := DeterministicIsolatedMAC(testNetworkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	networkScript, err := BuildCleanupIsolatedNetworkMetadataScript(
+		CleanupIsolatedNetworkMetadataParams{
+			Guard:              testGuard("network", testNetworkID, "cleanup_network_metadata"),
+			OrchestratorVMGUID: testVMGUID,
+			NetworkID:          testNetworkID,
+			AdapterID:          testAdapterID,
+			AdapterName:        "network-bbbbbbbbaaaa",
+			SwitchGUID:         testSwitchGUID,
+			SwitchName:         "isolated-network-bbbbbbbbaaaa",
+			MAC:                mac,
+			Generation:         1,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Get-LabLinkAdapterMetadataPath $guardOrchestratorID $networkID",
+		"Get-LabLinkNetworkMetadataPath $guardOrchestratorID $networkID",
+		"[string]$adapterRecord.state -cne 'deleted'",
+		"[string]$networkRecord.state -cne 'deleted'",
+		"Remove-Item -LiteralPath $path",
+		"NETWORK_METADATA_CLEANUP_REJECTED: exact switch still exists",
+		"NETWORK_METADATA_CLEANUP_REJECTED: exact adapter still exists",
+	} {
+		if !strings.Contains(networkScript, want) {
+			t.Errorf("network metadata cleanup missing %q", want)
+		}
+	}
+	if strings.Contains(networkScript, "Remove-Item -Path") ||
+		strings.Contains(networkScript, "Remove-Item *") {
+		t.Fatal("network metadata cleanup must not use wildcard deletion")
+	}
+
+	orchestratorScript, err := BuildCleanupIsolatedOrchestratorMetadataScript(
+		CleanupIsolatedOrchestratorMetadataParams{
+			Guard:              testGuard("orchestrator", testOrchID, "cleanup_orchestrator_metadata"),
+			OrchestratorVMGUID: testVMGUID,
+			HyperVName:         "isolated-orchestrator-aaaaaaaaaaaa",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ORCHESTRATOR_METADATA_NOT_EMPTY",
+		"Get-LabLinkIsolatedRoot $guardOrchestratorID",
+		"Remove-Item -LiteralPath $root",
+		"exact orchestrator VM still exists",
+	} {
+		if !strings.Contains(orchestratorScript, want) {
+			t.Errorf("orchestrator metadata cleanup missing %q", want)
+		}
+	}
+}
+
+func TestLegacyStaleMetadataCleanupRequiresExactAbsentResources(t *testing.T) {
+	script, err := BuildReconcileStaleIsolatedMetadataScript(
+		ReconcileStaleIsolatedMetadataParams{
+			Guard:              testGuard("orchestrator", testOrchID, "reconcile_stale_orchestrator_metadata"),
+			OrchestratorVMGUID: testVMGUID,
+			HyperVName:         "isolated-orchestrator-aaaaaaaaaaaa",
+			LifecycleState:     "deleted",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"STALE_METADATA_RESOURCE_PRESENT",
+		"STALE_METADATA_OWNERSHIP_MISMATCH",
+		"STALE_METADATA_AMBIGUOUS",
+		"'lablink-isolated/' + $guardOrchestratorID + '/network/' + $networkID",
+		"Remove-Item -LiteralPath $path",
+		"Remove-Item -LiteralPath $root",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("stale metadata cleanup missing %q", want)
+		}
+	}
+	if strings.Contains(script, "Remove-Item -Path") ||
+		strings.Contains(script, "Remove-Item *") {
+		t.Fatal("stale metadata cleanup must not use wildcard deletion")
 	}
 }
 
@@ -515,6 +799,49 @@ func TestIsolatedRenderedPowerShellParses(t *testing.T) {
 				OrchestratorVMGUID: testVMGUID, VMGUID: testVMGUID, AdapterName: "network-bbbbbbbbaaaa",
 				SwitchGUID: testSwitchGUID, MAC: mac, Generation: 1,
 			})
+		},
+		func() (string, error) {
+			return BuildReconcileIsolatedAdapterMetadataScript(
+				ReconcileIsolatedAdapterMetadataParams{
+					Guard:     testGuard("network", testNetworkID, "reconcile_adapter_metadata"),
+					NetworkID: testNetworkID, ResourceType: "network", ResourceID: testNetworkID,
+					OrchestratorVMGUID: testVMGUID, VMGUID: testVMGUID,
+					AdapterName: "network-bbbbbbbbaaaa", ExpectedAdapterID: testAdapterID,
+					SwitchName:         "isolated-network-bbbbbbbbaaaa",
+					ExpectedSwitchGUID: testSwitchGUID, ExpectedMAC: mac,
+					ExpectedGeneration: 1,
+				})
+		},
+		func() (string, error) {
+			return BuildCleanupIsolatedNetworkMetadataScript(
+				CleanupIsolatedNetworkMetadataParams{
+					Guard:              testGuard("network", testNetworkID, "cleanup_network_metadata"),
+					OrchestratorVMGUID: testVMGUID,
+					NetworkID:          testNetworkID,
+					AdapterID:          testAdapterID,
+					AdapterName:        "network-bbbbbbbbaaaa",
+					SwitchGUID:         testSwitchGUID,
+					SwitchName:         "isolated-network-bbbbbbbbaaaa",
+					MAC:                mac,
+					Generation:         1,
+				})
+		},
+		func() (string, error) {
+			return BuildCleanupIsolatedOrchestratorMetadataScript(
+				CleanupIsolatedOrchestratorMetadataParams{
+					Guard:              testGuard("orchestrator", testOrchID, "cleanup_orchestrator_metadata"),
+					OrchestratorVMGUID: testVMGUID,
+					HyperVName:         "isolated-orchestrator-aaaaaaaaaaaa",
+				})
+		},
+		func() (string, error) {
+			return BuildReconcileStaleIsolatedMetadataScript(
+				ReconcileStaleIsolatedMetadataParams{
+					Guard:              testGuard("orchestrator", testOrchID, "reconcile_stale_orchestrator_metadata"),
+					OrchestratorVMGUID: testVMGUID,
+					HyperVName:         "isolated-orchestrator-aaaaaaaaaaaa",
+					LifecycleState:     "deleted",
+				})
 		},
 		func() (string, error) {
 			return BuildDiscoverIsolatedHostScript(IsolatedDiscoveryParams{

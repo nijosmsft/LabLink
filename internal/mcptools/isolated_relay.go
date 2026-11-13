@@ -11,7 +11,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/nijosmsft/lablink/internal/appliance"
-	"github.com/nijosmsft/lablink/internal/hyperv"
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 )
@@ -105,11 +105,12 @@ func relayEnvelope(
 		},
 		PhysicalHostID: orchestrator.PhysicalHostID,
 		HostLeaseID:    lease.LeaseID, HostLeaseSecret: mustDecodeHex(lease.LeaseSecret),
+		HostLeaseExpiresUnix: lease.ExpiresAtUnix,
 	}
 }
 
 func createIsolatedRelayHandler(deps *isolatedLifecycleDeps, adopt bool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		orchestratorID, err := isolated.ParseOrchestratorID(req.GetString("orchestrator_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -205,15 +206,24 @@ func createIsolatedRelayHandler(deps *isolatedLifecycleDeps, adopt bool) server.
 			return isolatedError(err)
 		}
 		defer deps.locks.Release(context.Background(), localLease)
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		action := "create"
+		if adopt {
+			action = "adopt"
+		}
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"relay", relayID.String(), action,
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		snapshot, err := deps.appliance.GetApplianceState(ctx, orchestrator.ID)
 		if err != nil {
 			return isolatedError(err)
@@ -261,7 +271,11 @@ func createIsolatedRelayHandler(deps *isolatedLifecycleDeps, adopt bool) server.
 					HostFence:                uint64(hostLease.Fence),
 					ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
 				},
-				Reservations: []appliance.Reservation{reservation},
+				PhysicalHostID:       orchestrator.PhysicalHostID,
+				HostLeaseID:          hostLease.LeaseID,
+				HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+				HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
+				Reservations:         []appliance.Reservation{reservation},
 			})
 			if reserveErr != nil {
 				return nil, reserveErr
@@ -343,7 +357,7 @@ func createIsolatedRelayHandler(deps *isolatedLifecycleDeps, adopt bool) server.
 }
 
 func removeIsolatedRelayHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		id, err := isolated.ParseRelayID(req.GetString("relay_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -372,15 +386,20 @@ func removeIsolatedRelayHandler(deps *isolatedLifecycleDeps) server.ToolHandlerF
 		if err != nil {
 			return isolatedError(err)
 		}
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"relay", relay.ID, string(cascadeauth.ActionRelayRemove),
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		semantic, _ := isolatedstate.SemanticHash(map[string]any{
 			"relay_id": relay.ID, "vm_id": vm.ID, "network_id": vm.NetworkID,
 			"listen_port": relay.ListenPort, "semantic_action": "remove_relay",
@@ -400,37 +419,13 @@ func removeIsolatedRelayHandler(deps *isolatedLifecycleDeps) server.ToolHandlerF
 		}
 		envelope := relayEnvelope(operationID, relay.ID, vm.ID, semantic,
 			expected, expected+1, orchestrator, hostLease, "relay_remove")
+		applyCascadeEnvelope(ctx, &envelope, cascadeauth.ActionRelayRemove)
 		if err := workflow.phase(ctx, 0, "retirement_barrier", "closing listener, canceling pending dials, and draining live copies", func() (any, error) {
-			return deps.appliance.RemoveRelay(ctx, orchestrator.ID, envelope, vm.ID, vm.NetworkID)
+			return boundedRelayRetirement(ctx, func(retireCtx context.Context) (isolated.RelayMutationResult, error) {
+				return deps.appliance.RemoveRelay(retireCtx, orchestrator.ID, envelope, vm.ID, vm.NetworkID)
+			})
 		}); err != nil {
 			return isolatedError(err)
-		}
-		snapshot, err := deps.appliance.GetApplianceState(ctx, orchestrator.ID)
-		if err != nil {
-			return isolatedError(err)
-		}
-		reservationID := ""
-		for _, value := range snapshot.Reservations {
-			if value.ResourceKind == "relay" && value.ResourceID == relay.ID {
-				reservationID = value.ID
-				break
-			}
-		}
-		if reservationID != "" {
-			_, err = deps.appliance.ReleaseResources(ctx, orchestrator.ID, appliance.ReleaseRequest{
-				Header: appliance.MutationHeader{
-					ParentOperationID: operationID,
-					MutationID:        isolatedstate.StableMutationID(operationID, relay.ID, "release_relay", "release"),
-					SemanticHash:      semantic, ResourceID: relay.ID, ParentResourceID: vm.ID,
-					ExpectedGeneration: uint64(expected + 1), NewGeneration: uint64(expected + 1),
-					HostFence:                uint64(hostLease.Fence),
-					ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
-				},
-				ReservationIDs: []string{reservationID},
-			})
-			if err != nil {
-				return isolatedError(err)
-			}
 		}
 		now := isolatedstate.UnixSeconds(time.Now().Unix())
 		relay.DesiredGeneration = expected + 1
@@ -455,7 +450,7 @@ func removeIsolatedRelayHandler(deps *isolatedLifecycleDeps) server.ToolHandlerF
 }
 
 func listIsolatedRelaysHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		orchestratorID := strings.TrimSpace(req.GetString("orchestrator_id", ""))
 		networkID := strings.TrimSpace(req.GetString("network_id", ""))
 		if orchestratorID != "" {
@@ -552,7 +547,7 @@ func getIsolatedRelayStatsHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 }
 
 func rebindIsolatedRelaysHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		id, err := isolated.ParseOrchestratorID(req.GetString("orchestrator_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -588,20 +583,25 @@ func rebindIsolatedRelaysHandler(deps *isolatedLifecycleDeps) server.ToolHandler
 		if err != nil {
 			return isolatedError(err)
 		}
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"relay", orchestrator.ID, "rebind",
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		semantic, _ := isolatedstate.SemanticHash(map[string]any{
 			"orchestrator_id": orchestrator.ID, "semantic_action": "rebind_relays",
 		})
 		envelope := relayEnvelope(operationID, orchestrator.ID, orchestrator.ID,
-			semantic, expected, expected+1, orchestrator, hostLease, "rebind")
+			semantic, expected, expected, orchestrator, hostLease, "rebind")
 		var relays []appliance.Relay
 		var mutation isolated.MutationResult
 		err = workflow.phaseAlways(ctx, 0, "rebind", "rebinding all listeners to current main IPv4", func() (any, error) {
@@ -612,16 +612,14 @@ func rebindIsolatedRelaysHandler(deps *isolatedLifecycleDeps) server.ToolHandler
 		if err != nil {
 			return isolatedError(err)
 		}
-		orchestrator.DesiredGeneration = expected + 1
-		orchestrator.AppliedGeneration = orchestrator.DesiredGeneration
-		orchestrator.ObservedGeneration = orchestrator.DesiredGeneration
+		orchestrator.HostFence = hostLease.Fence
 		orchestrator.UpdatedAt = isolatedstate.UnixSeconds(time.Now().Unix())
 		if err := deps.state.PutOrchestrator(ctx, orchestrator); err != nil {
 			return isolatedError(err)
 		}
 		return workflow.finish(ctx, isolatedstate.OperationSucceeded, isolatedToolResult{
 			Status: "succeeded", Phase: "rebound",
-			ResourceID: orchestrator.ID, Generation: int64(orchestrator.DesiredGeneration),
+			ResourceID: orchestrator.ID, Generation: int64(expected),
 			Resource: relays, Detail: mutation, NextAction: nil,
 		})
 	}

@@ -19,37 +19,39 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	NodeAgent_Execute_FullMethodName               = "/agent.NodeAgent/Execute"
-	NodeAgent_ExecuteScript_FullMethodName         = "/agent.NodeAgent/ExecuteScript"
-	NodeAgent_PushFile_FullMethodName              = "/agent.NodeAgent/PushFile"
-	NodeAgent_PullFile_FullMethodName              = "/agent.NodeAgent/PullFile"
-	NodeAgent_ListProcesses_FullMethodName         = "/agent.NodeAgent/ListProcesses"
-	NodeAgent_KillProcess_FullMethodName           = "/agent.NodeAgent/KillProcess"
-	NodeAgent_GetInfo_FullMethodName               = "/agent.NodeAgent/GetInfo"
-	NodeAgent_ListJobs_FullMethodName              = "/agent.NodeAgent/ListJobs"
-	NodeAgent_GetJob_FullMethodName                = "/agent.NodeAgent/GetJob"
-	NodeAgent_GetJobOutput_FullMethodName          = "/agent.NodeAgent/GetJobOutput"
-	NodeAgent_CancelJob_FullMethodName             = "/agent.NodeAgent/CancelJob"
-	NodeAgent_DeleteJob_FullMethodName             = "/agent.NodeAgent/DeleteJob"
-	NodeAgent_WatchJobs_FullMethodName             = "/agent.NodeAgent/WatchJobs"
-	NodeAgent_Forward_FullMethodName               = "/agent.NodeAgent/Forward"
-	NodeAgent_GetApplianceState_FullMethodName     = "/agent.NodeAgent/GetApplianceState"
-	NodeAgent_ReserveResources_FullMethodName      = "/agent.NodeAgent/ReserveResources"
-	NodeAgent_ReleaseResources_FullMethodName      = "/agent.NodeAgent/ReleaseResources"
-	NodeAgent_ApplyPrivateNetwork_FullMethodName   = "/agent.NodeAgent/ApplyPrivateNetwork"
-	NodeAgent_RemovePrivateNetwork_FullMethodName  = "/agent.NodeAgent/RemovePrivateNetwork"
-	NodeAgent_RegisterIsolatedGuest_FullMethodName = "/agent.NodeAgent/RegisterIsolatedGuest"
-	NodeAgent_RemoveIsolatedGuest_FullMethodName   = "/agent.NodeAgent/RemoveIsolatedGuest"
-	NodeAgent_ApplyRelay_FullMethodName            = "/agent.NodeAgent/ApplyRelay"
-	NodeAgent_RemoveRelay_FullMethodName           = "/agent.NodeAgent/RemoveRelay"
-	NodeAgent_ListRelays_FullMethodName            = "/agent.NodeAgent/ListRelays"
-	NodeAgent_GetRelayStats_FullMethodName         = "/agent.NodeAgent/GetRelayStats"
-	NodeAgent_RebindRelays_FullMethodName          = "/agent.NodeAgent/RebindRelays"
-	NodeAgent_ValidateRelay_FullMethodName         = "/agent.NodeAgent/ValidateRelay"
-	NodeAgent_AdoptRelay_FullMethodName            = "/agent.NodeAgent/AdoptRelay"
-	NodeAgent_SetNatState_FullMethodName           = "/agent.NodeAgent/SetNatState"
-	NodeAgent_ListNatState_FullMethodName          = "/agent.NodeAgent/ListNatState"
-	NodeAgent_ReconcileNat_FullMethodName          = "/agent.NodeAgent/ReconcileNat"
+	NodeAgent_Execute_FullMethodName                     = "/agent.NodeAgent/Execute"
+	NodeAgent_ExecuteScript_FullMethodName               = "/agent.NodeAgent/ExecuteScript"
+	NodeAgent_PushFile_FullMethodName                    = "/agent.NodeAgent/PushFile"
+	NodeAgent_PullFile_FullMethodName                    = "/agent.NodeAgent/PullFile"
+	NodeAgent_ListProcesses_FullMethodName               = "/agent.NodeAgent/ListProcesses"
+	NodeAgent_KillProcess_FullMethodName                 = "/agent.NodeAgent/KillProcess"
+	NodeAgent_GetInfo_FullMethodName                     = "/agent.NodeAgent/GetInfo"
+	NodeAgent_ListJobs_FullMethodName                    = "/agent.NodeAgent/ListJobs"
+	NodeAgent_GetJob_FullMethodName                      = "/agent.NodeAgent/GetJob"
+	NodeAgent_GetJobOutput_FullMethodName                = "/agent.NodeAgent/GetJobOutput"
+	NodeAgent_CancelJob_FullMethodName                   = "/agent.NodeAgent/CancelJob"
+	NodeAgent_DeleteJob_FullMethodName                   = "/agent.NodeAgent/DeleteJob"
+	NodeAgent_WatchJobs_FullMethodName                   = "/agent.NodeAgent/WatchJobs"
+	NodeAgent_Forward_FullMethodName                     = "/agent.NodeAgent/Forward"
+	NodeAgent_GetApplianceState_FullMethodName           = "/agent.NodeAgent/GetApplianceState"
+	NodeAgent_ReserveResources_FullMethodName            = "/agent.NodeAgent/ReserveResources"
+	NodeAgent_ReleaseResources_FullMethodName            = "/agent.NodeAgent/ReleaseResources"
+	NodeAgent_ReleaseApplianceAuthority_FullMethodName   = "/agent.NodeAgent/ReleaseApplianceAuthority"
+	NodeAgent_SetApplianceParentLifecycle_FullMethodName = "/agent.NodeAgent/SetApplianceParentLifecycle"
+	NodeAgent_ApplyPrivateNetwork_FullMethodName         = "/agent.NodeAgent/ApplyPrivateNetwork"
+	NodeAgent_RemovePrivateNetwork_FullMethodName        = "/agent.NodeAgent/RemovePrivateNetwork"
+	NodeAgent_RegisterIsolatedGuest_FullMethodName       = "/agent.NodeAgent/RegisterIsolatedGuest"
+	NodeAgent_RemoveIsolatedGuest_FullMethodName         = "/agent.NodeAgent/RemoveIsolatedGuest"
+	NodeAgent_ApplyRelay_FullMethodName                  = "/agent.NodeAgent/ApplyRelay"
+	NodeAgent_RemoveRelay_FullMethodName                 = "/agent.NodeAgent/RemoveRelay"
+	NodeAgent_ListRelays_FullMethodName                  = "/agent.NodeAgent/ListRelays"
+	NodeAgent_GetRelayStats_FullMethodName               = "/agent.NodeAgent/GetRelayStats"
+	NodeAgent_RebindRelays_FullMethodName                = "/agent.NodeAgent/RebindRelays"
+	NodeAgent_ValidateRelay_FullMethodName               = "/agent.NodeAgent/ValidateRelay"
+	NodeAgent_AdoptRelay_FullMethodName                  = "/agent.NodeAgent/AdoptRelay"
+	NodeAgent_SetNatState_FullMethodName                 = "/agent.NodeAgent/SetNatState"
+	NodeAgent_ListNatState_FullMethodName                = "/agent.NodeAgent/ListNatState"
+	NodeAgent_ReconcileNat_FullMethodName                = "/agent.NodeAgent/ReconcileNat"
 )
 
 // NodeAgentClient is the client API for NodeAgent service.
@@ -96,6 +98,10 @@ type NodeAgentClient interface {
 	ReserveResources(ctx context.Context, in *ReserveResourcesRequest, opts ...grpc.CallOption) (*ReserveResourcesResponse, error)
 	// Release appliance-owned network resources after their retirement barrier.
 	ReleaseResources(ctx context.Context, in *ReleaseResourcesRequest, opts ...grpc.CallOption) (*ReleaseResourcesResponse, error)
+	// Revoke the current physical-host lease before releasing it on the host.
+	ReleaseApplianceAuthority(ctx context.Context, in *MutationHeader, opts ...grpc.CallOption) (*FenceState, error)
+	// Atomically freeze the parent generation before an approved cascade.
+	SetApplianceParentLifecycle(ctx context.Context, in *SetApplianceParentLifecycleRequest, opts ...grpc.CallOption) (*FenceState, error)
 	// Apply or retire a private network.
 	ApplyPrivateNetwork(ctx context.Context, in *ApplyPrivateNetworkRequest, opts ...grpc.CallOption) (*ApplyPrivateNetworkResponse, error)
 	RemovePrivateNetwork(ctx context.Context, in *RemovePrivateNetworkRequest, opts ...grpc.CallOption) (*RemovePrivateNetworkResponse, error)
@@ -336,6 +342,26 @@ func (c *nodeAgentClient) ReleaseResources(ctx context.Context, in *ReleaseResou
 	return out, nil
 }
 
+func (c *nodeAgentClient) ReleaseApplianceAuthority(ctx context.Context, in *MutationHeader, opts ...grpc.CallOption) (*FenceState, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FenceState)
+	err := c.cc.Invoke(ctx, NodeAgent_ReleaseApplianceAuthority_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeAgentClient) SetApplianceParentLifecycle(ctx context.Context, in *SetApplianceParentLifecycleRequest, opts ...grpc.CallOption) (*FenceState, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FenceState)
+	err := c.cc.Invoke(ctx, NodeAgent_SetApplianceParentLifecycle_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) ApplyPrivateNetwork(ctx context.Context, in *ApplyPrivateNetworkRequest, opts ...grpc.CallOption) (*ApplyPrivateNetworkResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ApplyPrivateNetworkResponse)
@@ -520,6 +546,10 @@ type NodeAgentServer interface {
 	ReserveResources(context.Context, *ReserveResourcesRequest) (*ReserveResourcesResponse, error)
 	// Release appliance-owned network resources after their retirement barrier.
 	ReleaseResources(context.Context, *ReleaseResourcesRequest) (*ReleaseResourcesResponse, error)
+	// Revoke the current physical-host lease before releasing it on the host.
+	ReleaseApplianceAuthority(context.Context, *MutationHeader) (*FenceState, error)
+	// Atomically freeze the parent generation before an approved cascade.
+	SetApplianceParentLifecycle(context.Context, *SetApplianceParentLifecycleRequest) (*FenceState, error)
 	// Apply or retire a private network.
 	ApplyPrivateNetwork(context.Context, *ApplyPrivateNetworkRequest) (*ApplyPrivateNetworkResponse, error)
 	RemovePrivateNetwork(context.Context, *RemovePrivateNetworkRequest) (*RemovePrivateNetworkResponse, error)
@@ -598,6 +628,12 @@ func (UnimplementedNodeAgentServer) ReserveResources(context.Context, *ReserveRe
 }
 func (UnimplementedNodeAgentServer) ReleaseResources(context.Context, *ReleaseResourcesRequest) (*ReleaseResourcesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReleaseResources not implemented")
+}
+func (UnimplementedNodeAgentServer) ReleaseApplianceAuthority(context.Context, *MutationHeader) (*FenceState, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReleaseApplianceAuthority not implemented")
+}
+func (UnimplementedNodeAgentServer) SetApplianceParentLifecycle(context.Context, *SetApplianceParentLifecycleRequest) (*FenceState, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetApplianceParentLifecycle not implemented")
 }
 func (UnimplementedNodeAgentServer) ApplyPrivateNetwork(context.Context, *ApplyPrivateNetworkRequest) (*ApplyPrivateNetworkResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyPrivateNetwork not implemented")
@@ -918,6 +954,42 @@ func _NodeAgent_ReleaseResources_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_ReleaseApplianceAuthority_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutationHeader)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).ReleaseApplianceAuthority(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_ReleaseApplianceAuthority_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).ReleaseApplianceAuthority(ctx, req.(*MutationHeader))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodeAgent_SetApplianceParentLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetApplianceParentLifecycleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).SetApplianceParentLifecycle(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_SetApplianceParentLifecycle_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).SetApplianceParentLifecycle(ctx, req.(*SetApplianceParentLifecycleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_ApplyPrivateNetwork_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ApplyPrivateNetworkRequest)
 	if err := dec(in); err != nil {
@@ -1220,6 +1292,14 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseResources",
 			Handler:    _NodeAgent_ReleaseResources_Handler,
+		},
+		{
+			MethodName: "ReleaseApplianceAuthority",
+			Handler:    _NodeAgent_ReleaseApplianceAuthority_Handler,
+		},
+		{
+			MethodName: "SetApplianceParentLifecycle",
+			Handler:    _NodeAgent_SetApplianceParentLifecycle_Handler,
 		},
 		{
 			MethodName: "ApplyPrivateNetwork",

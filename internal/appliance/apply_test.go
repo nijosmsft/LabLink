@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 )
 
 type fakeCompiler struct{}
@@ -141,6 +145,27 @@ func newTestApplyManager(t *testing.T, store *Store, target ApplyTarget, hooks A
 	return manager
 }
 
+func TestStartupReconcileContinuesAfterAuthorityRelease(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
+	installTestAuthority(t, store, 17, 5)
+	snapshot, err := store.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(context.Background(), snapshot.Authority); err != nil {
+		t.Fatal(err)
+	}
+	target := &fakeTarget{}
+	manager := newTestApplyManager(t, store, target, ApplyHooks{})
+	if err := manager.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile after release: %v", err)
+	}
+	_, applies := target.counts()
+	if applies != 1 {
+		t.Fatalf("startup reconcile applies = %d, want 1", applies)
+	}
+}
+
 func TestCrashAfterExternalApplyRecoversWithoutDuplicateEffect(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
 	installTestAuthority(t, store, 7, 2)
@@ -154,6 +179,95 @@ func TestCrashAfterExternalApplyRecoversWithoutDuplicateEffect(t *testing.T) {
 	if _, err := manager.ApplyIntent(context.Background(), "crash-intent"); !errors.Is(err, crash) {
 		t.Fatalf("ApplyIntent error = %v, want simulated crash", err)
 	}
+
+	t.Run("frozen cascade recovery", func(t *testing.T) {
+		store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
+		installTestAuthority(t, store, 18, 2)
+		ctx := context.Background()
+		mustReserve(t, store, 18, 2, Reservation{
+			ID: "frozen-network-reservation", ResourceKind: "network",
+			ResourceID: "frozen-network", MAC: "02:00:00:00:91:01",
+		})
+		create := mutation("frozen-network-create", "hash-frozen-network-create", 18, 2)
+		create.ResourceID = "frozen-network"
+		create.NewGeneration = 1
+		if _, err := store.StageNetwork(ctx, create, Network{
+			ID: "frozen-network", CIDR: "10.91.0.0/26",
+			GatewayIPv4: "10.91.0.1", NICMAC: "02:00:00:00:91:01",
+			DNSServersJSON: "[]",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		commitTestIntent(t, store, create)
+
+		authority, err := store.Authority(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const (
+			operationID = "33333333-3333-4333-8333-333333333333"
+			itemID      = "44444444-4444-4444-8444-444444444444"
+		)
+		if _, err := store.SetParentLifecycle(
+			ctx, authority, 2, 3, "frozen", operationID, "r1-recover",
+			"recover-plan-hash", []CascadeAuthorityItem{{
+				ItemID: itemID, ResourceKind: "network",
+				ResourceID:         "frozen-network",
+				Action:             string(cascadeauth.ActionNetworkRemove),
+				ExpectedGeneration: 1,
+			}},
+		); err != nil {
+			t.Fatal(err)
+		}
+		header := mutation("frozen-network-remove", "hash-frozen-network-remove", 18, 3)
+		header.ResourceID = "frozen-network"
+		header.ExpectedGeneration = 1
+		header.NewGeneration = 2
+		header.CascadeOperationID = operationID
+		header.CascadePlanRevision = "r1-recover"
+		header.CascadePlanHash = "recover-plan-hash"
+		header.CascadeItemID = itemID
+		header.CascadeResourceKind = "network"
+		header.CascadeAction = string(cascadeauth.ActionNetworkRemove)
+		if _, err := store.StageNetwork(ctx, header, Network{
+			ID: "frozen-network", CIDR: "10.91.0.0/26",
+			GatewayIPv4: "10.91.0.1", NICMAC: "02:00:00:00:91:01",
+			DNSServersJSON: "[]", State: "removing",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		intent, found, err := store.Intent(ctx, header.MutationID)
+		if err != nil || !found {
+			t.Fatalf("Intent: found=%v err=%v", found, err)
+		}
+		if intent.CascadeItemID != itemID ||
+			intent.CascadeResourceKind != "network" ||
+			intent.CascadeAction != string(cascadeauth.ActionNetworkRemove) {
+			t.Fatalf("staged cascade intent lost authority: %+v", intent)
+		}
+
+		target := &fakeTarget{}
+		crash := errors.New("simulated frozen cascade crash")
+		manager := newTestApplyManager(t, store, target, ApplyHooks{
+			AfterApply: func(CompiledApply) error { return crash },
+		})
+		if _, err := manager.ApplyIntent(ctx, header.MutationID); !errors.Is(err, crash) {
+			t.Fatalf("ApplyIntent error = %v, want crash", err)
+		}
+		restarted := newTestApplyManager(t, store, target, ApplyHooks{})
+		recovered, err := restarted.Recover(ctx)
+		if err != nil {
+			t.Fatalf("Recover: %v", err)
+		}
+		if recovered != 1 {
+			t.Fatalf("recovered = %d, want 1", recovered)
+		}
+		network, found, err := store.Network(ctx, "frozen-network")
+		if err != nil || !found || network.ObservedGeneration != 2 {
+			t.Fatalf("recovered network = %+v found=%v err=%v",
+				network, found, err)
+		}
+	})
 	_, applies := target.counts()
 	if applies != 1 {
 		t.Fatalf("apply calls after crash = %d, want 1", applies)
@@ -228,12 +342,13 @@ func TestAuthorityHandoffWaitsForAdmittedApplyAndRejectsOldWriter(t *testing.T) 
 	handoffDone := make(chan error, 1)
 	go func() {
 		handoffDone <- manager.InstallAuthority(context.Background(), 7, Authority{
-			PhysicalHostID:      "host-1",
-			HostLeaseID:         "lease-2",
-			HostLeaseSecretHash: "new-secret-hash",
-			Fence:               8,
-			ParentGeneration:    2,
-			ParentState:         "active",
+			PhysicalHostID:       "host-1",
+			HostLeaseID:          "lease-2",
+			HostLeaseSecretHash:  "new-secret-hash",
+			HostLeaseExpiresUnix: time.Now().Add(time.Hour).Unix(),
+			Fence:                8,
+			ParentGeneration:     2,
+			ParentState:          "active",
 		})
 	}()
 	select {
@@ -288,12 +403,11 @@ func TestFailedVerifyLeavesEmergencyPolicyAndReadinessBlocked(t *testing.T) {
 	}
 }
 
-func TestStartupLoadsEmergencyBeforeReturningConflictPlan(t *testing.T) {
+func TestStartupLoadsEmergencyBeforeFailingOnRemainingConflict(t *testing.T) {
 	store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
 	target := &fakeTarget{}
 	plan := ConflictPlan{
-		Revision:         "revision-1",
-		ApprovalRequired: true,
+		Revision: "revision-1",
 		Conflicts: []Conflict{{
 			Kind: ConflictService, Name: "docker.service", Active: true,
 		}},
@@ -308,8 +422,8 @@ func TestStartupLoadsEmergencyBeforeReturningConflictPlan(t *testing.T) {
 		t.Fatalf("NewApplyManager: %v", err)
 	}
 	result, err := manager.Start(context.Background())
-	if !IsApprovalRequired(err) {
-		t.Fatalf("Start error = %v, want approval required", err)
+	if ErrorCodeOf(err) != CodeApplyFailed {
+		t.Fatalf("Start error = %v, want %s", err, CodeApplyFailed)
 	}
 	if result.ConflictPlan == nil || result.ConflictPlan.Revision != plan.Revision {
 		t.Fatalf("conflict result = %+v", result)
@@ -317,6 +431,14 @@ func TestStartupLoadsEmergencyBeforeReturningConflictPlan(t *testing.T) {
 	emergency, applies := target.counts()
 	if emergency != 1 || applies != 0 {
 		t.Fatalf("startup emergency=%d apply=%d, want 1 and 0", emergency, applies)
+	}
+	status, err := store.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Ready || !strings.Contains(status.Error, "bootstrap neutralization") ||
+		strings.Contains(strings.ToLower(status.Error), "approval") {
+		t.Fatalf("conflict readiness = %+v, want bootstrap failure without approval semantics", status)
 	}
 }
 

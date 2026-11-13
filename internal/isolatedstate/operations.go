@@ -199,6 +199,24 @@ func StableMutationID(parentOperationID, resourceID, semanticAction, stablePhase
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// StableOperationID derives a deterministic canonical UUID for a nested
+// durable operation. It intentionally remains compatible with the strict
+// operation UUID validator without weakening validation for caller input.
+func StableOperationID(parentOperationID, resourceID, semanticAction, stablePhaseKey string) string {
+	hash := sha256.New()
+	_, _ = io.WriteString(hash, "lablink-isolated-operation-v1")
+	_, _ = io.WriteString(hash, canonicalID(parentOperationID))
+	_, _ = io.WriteString(hash, canonicalID(resourceID))
+	_, _ = io.WriteString(hash, canonicalToken(semanticAction))
+	_, _ = io.WriteString(hash, strings.TrimSpace(stablePhaseKey))
+	value := hash.Sum(nil)[:16]
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	compact := hex.EncodeToString(value)
+	return compact[0:8] + "-" + compact[8:12] + "-" + compact[12:16] + "-" +
+		compact[16:20] + "-" + compact[20:32]
+}
+
 func (s *Store) BeginOperation(
 	ctx context.Context,
 	request BeginOperationRequest,

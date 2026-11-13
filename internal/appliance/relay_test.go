@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -97,6 +97,12 @@ func createRelayStore(t *testing.T, path string, port int64) *Store {
 	}); err != nil {
 		t.Fatalf("StageNetwork: %v", err)
 	}
+	if _, err := store.CommitIntent(ctx, CommitIntentRequest{
+		MutationID: networkHeader.MutationID, SemanticHash: networkHeader.SemanticHash,
+		HostFence: testFence,
+	}); err != nil {
+		t.Fatalf("commit network: %v", err)
+	}
 
 	mark := int64(9001)
 	mustReserve(t, store, testFence, 7, Reservation{
@@ -123,6 +129,12 @@ func createRelayStore(t *testing.T, path string, port int64) *Store {
 	}); err != nil {
 		t.Fatalf("StageGuest: %v", err)
 	}
+	if _, err := store.CommitIntent(ctx, CommitIntentRequest{
+		MutationID: guestHeader.MutationID, SemanticHash: guestHeader.SemanticHash,
+		HostFence: testFence,
+	}); err != nil {
+		t.Fatalf("commit guest: %v", err)
+	}
 
 	mustReserve(t, store, testFence, 7, Reservation{
 		ID:            "relay-test-reservation",
@@ -144,6 +156,12 @@ func createRelayStore(t *testing.T, path string, port int64) *Store {
 		State:      "pending",
 	}); err != nil {
 		t.Fatalf("StageRelay: %v", err)
+	}
+	if _, err := store.CommitIntent(ctx, CommitIntentRequest{
+		MutationID: relayHeader.MutationID, SemanticHash: relayHeader.SemanticHash,
+		HostFence: testFence,
+	}); err != nil {
+		t.Fatalf("commit relay: %v", err)
 	}
 	return store
 }
@@ -280,6 +298,119 @@ func TestRelayOpaqueBytesHalfCloseAndStats(t *testing.T) {
 	}
 }
 
+func TestRelayAcceptsConnectionsAfterAuthorityRelease(t *testing.T) {
+	store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), 23001)
+	targetListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer targetListener.Close()
+	listeners := &recordingListeners{}
+	manager, err := NewRelayManager(store, RelayManagerOptions{
+		Listen: listeners.listen,
+		Dial:   newTargetDialer(t, targetListener),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdownManager(t, manager)
+	if err := manager.Restore(context.Background(), "192.0.2.10"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	snapshot, err := store.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(context.Background(), snapshot.Authority); err != nil {
+		t.Fatalf("ReleaseAuthority: %v", err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE appliance_authority
+		SET host_lease_id='', host_lease_secret_hash='',
+			host_lease_expires_unix=0, handoff_pending=1
+		WHERE singleton=1
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDone := make(chan error, 1)
+	go func() {
+		conn, acceptErr := targetListener.Accept()
+		if acceptErr != nil {
+			targetDone <- acceptErr
+			return
+		}
+		defer conn.Close()
+		request := make([]byte, 4)
+		if _, readErr := io.ReadFull(conn, request); readErr != nil {
+			targetDone <- readErr
+			return
+		}
+		if string(request) != "ping" {
+			targetDone <- fmt.Errorf("target received %q", request)
+			return
+		}
+		_, writeErr := conn.Write([]byte("pong"))
+		targetDone <- writeErr
+	}()
+
+	client, err := net.Dial("tcp4", listeners.latest(t, 1).Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(client, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != "pong" {
+		t.Fatalf("response = %q, want pong", response)
+	}
+	if err := <-targetDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRelayRuntimeFailsClosedForFrozenOrCorruptAuthority(t *testing.T) {
+	t.Run("frozen", func(t *testing.T) {
+		store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), 23011)
+		snapshot, err := store.Snapshot(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SetParentLifecycle(
+			context.Background(), snapshot.Authority, 7, 8, "frozen",
+			"11111111-1111-4111-8111-111111111111", "r1-frozen", "hash-frozen",
+			testCascadeAuthorityItems(testNetworkID, 1),
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ValidateRelayCurrent(
+			context.Background(), testRelayID, 1,
+		); ErrorCodeOf(err) != CodeParentFrozen {
+			t.Fatalf("frozen relay validation error = %v, want %s", err, CodeParentFrozen)
+		}
+	})
+
+	t.Run("corrupt identity", func(t *testing.T) {
+		store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), 23012)
+		if _, err := store.db.ExecContext(context.Background(), `
+			UPDATE appliance_authority SET physical_host_id = '' WHERE singleton = 1
+		`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ValidateRelayCurrent(
+			context.Background(), testRelayID, 1,
+		); ErrorCodeOf(err) != CodeFenceRejected {
+			t.Fatalf("corrupt relay validation error = %v, want %s", err, CodeFenceRejected)
+		}
+	})
+}
+
 func TestRelaySlowReaderBackpressure(t *testing.T) {
 	store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), 23002)
 	targetListener, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -410,7 +541,7 @@ func TestRelayTargetFailureAndBindCollision(t *testing.T) {
 	})
 }
 
-func TestRelayAutomaticRebindPreservesConnectionsAndGeneration(t *testing.T) {
+func TestRelayExplicitRebindPreservesConnectionsAndGeneration(t *testing.T) {
 	store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), 23005)
 	targetListener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
@@ -431,21 +562,15 @@ func TestRelayAutomaticRebindPreservesConnectionsAndGeneration(t *testing.T) {
 	}()
 
 	listeners := &recordingListeners{}
-	var current atomic.Value
-	current.Store("192.0.2.20")
 	manager, err := NewRelayManager(store, RelayManagerOptions{
 		Listen: listeners.listen,
 		Dial:   newTargetDialer(t, targetListener),
-		CurrentMainIPv4: func(context.Context) (string, error) {
-			return current.Load().(string), nil
-		},
-		RebindInterval: 5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer shutdownManager(t, manager)
-	if err := manager.Start(context.Background()); err != nil {
+	if err := manager.Restore(context.Background(), "192.0.2.20"); err != nil {
 		t.Fatal(err)
 	}
 	first := listeners.latest(t, 1)
@@ -462,7 +587,9 @@ func TestRelayAutomaticRebindPreservesConnectionsAndGeneration(t *testing.T) {
 		t.Fatalf("first echo = %q err=%v", echo, err)
 	}
 
-	current.Store("192.0.2.21")
+	if err := manager.Rebind(context.Background(), "192.0.2.21"); err != nil {
+		t.Fatal(err)
+	}
 	second := listeners.latest(t, 2)
 	if _, err := client.Write([]byte("after")); err != nil {
 		t.Fatal(err)
@@ -502,6 +629,21 @@ func TestRelayRestartRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := first.Restore(context.Background(), "192.0.2.30"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(context.Background(), snapshot.Authority); err != nil {
+		t.Fatalf("ReleaseAuthority: %v", err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE appliance_authority
+		SET host_lease_id='', host_lease_secret_hash='',
+			host_lease_expires_unix=0, handoff_pending=1
+		WHERE singleton=1
+	`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetReadiness(context.Background(), true, ""); err != nil {
@@ -599,39 +741,18 @@ func TestRelayRetirementBarrierAndLiveVMPortRelease(t *testing.T) {
 	})
 
 	retireCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	_, err = manager.Retire(retireCtx, testRelayID, 1, testFence)
+	started := time.Now()
+	retired, err := manager.Retire(retireCtx, testRelayID, 1, testFence)
 	cancel()
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Retire with live connection error = %v", err)
-	}
-	_, err = store.ReserveResources(context.Background(), ReserveRequest{
-		Header: mutation("premature-port-reuse", "hash-premature-port-reuse", testFence, 7),
-		Reservations: []Reservation{{
-			ID:            "premature-relay-reservation",
-			ResourceKind:  "relay",
-			ResourceID:    "premature-relay",
-			ListenPort:    int64ptr(port),
-			CapacityKind:  "relay",
-			CapacityUnits: 1,
-		}},
-	})
-	if ErrorCodeOf(err) != CodePortInUse {
-		t.Fatalf("premature port reuse error = %v, want %s", err, CodePortInUse)
-	}
-
-	_ = client.Close()
-	_ = target.Close()
-	waitForStats(t, manager, func(stats RelayStats) bool {
-		return stats.ActiveConnections == 0
-	})
-	retired, err := manager.Retire(context.Background(), testRelayID, 1, testFence)
 	if err != nil {
-		t.Fatalf("Retire after drain: %v", err)
+		t.Fatalf("Retire with forced drain: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("forced retirement took %s", elapsed)
 	}
 	if retired.State != "removed" || retired.RetiredAtUnix == nil {
 		t.Fatalf("retired relay = %+v", retired)
 	}
-
 	result, err := store.ReserveResources(context.Background(), ReserveRequest{
 		Header: mutation("post-drain-port-reuse", "hash-post-drain-port-reuse", testFence, 7),
 		Reservations: []Reservation{{
@@ -656,6 +777,39 @@ func TestRelayRetirementBarrierAndLiveVMPortRelease(t *testing.T) {
 	if len(snapshot.Guests) != 1 || snapshot.Guests[0].ID != testGuestID ||
 		snapshot.Guests[0].RetiredAtUnix != nil {
 		t.Fatalf("relay-only retirement changed live VM: %+v", snapshot.Guests)
+	}
+	_ = client.Close()
+	_ = target.Close()
+}
+
+func TestRelayRetirementRetryFromPersistedRetiringState(t *testing.T) {
+	const port = int64(23008)
+	store := createRelayStore(t, filepath.Join(t.TempDir(), "relay.db"), port)
+	if _, err := store.BeginRelayRetirement(
+		context.Background(), testRelayID, 1, testFence); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewRelayManager(store, RelayManagerOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shutdownManager(t, manager)
+	retired, err := manager.Retire(
+		context.Background(), testRelayID, 1, testFence)
+	if err != nil {
+		t.Fatalf("resume retirement: %v", err)
+	}
+	if retired.State != "removed" || retired.RetiredAtUnix == nil {
+		t.Fatalf("retired relay = %+v", retired)
+	}
+	if _, err := store.ReserveResources(context.Background(), ReserveRequest{
+		Header: mutation("retry-port-reuse", "hash-retry-port-reuse", testFence, 7),
+		Reservations: []Reservation{{
+			ID: "retry-replacement", ResourceKind: "relay",
+			ResourceID: "retry-replacement", ListenPort: int64ptr(port),
+		}},
+	}); err != nil {
+		t.Fatalf("retired reservation was not released: %v", err)
 	}
 }
 

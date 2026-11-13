@@ -166,6 +166,7 @@ func TestLinuxVMOwnershipPersistedBeforeSecretStaging(t *testing.T) {
 			t.Fatalf("restricted ACL is not applied and verified fail-closed:\n%s", script)
 		}
 	}
+
 	if strings.Index(persist, "Set-LabLinkRestrictedAcl $vmLocation $true") >
 		strings.Index(persist, "[IO.File]::WriteAllText") {
 		t.Fatal("managed staging directory ACL is not secured before ownership is written")
@@ -192,6 +193,32 @@ func TestLinuxVMOwnershipPersistedBeforeSecretStaging(t *testing.T) {
 	if strings.Index(cleanup, "Remove-Item -LiteralPath $stageDir") >
 		strings.Index(cleanup, "CIDATA_STAGE_CLEANUP_INCOMPLETE") {
 		t.Fatal("stage cleanup verifies absence before removal")
+	}
+}
+
+func TestPrepareLinuxVMStageCreatesValidatedNestedDirectories(t *testing.T) {
+	ownership := LinuxVMOwnership{
+		VMName: "vm", ManagedRoot: `E:\VM`, VMLocation: `E:\VM\vm`,
+		ChildVHDX: `E:\VM\vm\vm.vhdx`, ISOPath: `E:\VM\vm\cidata.iso`,
+		StageDir: `E:\VM\vm\.lablink-cidata-stage`,
+	}
+	script, err := BuildPrepareLinuxVMStageScript(LinuxVMOwnershipParams{
+		Ownership: ownership, StageDirectories: []string{"orchestrator/assets", "orchestrator"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := strings.Index(script, `E:\VM\vm\.lablink-cidata-stage\orchestrator'`)
+	child := strings.Index(script, `E:\VM\vm\.lablink-cidata-stage\orchestrator\assets'`)
+	if parent < 0 || child < 0 || parent >= child {
+		t.Fatalf("nested stage directories are not created parent-first:\n%s", script)
+	}
+	for _, invalid := range []string{"../escape", `C:\escape`, "/escape"} {
+		if _, err := BuildPrepareLinuxVMStageScript(LinuxVMOwnershipParams{
+			Ownership: ownership, StageDirectories: []string{invalid},
+		}); err == nil {
+			t.Fatalf("accepted unsafe stage directory %q", invalid)
+		}
 	}
 }
 
@@ -388,6 +415,51 @@ func TestLinuxVMCIDATACleanupIsResumable(t *testing.T) {
 		!strings.Contains(script, "CIDATA_METADATA_MISMATCH") ||
 		!strings.Contains(script, "registered=[bool]$metadata.registered") {
 		t.Fatal("cleanup is not idempotent or does not preserve registration metadata")
+	}
+}
+
+func TestCompletedLinuxVMMetadataAllowsEmptyOptionalPaths(t *testing.T) {
+	inspect, err := BuildInspectVMManagementScript("orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := BuildReadLinuxVMMetadataScript("orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range []string{inspect, read} {
+		guard := strings.Index(script, "-not [string]::IsNullOrWhiteSpace($expectedISO)")
+		testPath := strings.Index(script, "Test-Path -LiteralPath $expectedISO")
+		if guard < 0 || testPath < 0 || guard >= testPath {
+			t.Fatalf("optional CIDATA path is not guarded before Test-Path:\n%s", script)
+		}
+	}
+	cleanup, err := BuildLinuxVMCIDATACleanupScript("orchestrator", `E:\VM\orchestrator\cidata.iso`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cleanup, "[string]::IsNullOrWhiteSpace($persistedISO)") ||
+		!strings.Contains(cleanup, "empty expected ISO is valid only after completed cleanup") {
+		t.Fatal("cleanup resume does not handle completed empty CIDATA metadata")
+	}
+
+	if runtime.GOOS == "windows" {
+		isolatedMetadata := `{"schema_version":1,"physical_host_id":"` + strings.Repeat("a", 64) +
+			`","orchestrator_id":"11111111-1111-4111-8111-111111111111",` +
+			`"owner_marker":"owner","host_fence":1,"lifecycle_state":"ready",` +
+			`"managed_root":"C:\\VM","expected_vhd_paths":["C:\\VM\\orchestrator\\disk.vhdx"],` +
+			`"node_name":"orchestrator","vm_guid":"22222222-2222-4222-8222-222222222222",` +
+			`"generation":1}`
+		preamble := `function Get-VM { [pscustomobject]@{ Name='orchestrator'; State='Off'; Notes='` +
+			IsolatedOrchestratorMetadataPrefix + isolatedMetadata + `' } }` + "\n" +
+			`function Get-VMDvdDrive { @() }` + "\n"
+		output, runErr := exec.Command(
+			"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+			preamble+inspect,
+		).CombinedOutput()
+		if runErr != nil || !strings.Contains(string(output), `"expected_iso_exists":false`) {
+			t.Fatalf("completed empty-path inspection failed: %v\n%s", runErr, output)
+		}
 	}
 }
 

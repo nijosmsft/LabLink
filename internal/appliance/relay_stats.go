@@ -60,6 +60,17 @@ func (m *RelayManager) Stats(ctx context.Context, relayID string) (RelayStats, e
 	if runtime == nil {
 		return RelayStats{}, storeError(CodeNotFound, "relay %q is not managed", relayID)
 	}
+	runtime.mu.Lock()
+	relay := runtime.relay
+	runtime.mu.Unlock()
+	validated, err := m.store.ValidateRelayCurrent(
+		ctx, relay.ID, relay.DesiredGeneration)
+	if err != nil {
+		return RelayStats{}, err
+	}
+	runtime.mu.Lock()
+	runtime.relay = validated
+	runtime.mu.Unlock()
 	status, err := m.store.Status(ctx)
 	if err != nil {
 		return RelayStats{}, err

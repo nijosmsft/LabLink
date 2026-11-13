@@ -2038,6 +2038,9 @@ type MutationHeader struct {
 	CascadePlanRevision      string                 `protobuf:"bytes,14,opt,name=cascade_plan_revision,json=cascadePlanRevision,proto3" json:"cascade_plan_revision,omitempty"`
 	CascadePlanHash          string                 `protobuf:"bytes,15,opt,name=cascade_plan_hash,json=cascadePlanHash,proto3" json:"cascade_plan_hash,omitempty"`
 	CascadeItemId            string                 `protobuf:"bytes,16,opt,name=cascade_item_id,json=cascadeItemId,proto3" json:"cascade_item_id,omitempty"`
+	HostLeaseExpiresUnix     int64                  `protobuf:"varint,17,opt,name=host_lease_expires_unix,json=hostLeaseExpiresUnix,proto3" json:"host_lease_expires_unix,omitempty"`
+	CascadeResourceKind      string                 `protobuf:"bytes,18,opt,name=cascade_resource_kind,json=cascadeResourceKind,proto3" json:"cascade_resource_kind,omitempty"`
+	CascadeAction            string                 `protobuf:"bytes,19,opt,name=cascade_action,json=cascadeAction,proto3" json:"cascade_action,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -2180,6 +2183,27 @@ func (x *MutationHeader) GetCascadePlanHash() string {
 func (x *MutationHeader) GetCascadeItemId() string {
 	if x != nil {
 		return x.CascadeItemId
+	}
+	return ""
+}
+
+func (x *MutationHeader) GetHostLeaseExpiresUnix() int64 {
+	if x != nil {
+		return x.HostLeaseExpiresUnix
+	}
+	return 0
+}
+
+func (x *MutationHeader) GetCascadeResourceKind() string {
+	if x != nil {
+		return x.CascadeResourceKind
+	}
+	return ""
+}
+
+func (x *MutationHeader) GetCascadeAction() string {
+	if x != nil {
+		return x.CascadeAction
 	}
 	return ""
 }
@@ -2356,6 +2380,150 @@ func (x *FenceState) GetLost() bool {
 	return false
 }
 
+type SetApplianceParentLifecycleRequest struct {
+	state               protoimpl.MessageState  `protogen:"open.v1"`
+	Header              *MutationHeader         `protobuf:"bytes,1,opt,name=header,proto3" json:"header,omitempty"`
+	State               string                  `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	NewParentGeneration uint64                  `protobuf:"varint,3,opt,name=new_parent_generation,json=newParentGeneration,proto3" json:"new_parent_generation,omitempty"`
+	CascadeItems        []*CascadeAuthorityItem `protobuf:"bytes,4,rep,name=cascade_items,json=cascadeItems,proto3" json:"cascade_items,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *SetApplianceParentLifecycleRequest) Reset() {
+	*x = SetApplianceParentLifecycleRequest{}
+	mi := &file_proto_agent_agent_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetApplianceParentLifecycleRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetApplianceParentLifecycleRequest) ProtoMessage() {}
+
+func (x *SetApplianceParentLifecycleRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetApplianceParentLifecycleRequest.ProtoReflect.Descriptor instead.
+func (*SetApplianceParentLifecycleRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *SetApplianceParentLifecycleRequest) GetHeader() *MutationHeader {
+	if x != nil {
+		return x.Header
+	}
+	return nil
+}
+
+func (x *SetApplianceParentLifecycleRequest) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *SetApplianceParentLifecycleRequest) GetNewParentGeneration() uint64 {
+	if x != nil {
+		return x.NewParentGeneration
+	}
+	return 0
+}
+
+func (x *SetApplianceParentLifecycleRequest) GetCascadeItems() []*CascadeAuthorityItem {
+	if x != nil {
+		return x.CascadeItems
+	}
+	return nil
+}
+
+type CascadeAuthorityItem struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	ItemId             string                 `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	ResourceKind       string                 `protobuf:"bytes,2,opt,name=resource_kind,json=resourceKind,proto3" json:"resource_kind,omitempty"`
+	ResourceId         string                 `protobuf:"bytes,3,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	Action             string                 `protobuf:"bytes,4,opt,name=action,proto3" json:"action,omitempty"`
+	ExpectedGeneration uint64                 `protobuf:"varint,5,opt,name=expected_generation,json=expectedGeneration,proto3" json:"expected_generation,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *CascadeAuthorityItem) Reset() {
+	*x = CascadeAuthorityItem{}
+	mi := &file_proto_agent_agent_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CascadeAuthorityItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CascadeAuthorityItem) ProtoMessage() {}
+
+func (x *CascadeAuthorityItem) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_agent_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CascadeAuthorityItem.ProtoReflect.Descriptor instead.
+func (*CascadeAuthorityItem) Descriptor() ([]byte, []int) {
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *CascadeAuthorityItem) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *CascadeAuthorityItem) GetResourceKind() string {
+	if x != nil {
+		return x.ResourceKind
+	}
+	return ""
+}
+
+func (x *CascadeAuthorityItem) GetResourceId() string {
+	if x != nil {
+		return x.ResourceId
+	}
+	return ""
+}
+
+func (x *CascadeAuthorityItem) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *CascadeAuthorityItem) GetExpectedGeneration() uint64 {
+	if x != nil {
+		return x.ExpectedGeneration
+	}
+	return 0
+}
+
 // MutationResult describes the durable result of an appliance mutation.
 type MutationResult struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
@@ -2371,7 +2539,7 @@ type MutationResult struct {
 
 func (x *MutationResult) Reset() {
 	*x = MutationResult{}
-	mi := &file_proto_agent_agent_proto_msgTypes[31]
+	mi := &file_proto_agent_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2383,7 +2551,7 @@ func (x *MutationResult) String() string {
 func (*MutationResult) ProtoMessage() {}
 
 func (x *MutationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[31]
+	mi := &file_proto_agent_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2396,7 +2564,7 @@ func (x *MutationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MutationResult.ProtoReflect.Descriptor instead.
 func (*MutationResult) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{31}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MutationResult) GetMutationId() string {
@@ -2463,7 +2631,7 @@ type ApplyIntent struct {
 
 func (x *ApplyIntent) Reset() {
 	*x = ApplyIntent{}
-	mi := &file_proto_agent_agent_proto_msgTypes[32]
+	mi := &file_proto_agent_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2475,7 +2643,7 @@ func (x *ApplyIntent) String() string {
 func (*ApplyIntent) ProtoMessage() {}
 
 func (x *ApplyIntent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[32]
+	mi := &file_proto_agent_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2488,7 +2656,7 @@ func (x *ApplyIntent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyIntent.ProtoReflect.Descriptor instead.
 func (*ApplyIntent) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{32}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ApplyIntent) GetMutationId() string {
@@ -2594,7 +2762,7 @@ type InventorySummary struct {
 
 func (x *InventorySummary) Reset() {
 	*x = InventorySummary{}
-	mi := &file_proto_agent_agent_proto_msgTypes[33]
+	mi := &file_proto_agent_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2606,7 +2774,7 @@ func (x *InventorySummary) String() string {
 func (*InventorySummary) ProtoMessage() {}
 
 func (x *InventorySummary) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[33]
+	mi := &file_proto_agent_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2619,7 +2787,7 @@ func (x *InventorySummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InventorySummary.ProtoReflect.Descriptor instead.
 func (*InventorySummary) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{33}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *InventorySummary) GetMaxNetworks() uint32 {
@@ -2702,7 +2870,7 @@ type ApplianceConflict struct {
 
 func (x *ApplianceConflict) Reset() {
 	*x = ApplianceConflict{}
-	mi := &file_proto_agent_agent_proto_msgTypes[34]
+	mi := &file_proto_agent_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2714,7 +2882,7 @@ func (x *ApplianceConflict) String() string {
 func (*ApplianceConflict) ProtoMessage() {}
 
 func (x *ApplianceConflict) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[34]
+	mi := &file_proto_agent_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2727,7 +2895,7 @@ func (x *ApplianceConflict) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplianceConflict.ProtoReflect.Descriptor instead.
 func (*ApplianceConflict) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{34}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ApplianceConflict) GetCode() ApplianceErrorCode {
@@ -2798,7 +2966,7 @@ type ApplianceState struct {
 
 func (x *ApplianceState) Reset() {
 	*x = ApplianceState{}
-	mi := &file_proto_agent_agent_proto_msgTypes[35]
+	mi := &file_proto_agent_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2810,7 +2978,7 @@ func (x *ApplianceState) String() string {
 func (*ApplianceState) ProtoMessage() {}
 
 func (x *ApplianceState) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[35]
+	mi := &file_proto_agent_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2823,7 +2991,7 @@ func (x *ApplianceState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplianceState.ProtoReflect.Descriptor instead.
 func (*ApplianceState) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{35}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ApplianceState) GetSchemaVersion() uint32 {
@@ -2919,7 +3087,7 @@ type ReservationCandidate struct {
 
 func (x *ReservationCandidate) Reset() {
 	*x = ReservationCandidate{}
-	mi := &file_proto_agent_agent_proto_msgTypes[36]
+	mi := &file_proto_agent_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2931,7 +3099,7 @@ func (x *ReservationCandidate) String() string {
 func (*ReservationCandidate) ProtoMessage() {}
 
 func (x *ReservationCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[36]
+	mi := &file_proto_agent_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2944,7 +3112,7 @@ func (x *ReservationCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReservationCandidate.ProtoReflect.Descriptor instead.
 func (*ReservationCandidate) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{36}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ReservationCandidate) GetResourceKind() string {
@@ -3024,7 +3192,7 @@ type Reservation struct {
 
 func (x *Reservation) Reset() {
 	*x = Reservation{}
-	mi := &file_proto_agent_agent_proto_msgTypes[37]
+	mi := &file_proto_agent_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3036,7 +3204,7 @@ func (x *Reservation) String() string {
 func (*Reservation) ProtoMessage() {}
 
 func (x *Reservation) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[37]
+	mi := &file_proto_agent_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3049,7 +3217,7 @@ func (x *Reservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Reservation.ProtoReflect.Descriptor instead.
 func (*Reservation) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{37}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *Reservation) GetId() string {
@@ -3160,7 +3328,7 @@ type PrivateNetwork struct {
 
 func (x *PrivateNetwork) Reset() {
 	*x = PrivateNetwork{}
-	mi := &file_proto_agent_agent_proto_msgTypes[38]
+	mi := &file_proto_agent_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3172,7 +3340,7 @@ func (x *PrivateNetwork) String() string {
 func (*PrivateNetwork) ProtoMessage() {}
 
 func (x *PrivateNetwork) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[38]
+	mi := &file_proto_agent_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3185,7 +3353,7 @@ func (x *PrivateNetwork) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PrivateNetwork.ProtoReflect.Descriptor instead.
 func (*PrivateNetwork) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{38}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PrivateNetwork) GetId() string {
@@ -3265,7 +3433,7 @@ type IsolatedGuest struct {
 
 func (x *IsolatedGuest) Reset() {
 	*x = IsolatedGuest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[39]
+	mi := &file_proto_agent_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3277,7 +3445,7 @@ func (x *IsolatedGuest) String() string {
 func (*IsolatedGuest) ProtoMessage() {}
 
 func (x *IsolatedGuest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[39]
+	mi := &file_proto_agent_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3290,7 +3458,7 @@ func (x *IsolatedGuest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IsolatedGuest.ProtoReflect.Descriptor instead.
 func (*IsolatedGuest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{39}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *IsolatedGuest) GetId() string {
@@ -3354,7 +3522,7 @@ type Relay struct {
 
 func (x *Relay) Reset() {
 	*x = Relay{}
-	mi := &file_proto_agent_agent_proto_msgTypes[40]
+	mi := &file_proto_agent_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3366,7 +3534,7 @@ func (x *Relay) String() string {
 func (*Relay) ProtoMessage() {}
 
 func (x *Relay) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[40]
+	mi := &file_proto_agent_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3379,7 +3547,7 @@ func (x *Relay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Relay.ProtoReflect.Descriptor instead.
 func (*Relay) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{40}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *Relay) GetId() string {
@@ -3473,7 +3641,7 @@ type NatState struct {
 
 func (x *NatState) Reset() {
 	*x = NatState{}
-	mi := &file_proto_agent_agent_proto_msgTypes[41]
+	mi := &file_proto_agent_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3485,7 +3653,7 @@ func (x *NatState) String() string {
 func (*NatState) ProtoMessage() {}
 
 func (x *NatState) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[41]
+	mi := &file_proto_agent_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3498,7 +3666,7 @@ func (x *NatState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NatState.ProtoReflect.Descriptor instead.
 func (*NatState) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{41}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *NatState) GetVmId() string {
@@ -3554,7 +3722,7 @@ type GetApplianceStateRequest struct {
 
 func (x *GetApplianceStateRequest) Reset() {
 	*x = GetApplianceStateRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[42]
+	mi := &file_proto_agent_agent_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3566,7 +3734,7 @@ func (x *GetApplianceStateRequest) String() string {
 func (*GetApplianceStateRequest) ProtoMessage() {}
 
 func (x *GetApplianceStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[42]
+	mi := &file_proto_agent_agent_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3579,7 +3747,7 @@ func (x *GetApplianceStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetApplianceStateRequest.ProtoReflect.Descriptor instead.
 func (*GetApplianceStateRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{42}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *GetApplianceStateRequest) GetPageSize() uint32 {
@@ -3619,7 +3787,7 @@ type GetApplianceStateResponse struct {
 
 func (x *GetApplianceStateResponse) Reset() {
 	*x = GetApplianceStateResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[43]
+	mi := &file_proto_agent_agent_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3631,7 +3799,7 @@ func (x *GetApplianceStateResponse) String() string {
 func (*GetApplianceStateResponse) ProtoMessage() {}
 
 func (x *GetApplianceStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[43]
+	mi := &file_proto_agent_agent_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3644,7 +3812,7 @@ func (x *GetApplianceStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetApplianceStateResponse.ProtoReflect.Descriptor instead.
 func (*GetApplianceStateResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{43}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetApplianceStateResponse) GetAppliance() *ApplianceState {
@@ -3713,7 +3881,7 @@ type ReserveResourcesRequest struct {
 
 func (x *ReserveResourcesRequest) Reset() {
 	*x = ReserveResourcesRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[44]
+	mi := &file_proto_agent_agent_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3725,7 +3893,7 @@ func (x *ReserveResourcesRequest) String() string {
 func (*ReserveResourcesRequest) ProtoMessage() {}
 
 func (x *ReserveResourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[44]
+	mi := &file_proto_agent_agent_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3738,7 +3906,7 @@ func (x *ReserveResourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReserveResourcesRequest.ProtoReflect.Descriptor instead.
 func (*ReserveResourcesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{44}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ReserveResourcesRequest) GetHeader() *MutationHeader {
@@ -3769,7 +3937,7 @@ type ReserveResourcesResponse struct {
 
 func (x *ReserveResourcesResponse) Reset() {
 	*x = ReserveResourcesResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[45]
+	mi := &file_proto_agent_agent_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3781,7 +3949,7 @@ func (x *ReserveResourcesResponse) String() string {
 func (*ReserveResourcesResponse) ProtoMessage() {}
 
 func (x *ReserveResourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[45]
+	mi := &file_proto_agent_agent_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3794,7 +3962,7 @@ func (x *ReserveResourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReserveResourcesResponse.ProtoReflect.Descriptor instead.
 func (*ReserveResourcesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{45}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ReserveResourcesResponse) GetReservationId() string {
@@ -3849,7 +4017,7 @@ type ReleaseResourcesRequest struct {
 
 func (x *ReleaseResourcesRequest) Reset() {
 	*x = ReleaseResourcesRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[46]
+	mi := &file_proto_agent_agent_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3861,7 +4029,7 @@ func (x *ReleaseResourcesRequest) String() string {
 func (*ReleaseResourcesRequest) ProtoMessage() {}
 
 func (x *ReleaseResourcesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[46]
+	mi := &file_proto_agent_agent_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3874,7 +4042,7 @@ func (x *ReleaseResourcesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseResourcesRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseResourcesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{46}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *ReleaseResourcesRequest) GetHeader() *MutationHeader {
@@ -3904,7 +4072,7 @@ type ReleaseResourcesResponse struct {
 
 func (x *ReleaseResourcesResponse) Reset() {
 	*x = ReleaseResourcesResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[47]
+	mi := &file_proto_agent_agent_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3916,7 +4084,7 @@ func (x *ReleaseResourcesResponse) String() string {
 func (*ReleaseResourcesResponse) ProtoMessage() {}
 
 func (x *ReleaseResourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[47]
+	mi := &file_proto_agent_agent_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3929,7 +4097,7 @@ func (x *ReleaseResourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseResourcesResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseResourcesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{47}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ReleaseResourcesResponse) GetReservations() []*Reservation {
@@ -3982,7 +4150,7 @@ type ApplyPrivateNetworkRequest struct {
 
 func (x *ApplyPrivateNetworkRequest) Reset() {
 	*x = ApplyPrivateNetworkRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[48]
+	mi := &file_proto_agent_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3994,7 +4162,7 @@ func (x *ApplyPrivateNetworkRequest) String() string {
 func (*ApplyPrivateNetworkRequest) ProtoMessage() {}
 
 func (x *ApplyPrivateNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[48]
+	mi := &file_proto_agent_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4007,7 +4175,7 @@ func (x *ApplyPrivateNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyPrivateNetworkRequest.ProtoReflect.Descriptor instead.
 func (*ApplyPrivateNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{48}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ApplyPrivateNetworkRequest) GetHeader() *MutationHeader {
@@ -4069,7 +4237,7 @@ type ApplyPrivateNetworkResponse struct {
 
 func (x *ApplyPrivateNetworkResponse) Reset() {
 	*x = ApplyPrivateNetworkResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[49]
+	mi := &file_proto_agent_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4081,7 +4249,7 @@ func (x *ApplyPrivateNetworkResponse) String() string {
 func (*ApplyPrivateNetworkResponse) ProtoMessage() {}
 
 func (x *ApplyPrivateNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[49]
+	mi := &file_proto_agent_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4094,7 +4262,7 @@ func (x *ApplyPrivateNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyPrivateNetworkResponse.ProtoReflect.Descriptor instead.
 func (*ApplyPrivateNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{49}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ApplyPrivateNetworkResponse) GetNetwork() *PrivateNetwork {
@@ -4120,7 +4288,7 @@ type RemovePrivateNetworkRequest struct {
 
 func (x *RemovePrivateNetworkRequest) Reset() {
 	*x = RemovePrivateNetworkRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[50]
+	mi := &file_proto_agent_agent_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4132,7 +4300,7 @@ func (x *RemovePrivateNetworkRequest) String() string {
 func (*RemovePrivateNetworkRequest) ProtoMessage() {}
 
 func (x *RemovePrivateNetworkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[50]
+	mi := &file_proto_agent_agent_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4145,7 +4313,7 @@ func (x *RemovePrivateNetworkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePrivateNetworkRequest.ProtoReflect.Descriptor instead.
 func (*RemovePrivateNetworkRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{50}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *RemovePrivateNetworkRequest) GetHeader() *MutationHeader {
@@ -4165,7 +4333,7 @@ type RemovePrivateNetworkResponse struct {
 
 func (x *RemovePrivateNetworkResponse) Reset() {
 	*x = RemovePrivateNetworkResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[51]
+	mi := &file_proto_agent_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4177,7 +4345,7 @@ func (x *RemovePrivateNetworkResponse) String() string {
 func (*RemovePrivateNetworkResponse) ProtoMessage() {}
 
 func (x *RemovePrivateNetworkResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[51]
+	mi := &file_proto_agent_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4190,7 +4358,7 @@ func (x *RemovePrivateNetworkResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemovePrivateNetworkResponse.ProtoReflect.Descriptor instead.
 func (*RemovePrivateNetworkResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{51}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *RemovePrivateNetworkResponse) GetNetwork() *PrivateNetwork {
@@ -4220,7 +4388,7 @@ type RegisterIsolatedGuestRequest struct {
 
 func (x *RegisterIsolatedGuestRequest) Reset() {
 	*x = RegisterIsolatedGuestRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[52]
+	mi := &file_proto_agent_agent_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4232,7 +4400,7 @@ func (x *RegisterIsolatedGuestRequest) String() string {
 func (*RegisterIsolatedGuestRequest) ProtoMessage() {}
 
 func (x *RegisterIsolatedGuestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[52]
+	mi := &file_proto_agent_agent_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4245,7 +4413,7 @@ func (x *RegisterIsolatedGuestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterIsolatedGuestRequest.ProtoReflect.Descriptor instead.
 func (*RegisterIsolatedGuestRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{52}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *RegisterIsolatedGuestRequest) GetHeader() *MutationHeader {
@@ -4293,7 +4461,7 @@ type RegisterIsolatedGuestResponse struct {
 
 func (x *RegisterIsolatedGuestResponse) Reset() {
 	*x = RegisterIsolatedGuestResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[53]
+	mi := &file_proto_agent_agent_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4305,7 +4473,7 @@ func (x *RegisterIsolatedGuestResponse) String() string {
 func (*RegisterIsolatedGuestResponse) ProtoMessage() {}
 
 func (x *RegisterIsolatedGuestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[53]
+	mi := &file_proto_agent_agent_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4318,7 +4486,7 @@ func (x *RegisterIsolatedGuestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterIsolatedGuestResponse.ProtoReflect.Descriptor instead.
 func (*RegisterIsolatedGuestResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{53}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *RegisterIsolatedGuestResponse) GetGuest() *IsolatedGuest {
@@ -4345,7 +4513,7 @@ type RemoveIsolatedGuestRequest struct {
 
 func (x *RemoveIsolatedGuestRequest) Reset() {
 	*x = RemoveIsolatedGuestRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[54]
+	mi := &file_proto_agent_agent_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4357,7 +4525,7 @@ func (x *RemoveIsolatedGuestRequest) String() string {
 func (*RemoveIsolatedGuestRequest) ProtoMessage() {}
 
 func (x *RemoveIsolatedGuestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[54]
+	mi := &file_proto_agent_agent_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4370,7 +4538,7 @@ func (x *RemoveIsolatedGuestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveIsolatedGuestRequest.ProtoReflect.Descriptor instead.
 func (*RemoveIsolatedGuestRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{54}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *RemoveIsolatedGuestRequest) GetHeader() *MutationHeader {
@@ -4397,7 +4565,7 @@ type RemoveIsolatedGuestResponse struct {
 
 func (x *RemoveIsolatedGuestResponse) Reset() {
 	*x = RemoveIsolatedGuestResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[55]
+	mi := &file_proto_agent_agent_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4409,7 +4577,7 @@ func (x *RemoveIsolatedGuestResponse) String() string {
 func (*RemoveIsolatedGuestResponse) ProtoMessage() {}
 
 func (x *RemoveIsolatedGuestResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[55]
+	mi := &file_proto_agent_agent_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4422,7 +4590,7 @@ func (x *RemoveIsolatedGuestResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveIsolatedGuestResponse.ProtoReflect.Descriptor instead.
 func (*RemoveIsolatedGuestResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{55}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *RemoveIsolatedGuestResponse) GetGuest() *IsolatedGuest {
@@ -4455,7 +4623,7 @@ type ApplyRelayRequest struct {
 
 func (x *ApplyRelayRequest) Reset() {
 	*x = ApplyRelayRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	mi := &file_proto_agent_agent_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4467,7 +4635,7 @@ func (x *ApplyRelayRequest) String() string {
 func (*ApplyRelayRequest) ProtoMessage() {}
 
 func (x *ApplyRelayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[56]
+	mi := &file_proto_agent_agent_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4480,7 +4648,7 @@ func (x *ApplyRelayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyRelayRequest.ProtoReflect.Descriptor instead.
 func (*ApplyRelayRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{56}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ApplyRelayRequest) GetHeader() *MutationHeader {
@@ -4536,7 +4704,7 @@ type RemoveRelayRequest struct {
 
 func (x *RemoveRelayRequest) Reset() {
 	*x = RemoveRelayRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	mi := &file_proto_agent_agent_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4548,7 +4716,7 @@ func (x *RemoveRelayRequest) String() string {
 func (*RemoveRelayRequest) ProtoMessage() {}
 
 func (x *RemoveRelayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[57]
+	mi := &file_proto_agent_agent_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4561,7 +4729,7 @@ func (x *RemoveRelayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveRelayRequest.ProtoReflect.Descriptor instead.
 func (*RemoveRelayRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{57}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *RemoveRelayRequest) GetHeader() *MutationHeader {
@@ -4598,7 +4766,7 @@ type ListRelaysRequest struct {
 
 func (x *ListRelaysRequest) Reset() {
 	*x = ListRelaysRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[58]
+	mi := &file_proto_agent_agent_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4610,7 +4778,7 @@ func (x *ListRelaysRequest) String() string {
 func (*ListRelaysRequest) ProtoMessage() {}
 
 func (x *ListRelaysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[58]
+	mi := &file_proto_agent_agent_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4623,7 +4791,7 @@ func (x *ListRelaysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRelaysRequest.ProtoReflect.Descriptor instead.
 func (*ListRelaysRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{58}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ListRelaysRequest) GetNetworkId() string {
@@ -4672,7 +4840,7 @@ type ListRelaysResponse struct {
 
 func (x *ListRelaysResponse) Reset() {
 	*x = ListRelaysResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[59]
+	mi := &file_proto_agent_agent_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4684,7 +4852,7 @@ func (x *ListRelaysResponse) String() string {
 func (*ListRelaysResponse) ProtoMessage() {}
 
 func (x *ListRelaysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[59]
+	mi := &file_proto_agent_agent_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4697,7 +4865,7 @@ func (x *ListRelaysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRelaysResponse.ProtoReflect.Descriptor instead.
 func (*ListRelaysResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{59}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *ListRelaysResponse) GetRelays() []*Relay {
@@ -4730,7 +4898,7 @@ type GetRelayStatsRequest struct {
 
 func (x *GetRelayStatsRequest) Reset() {
 	*x = GetRelayStatsRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[60]
+	mi := &file_proto_agent_agent_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4742,7 +4910,7 @@ func (x *GetRelayStatsRequest) String() string {
 func (*GetRelayStatsRequest) ProtoMessage() {}
 
 func (x *GetRelayStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[60]
+	mi := &file_proto_agent_agent_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4755,7 +4923,7 @@ func (x *GetRelayStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRelayStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetRelayStatsRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{60}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *GetRelayStatsRequest) GetRelayId() string {
@@ -4785,7 +4953,7 @@ type GetRelayStatsResponse struct {
 
 func (x *GetRelayStatsResponse) Reset() {
 	*x = GetRelayStatsResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[61]
+	mi := &file_proto_agent_agent_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4797,7 +4965,7 @@ func (x *GetRelayStatsResponse) String() string {
 func (*GetRelayStatsResponse) ProtoMessage() {}
 
 func (x *GetRelayStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[61]
+	mi := &file_proto_agent_agent_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4810,7 +4978,7 @@ func (x *GetRelayStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRelayStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetRelayStatsResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{61}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *GetRelayStatsResponse) GetRelayId() string {
@@ -4906,7 +5074,7 @@ type RebindRelaysRequest struct {
 
 func (x *RebindRelaysRequest) Reset() {
 	*x = RebindRelaysRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[62]
+	mi := &file_proto_agent_agent_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4918,7 +5086,7 @@ func (x *RebindRelaysRequest) String() string {
 func (*RebindRelaysRequest) ProtoMessage() {}
 
 func (x *RebindRelaysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[62]
+	mi := &file_proto_agent_agent_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4931,7 +5099,7 @@ func (x *RebindRelaysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebindRelaysRequest.ProtoReflect.Descriptor instead.
 func (*RebindRelaysRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{62}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *RebindRelaysRequest) GetHeader() *MutationHeader {
@@ -4951,7 +5119,7 @@ type RebindRelaysResponse struct {
 
 func (x *RebindRelaysResponse) Reset() {
 	*x = RebindRelaysResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[63]
+	mi := &file_proto_agent_agent_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4963,7 +5131,7 @@ func (x *RebindRelaysResponse) String() string {
 func (*RebindRelaysResponse) ProtoMessage() {}
 
 func (x *RebindRelaysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[63]
+	mi := &file_proto_agent_agent_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4976,7 +5144,7 @@ func (x *RebindRelaysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebindRelaysResponse.ProtoReflect.Descriptor instead.
 func (*RebindRelaysResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{63}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *RebindRelaysResponse) GetRelays() []*Relay {
@@ -5003,7 +5171,7 @@ type ValidateRelayRequest struct {
 
 func (x *ValidateRelayRequest) Reset() {
 	*x = ValidateRelayRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[64]
+	mi := &file_proto_agent_agent_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5015,7 +5183,7 @@ func (x *ValidateRelayRequest) String() string {
 func (*ValidateRelayRequest) ProtoMessage() {}
 
 func (x *ValidateRelayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[64]
+	mi := &file_proto_agent_agent_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5028,7 +5196,7 @@ func (x *ValidateRelayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRelayRequest.ProtoReflect.Descriptor instead.
 func (*ValidateRelayRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{64}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ValidateRelayRequest) GetRelayId() string {
@@ -5060,7 +5228,7 @@ type ValidateRelayResponse struct {
 
 func (x *ValidateRelayResponse) Reset() {
 	*x = ValidateRelayResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[65]
+	mi := &file_proto_agent_agent_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5072,7 +5240,7 @@ func (x *ValidateRelayResponse) String() string {
 func (*ValidateRelayResponse) ProtoMessage() {}
 
 func (x *ValidateRelayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[65]
+	mi := &file_proto_agent_agent_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5085,7 +5253,7 @@ func (x *ValidateRelayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateRelayResponse.ProtoReflect.Descriptor instead.
 func (*ValidateRelayResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{65}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ValidateRelayResponse) GetRelay() *Relay {
@@ -5151,7 +5319,7 @@ type AdoptRelayRequest struct {
 
 func (x *AdoptRelayRequest) Reset() {
 	*x = AdoptRelayRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[66]
+	mi := &file_proto_agent_agent_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5163,7 +5331,7 @@ func (x *AdoptRelayRequest) String() string {
 func (*AdoptRelayRequest) ProtoMessage() {}
 
 func (x *AdoptRelayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[66]
+	mi := &file_proto_agent_agent_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5176,7 +5344,7 @@ func (x *AdoptRelayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AdoptRelayRequest.ProtoReflect.Descriptor instead.
 func (*AdoptRelayRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{66}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *AdoptRelayRequest) GetHeader() *MutationHeader {
@@ -5234,7 +5402,7 @@ type SetNatStateRequest struct {
 
 func (x *SetNatStateRequest) Reset() {
 	*x = SetNatStateRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[67]
+	mi := &file_proto_agent_agent_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5246,7 +5414,7 @@ func (x *SetNatStateRequest) String() string {
 func (*SetNatStateRequest) ProtoMessage() {}
 
 func (x *SetNatStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[67]
+	mi := &file_proto_agent_agent_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5259,7 +5427,7 @@ func (x *SetNatStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetNatStateRequest.ProtoReflect.Descriptor instead.
 func (*SetNatStateRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{67}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *SetNatStateRequest) GetHeader() *MutationHeader {
@@ -5310,7 +5478,7 @@ type ListNatStateRequest struct {
 
 func (x *ListNatStateRequest) Reset() {
 	*x = ListNatStateRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[68]
+	mi := &file_proto_agent_agent_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5322,7 +5490,7 @@ func (x *ListNatStateRequest) String() string {
 func (*ListNatStateRequest) ProtoMessage() {}
 
 func (x *ListNatStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[68]
+	mi := &file_proto_agent_agent_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5335,7 +5503,7 @@ func (x *ListNatStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNatStateRequest.ProtoReflect.Descriptor instead.
 func (*ListNatStateRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{68}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *ListNatStateRequest) GetNetworkId() string {
@@ -5384,7 +5552,7 @@ type ListNatStateResponse struct {
 
 func (x *ListNatStateResponse) Reset() {
 	*x = ListNatStateResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[69]
+	mi := &file_proto_agent_agent_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5396,7 +5564,7 @@ func (x *ListNatStateResponse) String() string {
 func (*ListNatStateResponse) ProtoMessage() {}
 
 func (x *ListNatStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[69]
+	mi := &file_proto_agent_agent_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5409,7 +5577,7 @@ func (x *ListNatStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNatStateResponse.ProtoReflect.Descriptor instead.
 func (*ListNatStateResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{69}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *ListNatStateResponse) GetNatStates() []*NatState {
@@ -5443,7 +5611,7 @@ type ReconcileNatRequest struct {
 
 func (x *ReconcileNatRequest) Reset() {
 	*x = ReconcileNatRequest{}
-	mi := &file_proto_agent_agent_proto_msgTypes[70]
+	mi := &file_proto_agent_agent_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5455,7 +5623,7 @@ func (x *ReconcileNatRequest) String() string {
 func (*ReconcileNatRequest) ProtoMessage() {}
 
 func (x *ReconcileNatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[70]
+	mi := &file_proto_agent_agent_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5468,7 +5636,7 @@ func (x *ReconcileNatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileNatRequest.ProtoReflect.Descriptor instead.
 func (*ReconcileNatRequest) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{70}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *ReconcileNatRequest) GetHeader() *MutationHeader {
@@ -5495,7 +5663,7 @@ type ReconcileNatResponse struct {
 
 func (x *ReconcileNatResponse) Reset() {
 	*x = ReconcileNatResponse{}
-	mi := &file_proto_agent_agent_proto_msgTypes[71]
+	mi := &file_proto_agent_agent_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5507,7 +5675,7 @@ func (x *ReconcileNatResponse) String() string {
 func (*ReconcileNatResponse) ProtoMessage() {}
 
 func (x *ReconcileNatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_agent_agent_proto_msgTypes[71]
+	mi := &file_proto_agent_agent_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5520,7 +5688,7 @@ func (x *ReconcileNatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileNatResponse.ProtoReflect.Descriptor instead.
 func (*ReconcileNatResponse) Descriptor() ([]byte, []int) {
-	return file_proto_agent_agent_proto_rawDescGZIP(), []int{71}
+	return file_proto_agent_agent_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ReconcileNatResponse) GetNatState() *NatState {
@@ -5702,7 +5870,7 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\vtarget_addr\x18\x01 \x01(\tR\n" +
 	"targetAddr\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x14\n" +
-	"\x05close\x18\x03 \x01(\bR\x05close\"\xbe\x05\n" +
+	"\x05close\x18\x03 \x01(\bR\x05close\"\xd0\x06\n" +
 	"\x0eMutationHeader\x12.\n" +
 	"\x13parent_operation_id\x18\x01 \x01(\tR\x11parentOperationId\x12\x1f\n" +
 	"\vmutation_id\x18\x02 \x01(\tR\n" +
@@ -5723,7 +5891,10 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\x14cascade_operation_id\x18\r \x01(\tR\x12cascadeOperationId\x122\n" +
 	"\x15cascade_plan_revision\x18\x0e \x01(\tR\x13cascadePlanRevision\x12*\n" +
 	"\x11cascade_plan_hash\x18\x0f \x01(\tR\x0fcascadePlanHash\x12&\n" +
-	"\x0fcascade_item_id\x18\x10 \x01(\tR\rcascadeItemId\"\xcd\x01\n" +
+	"\x0fcascade_item_id\x18\x10 \x01(\tR\rcascadeItemId\x125\n" +
+	"\x17host_lease_expires_unix\x18\x11 \x01(\x03R\x14hostLeaseExpiresUnix\x122\n" +
+	"\x15cascade_resource_kind\x18\x12 \x01(\tR\x13cascadeResourceKind\x12%\n" +
+	"\x0ecascade_action\x18\x13 \x01(\tR\rcascadeAction\"\xcd\x01\n" +
 	"\x0fGenerationState\x12-\n" +
 	"\x12desired_generation\x18\x01 \x01(\x04R\x11desiredGeneration\x12-\n" +
 	"\x12applied_generation\x18\x02 \x01(\x04R\x11appliedGeneration\x12/\n" +
@@ -5739,7 +5910,19 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\x11parent_generation\x18\x05 \x01(\x04R\x10parentGeneration\x12\x16\n" +
 	"\x06frozen\x18\x06 \x01(\bR\x06frozen\x12\x1a\n" +
 	"\bdeleting\x18\a \x01(\bR\bdeleting\x12\x12\n" +
-	"\x04lost\x18\b \x01(\bR\x04lost\"\x82\x02\n" +
+	"\x04lost\x18\b \x01(\bR\x04lost\"\xdf\x01\n" +
+	"\"SetApplianceParentLifecycleRequest\x12-\n" +
+	"\x06header\x18\x01 \x01(\v2\x15.agent.MutationHeaderR\x06header\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x122\n" +
+	"\x15new_parent_generation\x18\x03 \x01(\x04R\x13newParentGeneration\x12@\n" +
+	"\rcascade_items\x18\x04 \x03(\v2\x1b.agent.CascadeAuthorityItemR\fcascadeItems\"\xbe\x01\n" +
+	"\x14CascadeAuthorityItem\x12\x17\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12#\n" +
+	"\rresource_kind\x18\x02 \x01(\tR\fresourceKind\x12\x1f\n" +
+	"\vresource_id\x18\x03 \x01(\tR\n" +
+	"resourceId\x12\x16\n" +
+	"\x06action\x18\x04 \x01(\tR\x06action\x12/\n" +
+	"\x13expected_generation\x18\x05 \x01(\x04R\x12expectedGeneration\"\x82\x02\n" +
 	"\x0eMutationResult\x12\x1f\n" +
 	"\vmutation_id\x18\x01 \x01(\tR\n" +
 	"mutationId\x12#\n" +
@@ -6076,7 +6259,7 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"#APPLIANCE_ERROR_CODE_FENCE_REJECTED\x10\t\x12&\n" +
 	"\"APPLIANCE_ERROR_CODE_PARENT_FROZEN\x10\n" +
 	"\x12)\n" +
-	"%APPLIANCE_ERROR_CODE_RESERVATION_LOST\x10\v2\xa0\x11\n" +
+	"%APPLIANCE_ERROR_CODE_RESERVATION_LOST\x10\v2\xc4\x12\n" +
 	"\tNodeAgent\x12:\n" +
 	"\aExecute\x12\x15.agent.ExecuteRequest\x1a\x16.agent.ExecuteResponse0\x01\x12F\n" +
 	"\rExecuteScript\x12\x1b.agent.ExecuteScriptRequest\x1a\x16.agent.ExecuteResponse0\x01\x12=\n" +
@@ -6094,7 +6277,9 @@ const file_proto_agent_agent_proto_rawDesc = "" +
 	"\aForward\x12\x13.agent.ForwardChunk\x1a\x13.agent.ForwardChunk(\x010\x01\x12V\n" +
 	"\x11GetApplianceState\x12\x1f.agent.GetApplianceStateRequest\x1a .agent.GetApplianceStateResponse\x12S\n" +
 	"\x10ReserveResources\x12\x1e.agent.ReserveResourcesRequest\x1a\x1f.agent.ReserveResourcesResponse\x12S\n" +
-	"\x10ReleaseResources\x12\x1e.agent.ReleaseResourcesRequest\x1a\x1f.agent.ReleaseResourcesResponse\x12\\\n" +
+	"\x10ReleaseResources\x12\x1e.agent.ReleaseResourcesRequest\x1a\x1f.agent.ReleaseResourcesResponse\x12E\n" +
+	"\x19ReleaseApplianceAuthority\x12\x15.agent.MutationHeader\x1a\x11.agent.FenceState\x12[\n" +
+	"\x1bSetApplianceParentLifecycle\x12).agent.SetApplianceParentLifecycleRequest\x1a\x11.agent.FenceState\x12\\\n" +
 	"\x13ApplyPrivateNetwork\x12!.agent.ApplyPrivateNetworkRequest\x1a\".agent.ApplyPrivateNetworkResponse\x12_\n" +
 	"\x14RemovePrivateNetwork\x12\".agent.RemovePrivateNetworkRequest\x1a#.agent.RemovePrivateNetworkResponse\x12b\n" +
 	"\x15RegisterIsolatedGuest\x12#.agent.RegisterIsolatedGuestRequest\x1a$.agent.RegisterIsolatedGuestResponse\x12\\\n" +
@@ -6126,222 +6311,230 @@ func file_proto_agent_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_agent_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_proto_agent_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 77)
 var file_proto_agent_agent_proto_goTypes = []any{
-	(JobStatus)(0),                        // 0: agent.JobStatus
-	(ApplianceErrorCode)(0),               // 1: agent.ApplianceErrorCode
-	(ExecuteResponse_Stream)(0),           // 2: agent.ExecuteResponse.Stream
-	(GetJobOutputRequest_Stream)(0),       // 3: agent.GetJobOutputRequest.Stream
-	(JobEvent_Kind)(0),                    // 4: agent.JobEvent.Kind
-	(*ExecuteRequest)(nil),                // 5: agent.ExecuteRequest
-	(*ExecuteScriptRequest)(nil),          // 6: agent.ExecuteScriptRequest
-	(*ExecuteResponse)(nil),               // 7: agent.ExecuteResponse
-	(*PushFileRequest)(nil),               // 8: agent.PushFileRequest
-	(*PushFileResponse)(nil),              // 9: agent.PushFileResponse
-	(*PullFileRequest)(nil),               // 10: agent.PullFileRequest
-	(*PullFileResponse)(nil),              // 11: agent.PullFileResponse
-	(*ListProcessesRequest)(nil),          // 12: agent.ListProcessesRequest
-	(*ListProcessesResponse)(nil),         // 13: agent.ListProcessesResponse
-	(*ProcessInfo)(nil),                   // 14: agent.ProcessInfo
-	(*KillProcessRequest)(nil),            // 15: agent.KillProcessRequest
-	(*KillProcessResponse)(nil),           // 16: agent.KillProcessResponse
-	(*GetInfoRequest)(nil),                // 17: agent.GetInfoRequest
-	(*GetInfoResponse)(nil),               // 18: agent.GetInfoResponse
-	(*Job)(nil),                           // 19: agent.Job
-	(*ListJobsRequest)(nil),               // 20: agent.ListJobsRequest
-	(*ListJobsResponse)(nil),              // 21: agent.ListJobsResponse
-	(*GetJobRequest)(nil),                 // 22: agent.GetJobRequest
-	(*GetJobResponse)(nil),                // 23: agent.GetJobResponse
-	(*GetJobOutputRequest)(nil),           // 24: agent.GetJobOutputRequest
-	(*GetJobOutputResponse)(nil),          // 25: agent.GetJobOutputResponse
-	(*CancelJobRequest)(nil),              // 26: agent.CancelJobRequest
-	(*CancelJobResponse)(nil),             // 27: agent.CancelJobResponse
-	(*DeleteJobRequest)(nil),              // 28: agent.DeleteJobRequest
-	(*DeleteJobResponse)(nil),             // 29: agent.DeleteJobResponse
-	(*WatchJobsRequest)(nil),              // 30: agent.WatchJobsRequest
-	(*JobEvent)(nil),                      // 31: agent.JobEvent
-	(*ForwardChunk)(nil),                  // 32: agent.ForwardChunk
-	(*MutationHeader)(nil),                // 33: agent.MutationHeader
-	(*GenerationState)(nil),               // 34: agent.GenerationState
-	(*FenceState)(nil),                    // 35: agent.FenceState
-	(*MutationResult)(nil),                // 36: agent.MutationResult
-	(*ApplyIntent)(nil),                   // 37: agent.ApplyIntent
-	(*InventorySummary)(nil),              // 38: agent.InventorySummary
-	(*ApplianceConflict)(nil),             // 39: agent.ApplianceConflict
-	(*ApplianceState)(nil),                // 40: agent.ApplianceState
-	(*ReservationCandidate)(nil),          // 41: agent.ReservationCandidate
-	(*Reservation)(nil),                   // 42: agent.Reservation
-	(*PrivateNetwork)(nil),                // 43: agent.PrivateNetwork
-	(*IsolatedGuest)(nil),                 // 44: agent.IsolatedGuest
-	(*Relay)(nil),                         // 45: agent.Relay
-	(*NatState)(nil),                      // 46: agent.NatState
-	(*GetApplianceStateRequest)(nil),      // 47: agent.GetApplianceStateRequest
-	(*GetApplianceStateResponse)(nil),     // 48: agent.GetApplianceStateResponse
-	(*ReserveResourcesRequest)(nil),       // 49: agent.ReserveResourcesRequest
-	(*ReserveResourcesResponse)(nil),      // 50: agent.ReserveResourcesResponse
-	(*ReleaseResourcesRequest)(nil),       // 51: agent.ReleaseResourcesRequest
-	(*ReleaseResourcesResponse)(nil),      // 52: agent.ReleaseResourcesResponse
-	(*ApplyPrivateNetworkRequest)(nil),    // 53: agent.ApplyPrivateNetworkRequest
-	(*ApplyPrivateNetworkResponse)(nil),   // 54: agent.ApplyPrivateNetworkResponse
-	(*RemovePrivateNetworkRequest)(nil),   // 55: agent.RemovePrivateNetworkRequest
-	(*RemovePrivateNetworkResponse)(nil),  // 56: agent.RemovePrivateNetworkResponse
-	(*RegisterIsolatedGuestRequest)(nil),  // 57: agent.RegisterIsolatedGuestRequest
-	(*RegisterIsolatedGuestResponse)(nil), // 58: agent.RegisterIsolatedGuestResponse
-	(*RemoveIsolatedGuestRequest)(nil),    // 59: agent.RemoveIsolatedGuestRequest
-	(*RemoveIsolatedGuestResponse)(nil),   // 60: agent.RemoveIsolatedGuestResponse
-	(*ApplyRelayRequest)(nil),             // 61: agent.ApplyRelayRequest
-	(*RemoveRelayRequest)(nil),            // 62: agent.RemoveRelayRequest
-	(*ListRelaysRequest)(nil),             // 63: agent.ListRelaysRequest
-	(*ListRelaysResponse)(nil),            // 64: agent.ListRelaysResponse
-	(*GetRelayStatsRequest)(nil),          // 65: agent.GetRelayStatsRequest
-	(*GetRelayStatsResponse)(nil),         // 66: agent.GetRelayStatsResponse
-	(*RebindRelaysRequest)(nil),           // 67: agent.RebindRelaysRequest
-	(*RebindRelaysResponse)(nil),          // 68: agent.RebindRelaysResponse
-	(*ValidateRelayRequest)(nil),          // 69: agent.ValidateRelayRequest
-	(*ValidateRelayResponse)(nil),         // 70: agent.ValidateRelayResponse
-	(*AdoptRelayRequest)(nil),             // 71: agent.AdoptRelayRequest
-	(*SetNatStateRequest)(nil),            // 72: agent.SetNatStateRequest
-	(*ListNatStateRequest)(nil),           // 73: agent.ListNatStateRequest
-	(*ListNatStateResponse)(nil),          // 74: agent.ListNatStateResponse
-	(*ReconcileNatRequest)(nil),           // 75: agent.ReconcileNatRequest
-	(*ReconcileNatResponse)(nil),          // 76: agent.ReconcileNatResponse
-	nil,                                   // 77: agent.ExecuteRequest.EnvEntry
-	nil,                                   // 78: agent.ExecuteScriptRequest.EnvEntry
-	nil,                                   // 79: agent.Job.EnvEntry
+	(JobStatus)(0),                             // 0: agent.JobStatus
+	(ApplianceErrorCode)(0),                    // 1: agent.ApplianceErrorCode
+	(ExecuteResponse_Stream)(0),                // 2: agent.ExecuteResponse.Stream
+	(GetJobOutputRequest_Stream)(0),            // 3: agent.GetJobOutputRequest.Stream
+	(JobEvent_Kind)(0),                         // 4: agent.JobEvent.Kind
+	(*ExecuteRequest)(nil),                     // 5: agent.ExecuteRequest
+	(*ExecuteScriptRequest)(nil),               // 6: agent.ExecuteScriptRequest
+	(*ExecuteResponse)(nil),                    // 7: agent.ExecuteResponse
+	(*PushFileRequest)(nil),                    // 8: agent.PushFileRequest
+	(*PushFileResponse)(nil),                   // 9: agent.PushFileResponse
+	(*PullFileRequest)(nil),                    // 10: agent.PullFileRequest
+	(*PullFileResponse)(nil),                   // 11: agent.PullFileResponse
+	(*ListProcessesRequest)(nil),               // 12: agent.ListProcessesRequest
+	(*ListProcessesResponse)(nil),              // 13: agent.ListProcessesResponse
+	(*ProcessInfo)(nil),                        // 14: agent.ProcessInfo
+	(*KillProcessRequest)(nil),                 // 15: agent.KillProcessRequest
+	(*KillProcessResponse)(nil),                // 16: agent.KillProcessResponse
+	(*GetInfoRequest)(nil),                     // 17: agent.GetInfoRequest
+	(*GetInfoResponse)(nil),                    // 18: agent.GetInfoResponse
+	(*Job)(nil),                                // 19: agent.Job
+	(*ListJobsRequest)(nil),                    // 20: agent.ListJobsRequest
+	(*ListJobsResponse)(nil),                   // 21: agent.ListJobsResponse
+	(*GetJobRequest)(nil),                      // 22: agent.GetJobRequest
+	(*GetJobResponse)(nil),                     // 23: agent.GetJobResponse
+	(*GetJobOutputRequest)(nil),                // 24: agent.GetJobOutputRequest
+	(*GetJobOutputResponse)(nil),               // 25: agent.GetJobOutputResponse
+	(*CancelJobRequest)(nil),                   // 26: agent.CancelJobRequest
+	(*CancelJobResponse)(nil),                  // 27: agent.CancelJobResponse
+	(*DeleteJobRequest)(nil),                   // 28: agent.DeleteJobRequest
+	(*DeleteJobResponse)(nil),                  // 29: agent.DeleteJobResponse
+	(*WatchJobsRequest)(nil),                   // 30: agent.WatchJobsRequest
+	(*JobEvent)(nil),                           // 31: agent.JobEvent
+	(*ForwardChunk)(nil),                       // 32: agent.ForwardChunk
+	(*MutationHeader)(nil),                     // 33: agent.MutationHeader
+	(*GenerationState)(nil),                    // 34: agent.GenerationState
+	(*FenceState)(nil),                         // 35: agent.FenceState
+	(*SetApplianceParentLifecycleRequest)(nil), // 36: agent.SetApplianceParentLifecycleRequest
+	(*CascadeAuthorityItem)(nil),               // 37: agent.CascadeAuthorityItem
+	(*MutationResult)(nil),                     // 38: agent.MutationResult
+	(*ApplyIntent)(nil),                        // 39: agent.ApplyIntent
+	(*InventorySummary)(nil),                   // 40: agent.InventorySummary
+	(*ApplianceConflict)(nil),                  // 41: agent.ApplianceConflict
+	(*ApplianceState)(nil),                     // 42: agent.ApplianceState
+	(*ReservationCandidate)(nil),               // 43: agent.ReservationCandidate
+	(*Reservation)(nil),                        // 44: agent.Reservation
+	(*PrivateNetwork)(nil),                     // 45: agent.PrivateNetwork
+	(*IsolatedGuest)(nil),                      // 46: agent.IsolatedGuest
+	(*Relay)(nil),                              // 47: agent.Relay
+	(*NatState)(nil),                           // 48: agent.NatState
+	(*GetApplianceStateRequest)(nil),           // 49: agent.GetApplianceStateRequest
+	(*GetApplianceStateResponse)(nil),          // 50: agent.GetApplianceStateResponse
+	(*ReserveResourcesRequest)(nil),            // 51: agent.ReserveResourcesRequest
+	(*ReserveResourcesResponse)(nil),           // 52: agent.ReserveResourcesResponse
+	(*ReleaseResourcesRequest)(nil),            // 53: agent.ReleaseResourcesRequest
+	(*ReleaseResourcesResponse)(nil),           // 54: agent.ReleaseResourcesResponse
+	(*ApplyPrivateNetworkRequest)(nil),         // 55: agent.ApplyPrivateNetworkRequest
+	(*ApplyPrivateNetworkResponse)(nil),        // 56: agent.ApplyPrivateNetworkResponse
+	(*RemovePrivateNetworkRequest)(nil),        // 57: agent.RemovePrivateNetworkRequest
+	(*RemovePrivateNetworkResponse)(nil),       // 58: agent.RemovePrivateNetworkResponse
+	(*RegisterIsolatedGuestRequest)(nil),       // 59: agent.RegisterIsolatedGuestRequest
+	(*RegisterIsolatedGuestResponse)(nil),      // 60: agent.RegisterIsolatedGuestResponse
+	(*RemoveIsolatedGuestRequest)(nil),         // 61: agent.RemoveIsolatedGuestRequest
+	(*RemoveIsolatedGuestResponse)(nil),        // 62: agent.RemoveIsolatedGuestResponse
+	(*ApplyRelayRequest)(nil),                  // 63: agent.ApplyRelayRequest
+	(*RemoveRelayRequest)(nil),                 // 64: agent.RemoveRelayRequest
+	(*ListRelaysRequest)(nil),                  // 65: agent.ListRelaysRequest
+	(*ListRelaysResponse)(nil),                 // 66: agent.ListRelaysResponse
+	(*GetRelayStatsRequest)(nil),               // 67: agent.GetRelayStatsRequest
+	(*GetRelayStatsResponse)(nil),              // 68: agent.GetRelayStatsResponse
+	(*RebindRelaysRequest)(nil),                // 69: agent.RebindRelaysRequest
+	(*RebindRelaysResponse)(nil),               // 70: agent.RebindRelaysResponse
+	(*ValidateRelayRequest)(nil),               // 71: agent.ValidateRelayRequest
+	(*ValidateRelayResponse)(nil),              // 72: agent.ValidateRelayResponse
+	(*AdoptRelayRequest)(nil),                  // 73: agent.AdoptRelayRequest
+	(*SetNatStateRequest)(nil),                 // 74: agent.SetNatStateRequest
+	(*ListNatStateRequest)(nil),                // 75: agent.ListNatStateRequest
+	(*ListNatStateResponse)(nil),               // 76: agent.ListNatStateResponse
+	(*ReconcileNatRequest)(nil),                // 77: agent.ReconcileNatRequest
+	(*ReconcileNatResponse)(nil),               // 78: agent.ReconcileNatResponse
+	nil,                                        // 79: agent.ExecuteRequest.EnvEntry
+	nil,                                        // 80: agent.ExecuteScriptRequest.EnvEntry
+	nil,                                        // 81: agent.Job.EnvEntry
 }
 var file_proto_agent_agent_proto_depIdxs = []int32{
-	77, // 0: agent.ExecuteRequest.env:type_name -> agent.ExecuteRequest.EnvEntry
-	78, // 1: agent.ExecuteScriptRequest.env:type_name -> agent.ExecuteScriptRequest.EnvEntry
-	2,  // 2: agent.ExecuteResponse.stream:type_name -> agent.ExecuteResponse.Stream
-	14, // 3: agent.ListProcessesResponse.processes:type_name -> agent.ProcessInfo
-	79, // 4: agent.Job.env:type_name -> agent.Job.EnvEntry
-	0,  // 5: agent.Job.status:type_name -> agent.JobStatus
-	0,  // 6: agent.ListJobsRequest.status_filter:type_name -> agent.JobStatus
-	19, // 7: agent.ListJobsResponse.jobs:type_name -> agent.Job
-	19, // 8: agent.GetJobResponse.job:type_name -> agent.Job
-	3,  // 9: agent.GetJobOutputRequest.stream:type_name -> agent.GetJobOutputRequest.Stream
-	19, // 10: agent.CancelJobResponse.job:type_name -> agent.Job
-	4,  // 11: agent.JobEvent.kind:type_name -> agent.JobEvent.Kind
-	19, // 12: agent.JobEvent.job:type_name -> agent.Job
-	34, // 13: agent.MutationResult.generation:type_name -> agent.GenerationState
-	1,  // 14: agent.ApplianceConflict.code:type_name -> agent.ApplianceErrorCode
-	38, // 15: agent.ApplianceConflict.inventory:type_name -> agent.InventorySummary
-	34, // 16: agent.ApplianceConflict.generation:type_name -> agent.GenerationState
-	35, // 17: agent.ApplianceConflict.fence:type_name -> agent.FenceState
-	35, // 18: agent.ApplianceState.fence:type_name -> agent.FenceState
-	38, // 19: agent.ApplianceState.inventory:type_name -> agent.InventorySummary
-	34, // 20: agent.PrivateNetwork.generation:type_name -> agent.GenerationState
-	34, // 21: agent.IsolatedGuest.generation:type_name -> agent.GenerationState
-	34, // 22: agent.Relay.generation:type_name -> agent.GenerationState
-	34, // 23: agent.NatState.generation:type_name -> agent.GenerationState
-	40, // 24: agent.GetApplianceStateResponse.appliance:type_name -> agent.ApplianceState
-	42, // 25: agent.GetApplianceStateResponse.reservations:type_name -> agent.Reservation
-	43, // 26: agent.GetApplianceStateResponse.networks:type_name -> agent.PrivateNetwork
-	44, // 27: agent.GetApplianceStateResponse.guests:type_name -> agent.IsolatedGuest
-	45, // 28: agent.GetApplianceStateResponse.relays:type_name -> agent.Relay
-	46, // 29: agent.GetApplianceStateResponse.nat_states:type_name -> agent.NatState
-	37, // 30: agent.GetApplianceStateResponse.apply_intents:type_name -> agent.ApplyIntent
-	33, // 31: agent.ReserveResourcesRequest.header:type_name -> agent.MutationHeader
-	41, // 32: agent.ReserveResourcesRequest.candidates:type_name -> agent.ReservationCandidate
-	42, // 33: agent.ReserveResourcesResponse.reservations:type_name -> agent.Reservation
-	38, // 34: agent.ReserveResourcesResponse.inventory:type_name -> agent.InventorySummary
-	36, // 35: agent.ReserveResourcesResponse.mutation:type_name -> agent.MutationResult
-	33, // 36: agent.ReleaseResourcesRequest.header:type_name -> agent.MutationHeader
-	42, // 37: agent.ReleaseResourcesResponse.reservations:type_name -> agent.Reservation
-	38, // 38: agent.ReleaseResourcesResponse.inventory:type_name -> agent.InventorySummary
-	36, // 39: agent.ReleaseResourcesResponse.mutation:type_name -> agent.MutationResult
-	33, // 40: agent.ApplyPrivateNetworkRequest.header:type_name -> agent.MutationHeader
-	43, // 41: agent.ApplyPrivateNetworkResponse.network:type_name -> agent.PrivateNetwork
-	36, // 42: agent.ApplyPrivateNetworkResponse.mutation:type_name -> agent.MutationResult
-	33, // 43: agent.RemovePrivateNetworkRequest.header:type_name -> agent.MutationHeader
-	43, // 44: agent.RemovePrivateNetworkResponse.network:type_name -> agent.PrivateNetwork
-	36, // 45: agent.RemovePrivateNetworkResponse.mutation:type_name -> agent.MutationResult
-	33, // 46: agent.RegisterIsolatedGuestRequest.header:type_name -> agent.MutationHeader
-	44, // 47: agent.RegisterIsolatedGuestResponse.guest:type_name -> agent.IsolatedGuest
-	36, // 48: agent.RegisterIsolatedGuestResponse.mutation:type_name -> agent.MutationResult
-	33, // 49: agent.RemoveIsolatedGuestRequest.header:type_name -> agent.MutationHeader
-	44, // 50: agent.RemoveIsolatedGuestResponse.guest:type_name -> agent.IsolatedGuest
-	36, // 51: agent.RemoveIsolatedGuestResponse.mutation:type_name -> agent.MutationResult
-	33, // 52: agent.ApplyRelayRequest.header:type_name -> agent.MutationHeader
-	33, // 53: agent.RemoveRelayRequest.header:type_name -> agent.MutationHeader
-	45, // 54: agent.ListRelaysResponse.relays:type_name -> agent.Relay
-	33, // 55: agent.RebindRelaysRequest.header:type_name -> agent.MutationHeader
-	45, // 56: agent.RebindRelaysResponse.relays:type_name -> agent.Relay
-	36, // 57: agent.RebindRelaysResponse.mutation:type_name -> agent.MutationResult
-	45, // 58: agent.ValidateRelayResponse.relay:type_name -> agent.Relay
-	33, // 59: agent.AdoptRelayRequest.header:type_name -> agent.MutationHeader
-	33, // 60: agent.SetNatStateRequest.header:type_name -> agent.MutationHeader
-	46, // 61: agent.ListNatStateResponse.nat_states:type_name -> agent.NatState
-	33, // 62: agent.ReconcileNatRequest.header:type_name -> agent.MutationHeader
-	46, // 63: agent.ReconcileNatResponse.nat_state:type_name -> agent.NatState
-	36, // 64: agent.ReconcileNatResponse.mutation:type_name -> agent.MutationResult
-	5,  // 65: agent.NodeAgent.Execute:input_type -> agent.ExecuteRequest
-	6,  // 66: agent.NodeAgent.ExecuteScript:input_type -> agent.ExecuteScriptRequest
-	8,  // 67: agent.NodeAgent.PushFile:input_type -> agent.PushFileRequest
-	10, // 68: agent.NodeAgent.PullFile:input_type -> agent.PullFileRequest
-	12, // 69: agent.NodeAgent.ListProcesses:input_type -> agent.ListProcessesRequest
-	15, // 70: agent.NodeAgent.KillProcess:input_type -> agent.KillProcessRequest
-	17, // 71: agent.NodeAgent.GetInfo:input_type -> agent.GetInfoRequest
-	20, // 72: agent.NodeAgent.ListJobs:input_type -> agent.ListJobsRequest
-	22, // 73: agent.NodeAgent.GetJob:input_type -> agent.GetJobRequest
-	24, // 74: agent.NodeAgent.GetJobOutput:input_type -> agent.GetJobOutputRequest
-	26, // 75: agent.NodeAgent.CancelJob:input_type -> agent.CancelJobRequest
-	28, // 76: agent.NodeAgent.DeleteJob:input_type -> agent.DeleteJobRequest
-	30, // 77: agent.NodeAgent.WatchJobs:input_type -> agent.WatchJobsRequest
-	32, // 78: agent.NodeAgent.Forward:input_type -> agent.ForwardChunk
-	47, // 79: agent.NodeAgent.GetApplianceState:input_type -> agent.GetApplianceStateRequest
-	49, // 80: agent.NodeAgent.ReserveResources:input_type -> agent.ReserveResourcesRequest
-	51, // 81: agent.NodeAgent.ReleaseResources:input_type -> agent.ReleaseResourcesRequest
-	53, // 82: agent.NodeAgent.ApplyPrivateNetwork:input_type -> agent.ApplyPrivateNetworkRequest
-	55, // 83: agent.NodeAgent.RemovePrivateNetwork:input_type -> agent.RemovePrivateNetworkRequest
-	57, // 84: agent.NodeAgent.RegisterIsolatedGuest:input_type -> agent.RegisterIsolatedGuestRequest
-	59, // 85: agent.NodeAgent.RemoveIsolatedGuest:input_type -> agent.RemoveIsolatedGuestRequest
-	61, // 86: agent.NodeAgent.ApplyRelay:input_type -> agent.ApplyRelayRequest
-	62, // 87: agent.NodeAgent.RemoveRelay:input_type -> agent.RemoveRelayRequest
-	63, // 88: agent.NodeAgent.ListRelays:input_type -> agent.ListRelaysRequest
-	65, // 89: agent.NodeAgent.GetRelayStats:input_type -> agent.GetRelayStatsRequest
-	67, // 90: agent.NodeAgent.RebindRelays:input_type -> agent.RebindRelaysRequest
-	69, // 91: agent.NodeAgent.ValidateRelay:input_type -> agent.ValidateRelayRequest
-	71, // 92: agent.NodeAgent.AdoptRelay:input_type -> agent.AdoptRelayRequest
-	72, // 93: agent.NodeAgent.SetNatState:input_type -> agent.SetNatStateRequest
-	73, // 94: agent.NodeAgent.ListNatState:input_type -> agent.ListNatStateRequest
-	75, // 95: agent.NodeAgent.ReconcileNat:input_type -> agent.ReconcileNatRequest
-	7,  // 96: agent.NodeAgent.Execute:output_type -> agent.ExecuteResponse
-	7,  // 97: agent.NodeAgent.ExecuteScript:output_type -> agent.ExecuteResponse
-	9,  // 98: agent.NodeAgent.PushFile:output_type -> agent.PushFileResponse
-	11, // 99: agent.NodeAgent.PullFile:output_type -> agent.PullFileResponse
-	13, // 100: agent.NodeAgent.ListProcesses:output_type -> agent.ListProcessesResponse
-	16, // 101: agent.NodeAgent.KillProcess:output_type -> agent.KillProcessResponse
-	18, // 102: agent.NodeAgent.GetInfo:output_type -> agent.GetInfoResponse
-	21, // 103: agent.NodeAgent.ListJobs:output_type -> agent.ListJobsResponse
-	23, // 104: agent.NodeAgent.GetJob:output_type -> agent.GetJobResponse
-	25, // 105: agent.NodeAgent.GetJobOutput:output_type -> agent.GetJobOutputResponse
-	27, // 106: agent.NodeAgent.CancelJob:output_type -> agent.CancelJobResponse
-	29, // 107: agent.NodeAgent.DeleteJob:output_type -> agent.DeleteJobResponse
-	31, // 108: agent.NodeAgent.WatchJobs:output_type -> agent.JobEvent
-	32, // 109: agent.NodeAgent.Forward:output_type -> agent.ForwardChunk
-	48, // 110: agent.NodeAgent.GetApplianceState:output_type -> agent.GetApplianceStateResponse
-	50, // 111: agent.NodeAgent.ReserveResources:output_type -> agent.ReserveResourcesResponse
-	52, // 112: agent.NodeAgent.ReleaseResources:output_type -> agent.ReleaseResourcesResponse
-	54, // 113: agent.NodeAgent.ApplyPrivateNetwork:output_type -> agent.ApplyPrivateNetworkResponse
-	56, // 114: agent.NodeAgent.RemovePrivateNetwork:output_type -> agent.RemovePrivateNetworkResponse
-	58, // 115: agent.NodeAgent.RegisterIsolatedGuest:output_type -> agent.RegisterIsolatedGuestResponse
-	60, // 116: agent.NodeAgent.RemoveIsolatedGuest:output_type -> agent.RemoveIsolatedGuestResponse
-	45, // 117: agent.NodeAgent.ApplyRelay:output_type -> agent.Relay
-	45, // 118: agent.NodeAgent.RemoveRelay:output_type -> agent.Relay
-	64, // 119: agent.NodeAgent.ListRelays:output_type -> agent.ListRelaysResponse
-	66, // 120: agent.NodeAgent.GetRelayStats:output_type -> agent.GetRelayStatsResponse
-	68, // 121: agent.NodeAgent.RebindRelays:output_type -> agent.RebindRelaysResponse
-	70, // 122: agent.NodeAgent.ValidateRelay:output_type -> agent.ValidateRelayResponse
-	45, // 123: agent.NodeAgent.AdoptRelay:output_type -> agent.Relay
-	46, // 124: agent.NodeAgent.SetNatState:output_type -> agent.NatState
-	74, // 125: agent.NodeAgent.ListNatState:output_type -> agent.ListNatStateResponse
-	76, // 126: agent.NodeAgent.ReconcileNat:output_type -> agent.ReconcileNatResponse
-	96, // [96:127] is the sub-list for method output_type
-	65, // [65:96] is the sub-list for method input_type
-	65, // [65:65] is the sub-list for extension type_name
-	65, // [65:65] is the sub-list for extension extendee
-	0,  // [0:65] is the sub-list for field type_name
+	79,  // 0: agent.ExecuteRequest.env:type_name -> agent.ExecuteRequest.EnvEntry
+	80,  // 1: agent.ExecuteScriptRequest.env:type_name -> agent.ExecuteScriptRequest.EnvEntry
+	2,   // 2: agent.ExecuteResponse.stream:type_name -> agent.ExecuteResponse.Stream
+	14,  // 3: agent.ListProcessesResponse.processes:type_name -> agent.ProcessInfo
+	81,  // 4: agent.Job.env:type_name -> agent.Job.EnvEntry
+	0,   // 5: agent.Job.status:type_name -> agent.JobStatus
+	0,   // 6: agent.ListJobsRequest.status_filter:type_name -> agent.JobStatus
+	19,  // 7: agent.ListJobsResponse.jobs:type_name -> agent.Job
+	19,  // 8: agent.GetJobResponse.job:type_name -> agent.Job
+	3,   // 9: agent.GetJobOutputRequest.stream:type_name -> agent.GetJobOutputRequest.Stream
+	19,  // 10: agent.CancelJobResponse.job:type_name -> agent.Job
+	4,   // 11: agent.JobEvent.kind:type_name -> agent.JobEvent.Kind
+	19,  // 12: agent.JobEvent.job:type_name -> agent.Job
+	33,  // 13: agent.SetApplianceParentLifecycleRequest.header:type_name -> agent.MutationHeader
+	37,  // 14: agent.SetApplianceParentLifecycleRequest.cascade_items:type_name -> agent.CascadeAuthorityItem
+	34,  // 15: agent.MutationResult.generation:type_name -> agent.GenerationState
+	1,   // 16: agent.ApplianceConflict.code:type_name -> agent.ApplianceErrorCode
+	40,  // 17: agent.ApplianceConflict.inventory:type_name -> agent.InventorySummary
+	34,  // 18: agent.ApplianceConflict.generation:type_name -> agent.GenerationState
+	35,  // 19: agent.ApplianceConflict.fence:type_name -> agent.FenceState
+	35,  // 20: agent.ApplianceState.fence:type_name -> agent.FenceState
+	40,  // 21: agent.ApplianceState.inventory:type_name -> agent.InventorySummary
+	34,  // 22: agent.PrivateNetwork.generation:type_name -> agent.GenerationState
+	34,  // 23: agent.IsolatedGuest.generation:type_name -> agent.GenerationState
+	34,  // 24: agent.Relay.generation:type_name -> agent.GenerationState
+	34,  // 25: agent.NatState.generation:type_name -> agent.GenerationState
+	42,  // 26: agent.GetApplianceStateResponse.appliance:type_name -> agent.ApplianceState
+	44,  // 27: agent.GetApplianceStateResponse.reservations:type_name -> agent.Reservation
+	45,  // 28: agent.GetApplianceStateResponse.networks:type_name -> agent.PrivateNetwork
+	46,  // 29: agent.GetApplianceStateResponse.guests:type_name -> agent.IsolatedGuest
+	47,  // 30: agent.GetApplianceStateResponse.relays:type_name -> agent.Relay
+	48,  // 31: agent.GetApplianceStateResponse.nat_states:type_name -> agent.NatState
+	39,  // 32: agent.GetApplianceStateResponse.apply_intents:type_name -> agent.ApplyIntent
+	33,  // 33: agent.ReserveResourcesRequest.header:type_name -> agent.MutationHeader
+	43,  // 34: agent.ReserveResourcesRequest.candidates:type_name -> agent.ReservationCandidate
+	44,  // 35: agent.ReserveResourcesResponse.reservations:type_name -> agent.Reservation
+	40,  // 36: agent.ReserveResourcesResponse.inventory:type_name -> agent.InventorySummary
+	38,  // 37: agent.ReserveResourcesResponse.mutation:type_name -> agent.MutationResult
+	33,  // 38: agent.ReleaseResourcesRequest.header:type_name -> agent.MutationHeader
+	44,  // 39: agent.ReleaseResourcesResponse.reservations:type_name -> agent.Reservation
+	40,  // 40: agent.ReleaseResourcesResponse.inventory:type_name -> agent.InventorySummary
+	38,  // 41: agent.ReleaseResourcesResponse.mutation:type_name -> agent.MutationResult
+	33,  // 42: agent.ApplyPrivateNetworkRequest.header:type_name -> agent.MutationHeader
+	45,  // 43: agent.ApplyPrivateNetworkResponse.network:type_name -> agent.PrivateNetwork
+	38,  // 44: agent.ApplyPrivateNetworkResponse.mutation:type_name -> agent.MutationResult
+	33,  // 45: agent.RemovePrivateNetworkRequest.header:type_name -> agent.MutationHeader
+	45,  // 46: agent.RemovePrivateNetworkResponse.network:type_name -> agent.PrivateNetwork
+	38,  // 47: agent.RemovePrivateNetworkResponse.mutation:type_name -> agent.MutationResult
+	33,  // 48: agent.RegisterIsolatedGuestRequest.header:type_name -> agent.MutationHeader
+	46,  // 49: agent.RegisterIsolatedGuestResponse.guest:type_name -> agent.IsolatedGuest
+	38,  // 50: agent.RegisterIsolatedGuestResponse.mutation:type_name -> agent.MutationResult
+	33,  // 51: agent.RemoveIsolatedGuestRequest.header:type_name -> agent.MutationHeader
+	46,  // 52: agent.RemoveIsolatedGuestResponse.guest:type_name -> agent.IsolatedGuest
+	38,  // 53: agent.RemoveIsolatedGuestResponse.mutation:type_name -> agent.MutationResult
+	33,  // 54: agent.ApplyRelayRequest.header:type_name -> agent.MutationHeader
+	33,  // 55: agent.RemoveRelayRequest.header:type_name -> agent.MutationHeader
+	47,  // 56: agent.ListRelaysResponse.relays:type_name -> agent.Relay
+	33,  // 57: agent.RebindRelaysRequest.header:type_name -> agent.MutationHeader
+	47,  // 58: agent.RebindRelaysResponse.relays:type_name -> agent.Relay
+	38,  // 59: agent.RebindRelaysResponse.mutation:type_name -> agent.MutationResult
+	47,  // 60: agent.ValidateRelayResponse.relay:type_name -> agent.Relay
+	33,  // 61: agent.AdoptRelayRequest.header:type_name -> agent.MutationHeader
+	33,  // 62: agent.SetNatStateRequest.header:type_name -> agent.MutationHeader
+	48,  // 63: agent.ListNatStateResponse.nat_states:type_name -> agent.NatState
+	33,  // 64: agent.ReconcileNatRequest.header:type_name -> agent.MutationHeader
+	48,  // 65: agent.ReconcileNatResponse.nat_state:type_name -> agent.NatState
+	38,  // 66: agent.ReconcileNatResponse.mutation:type_name -> agent.MutationResult
+	5,   // 67: agent.NodeAgent.Execute:input_type -> agent.ExecuteRequest
+	6,   // 68: agent.NodeAgent.ExecuteScript:input_type -> agent.ExecuteScriptRequest
+	8,   // 69: agent.NodeAgent.PushFile:input_type -> agent.PushFileRequest
+	10,  // 70: agent.NodeAgent.PullFile:input_type -> agent.PullFileRequest
+	12,  // 71: agent.NodeAgent.ListProcesses:input_type -> agent.ListProcessesRequest
+	15,  // 72: agent.NodeAgent.KillProcess:input_type -> agent.KillProcessRequest
+	17,  // 73: agent.NodeAgent.GetInfo:input_type -> agent.GetInfoRequest
+	20,  // 74: agent.NodeAgent.ListJobs:input_type -> agent.ListJobsRequest
+	22,  // 75: agent.NodeAgent.GetJob:input_type -> agent.GetJobRequest
+	24,  // 76: agent.NodeAgent.GetJobOutput:input_type -> agent.GetJobOutputRequest
+	26,  // 77: agent.NodeAgent.CancelJob:input_type -> agent.CancelJobRequest
+	28,  // 78: agent.NodeAgent.DeleteJob:input_type -> agent.DeleteJobRequest
+	30,  // 79: agent.NodeAgent.WatchJobs:input_type -> agent.WatchJobsRequest
+	32,  // 80: agent.NodeAgent.Forward:input_type -> agent.ForwardChunk
+	49,  // 81: agent.NodeAgent.GetApplianceState:input_type -> agent.GetApplianceStateRequest
+	51,  // 82: agent.NodeAgent.ReserveResources:input_type -> agent.ReserveResourcesRequest
+	53,  // 83: agent.NodeAgent.ReleaseResources:input_type -> agent.ReleaseResourcesRequest
+	33,  // 84: agent.NodeAgent.ReleaseApplianceAuthority:input_type -> agent.MutationHeader
+	36,  // 85: agent.NodeAgent.SetApplianceParentLifecycle:input_type -> agent.SetApplianceParentLifecycleRequest
+	55,  // 86: agent.NodeAgent.ApplyPrivateNetwork:input_type -> agent.ApplyPrivateNetworkRequest
+	57,  // 87: agent.NodeAgent.RemovePrivateNetwork:input_type -> agent.RemovePrivateNetworkRequest
+	59,  // 88: agent.NodeAgent.RegisterIsolatedGuest:input_type -> agent.RegisterIsolatedGuestRequest
+	61,  // 89: agent.NodeAgent.RemoveIsolatedGuest:input_type -> agent.RemoveIsolatedGuestRequest
+	63,  // 90: agent.NodeAgent.ApplyRelay:input_type -> agent.ApplyRelayRequest
+	64,  // 91: agent.NodeAgent.RemoveRelay:input_type -> agent.RemoveRelayRequest
+	65,  // 92: agent.NodeAgent.ListRelays:input_type -> agent.ListRelaysRequest
+	67,  // 93: agent.NodeAgent.GetRelayStats:input_type -> agent.GetRelayStatsRequest
+	69,  // 94: agent.NodeAgent.RebindRelays:input_type -> agent.RebindRelaysRequest
+	71,  // 95: agent.NodeAgent.ValidateRelay:input_type -> agent.ValidateRelayRequest
+	73,  // 96: agent.NodeAgent.AdoptRelay:input_type -> agent.AdoptRelayRequest
+	74,  // 97: agent.NodeAgent.SetNatState:input_type -> agent.SetNatStateRequest
+	75,  // 98: agent.NodeAgent.ListNatState:input_type -> agent.ListNatStateRequest
+	77,  // 99: agent.NodeAgent.ReconcileNat:input_type -> agent.ReconcileNatRequest
+	7,   // 100: agent.NodeAgent.Execute:output_type -> agent.ExecuteResponse
+	7,   // 101: agent.NodeAgent.ExecuteScript:output_type -> agent.ExecuteResponse
+	9,   // 102: agent.NodeAgent.PushFile:output_type -> agent.PushFileResponse
+	11,  // 103: agent.NodeAgent.PullFile:output_type -> agent.PullFileResponse
+	13,  // 104: agent.NodeAgent.ListProcesses:output_type -> agent.ListProcessesResponse
+	16,  // 105: agent.NodeAgent.KillProcess:output_type -> agent.KillProcessResponse
+	18,  // 106: agent.NodeAgent.GetInfo:output_type -> agent.GetInfoResponse
+	21,  // 107: agent.NodeAgent.ListJobs:output_type -> agent.ListJobsResponse
+	23,  // 108: agent.NodeAgent.GetJob:output_type -> agent.GetJobResponse
+	25,  // 109: agent.NodeAgent.GetJobOutput:output_type -> agent.GetJobOutputResponse
+	27,  // 110: agent.NodeAgent.CancelJob:output_type -> agent.CancelJobResponse
+	29,  // 111: agent.NodeAgent.DeleteJob:output_type -> agent.DeleteJobResponse
+	31,  // 112: agent.NodeAgent.WatchJobs:output_type -> agent.JobEvent
+	32,  // 113: agent.NodeAgent.Forward:output_type -> agent.ForwardChunk
+	50,  // 114: agent.NodeAgent.GetApplianceState:output_type -> agent.GetApplianceStateResponse
+	52,  // 115: agent.NodeAgent.ReserveResources:output_type -> agent.ReserveResourcesResponse
+	54,  // 116: agent.NodeAgent.ReleaseResources:output_type -> agent.ReleaseResourcesResponse
+	35,  // 117: agent.NodeAgent.ReleaseApplianceAuthority:output_type -> agent.FenceState
+	35,  // 118: agent.NodeAgent.SetApplianceParentLifecycle:output_type -> agent.FenceState
+	56,  // 119: agent.NodeAgent.ApplyPrivateNetwork:output_type -> agent.ApplyPrivateNetworkResponse
+	58,  // 120: agent.NodeAgent.RemovePrivateNetwork:output_type -> agent.RemovePrivateNetworkResponse
+	60,  // 121: agent.NodeAgent.RegisterIsolatedGuest:output_type -> agent.RegisterIsolatedGuestResponse
+	62,  // 122: agent.NodeAgent.RemoveIsolatedGuest:output_type -> agent.RemoveIsolatedGuestResponse
+	47,  // 123: agent.NodeAgent.ApplyRelay:output_type -> agent.Relay
+	47,  // 124: agent.NodeAgent.RemoveRelay:output_type -> agent.Relay
+	66,  // 125: agent.NodeAgent.ListRelays:output_type -> agent.ListRelaysResponse
+	68,  // 126: agent.NodeAgent.GetRelayStats:output_type -> agent.GetRelayStatsResponse
+	70,  // 127: agent.NodeAgent.RebindRelays:output_type -> agent.RebindRelaysResponse
+	72,  // 128: agent.NodeAgent.ValidateRelay:output_type -> agent.ValidateRelayResponse
+	47,  // 129: agent.NodeAgent.AdoptRelay:output_type -> agent.Relay
+	48,  // 130: agent.NodeAgent.SetNatState:output_type -> agent.NatState
+	76,  // 131: agent.NodeAgent.ListNatState:output_type -> agent.ListNatStateResponse
+	78,  // 132: agent.NodeAgent.ReconcileNat:output_type -> agent.ReconcileNatResponse
+	100, // [100:133] is the sub-list for method output_type
+	67,  // [67:100] is the sub-list for method input_type
+	67,  // [67:67] is the sub-list for extension type_name
+	67,  // [67:67] is the sub-list for extension extendee
+	0,   // [0:67] is the sub-list for field type_name
 }
 
 func init() { file_proto_agent_agent_proto_init() }
@@ -6349,15 +6542,15 @@ func file_proto_agent_agent_proto_init() {
 	if File_proto_agent_agent_proto != nil {
 		return
 	}
-	file_proto_agent_agent_proto_msgTypes[36].OneofWrappers = []any{}
-	file_proto_agent_agent_proto_msgTypes[37].OneofWrappers = []any{}
+	file_proto_agent_agent_proto_msgTypes[38].OneofWrappers = []any{}
+	file_proto_agent_agent_proto_msgTypes[39].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_agent_proto_rawDesc), len(file_proto_agent_agent_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   75,
+			NumMessages:   77,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -3,6 +3,7 @@ package appliance
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -43,26 +44,24 @@ type ConntrackInspector interface {
 	Count(context.Context, ConntrackFilter) (int, error)
 }
 
-type IntentApplier interface {
-	ApplyIntent(context.Context, string) (AppliedOperation, error)
-}
-
 type NATEngineOptions struct {
 	Store         *Store
-	Applier       IntentApplier
+	Applier       *ApplyManager
 	Conntrack     ConntrackInspector
 	MainInterface string
 	PollInterval  time.Duration
 	Now           func() time.Time
+	OnPollError   func(error)
 }
 
 type NATEngine struct {
 	store         *Store
-	applier       IntentApplier
+	applier       *ApplyManager
 	conntrack     ConntrackInspector
 	mainInterface string
 	pollInterval  time.Duration
 	now           func() time.Time
+	onPollError   func(error)
 }
 
 func NewNATEngine(options NATEngineOptions) (*NATEngine, error) {
@@ -89,6 +88,7 @@ func NewNATEngine(options NATEngineOptions) (*NATEngine, error) {
 		mainInterface: options.MainInterface,
 		pollInterval:  options.PollInterval,
 		now:           options.Now,
+		onPollError:   options.OnPollError,
 	}, nil
 }
 
@@ -142,9 +142,18 @@ func (e *NATEngine) ApplyStaged(
 func (e *NATEngine) Monitor(ctx context.Context) error {
 	ticker := time.NewTicker(e.pollInterval)
 	defer ticker.Stop()
+	failed := false
 	for {
 		if err := e.PollOnce(ctx); err != nil {
-			return err
+			failed = true
+			if e.onPollError != nil {
+				e.onPollError(err)
+			}
+		} else if failed {
+			failed = false
+			if e.onPollError != nil {
+				e.onPollError(nil)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -219,7 +228,7 @@ func (e *NATEngine) PollOnce(ctx context.Context) error {
 		if count != 0 {
 			continue
 		}
-		if err := e.completeDrain(ctx, snapshot, guest, nat); err != nil {
+		if err := e.completeDrain(ctx, snapshot, network, guest, nat); err != nil {
 			pollErrors = append(pollErrors, err)
 		}
 	}
@@ -229,34 +238,28 @@ func (e *NATEngine) PollOnce(ctx context.Context) error {
 func (e *NATEngine) completeDrain(
 	ctx context.Context,
 	snapshot DesiredSnapshot,
+	network Network,
 	guest Guest,
 	nat NATState,
 ) error {
-	header := drainCompletionHeader(snapshot.Authority, guest, nat, e.now())
-	stage, err := e.store.stageNAT(ctx, header, NATState{
-		VMID:          nat.VMID,
-		State:         "disabled",
-		ConntrackMark: nat.ConntrackMark,
-	}, true)
-	if err != nil {
-		return err
-	}
-	if stage.Replay && stage.Intent.MutationID == "" {
-		return nil
-	}
-	_, err = e.applier.ApplyIntent(ctx, header.MutationID)
-	return err
+	return e.applier.completeNATDrain(ctx, natDrainCompletion{
+		PhysicalHostID:   snapshot.Authority.PhysicalHostID,
+		ParentGeneration: snapshot.Authority.ParentGeneration,
+		Network:          network,
+		Guest:            guest,
+		NAT:              nat,
+	})
 }
 
 func drainCompletionHeader(
-	authority Authority,
+	network Network,
 	guest Guest,
 	nat NATState,
-	now time.Time,
 ) MutationHeader {
 	generation := nat.DesiredGeneration + 1
-	identity := fmt.Sprintf("%s\x00%d\x00%d\x00%d",
-		nat.VMID, nat.ConntrackMark, generation, now.UnixNano())
+	identity := fmt.Sprintf("%s\x00%d\x00%d\x00%d\x00%s\x00%d\x00%d",
+		nat.VMID, nat.ConntrackMark, nat.DesiredGeneration, generation,
+		network.ID, network.DesiredGeneration, guest.DesiredGeneration)
 	sum := sha256.Sum256([]byte("lablink-nat-drain-complete-v1\x00" + identity))
 	hash := hex.EncodeToString(sum[:])
 	mutationID := "nat-drain-complete-" + hash[:24]
@@ -268,9 +271,232 @@ func drainCompletionHeader(
 		ParentResourceID:         nat.VMID,
 		ExpectedGeneration:       nat.DesiredGeneration,
 		NewGeneration:            generation,
-		HostFence:                authority.Fence,
+		HostFence:                0,
 		ExpectedParentGeneration: guest.DesiredGeneration,
 	}
+}
+
+type natDrainCompletion struct {
+	PhysicalHostID   string
+	ParentGeneration uint64
+	Network          Network
+	Guest            Guest
+	NAT              NATState
+}
+
+func (s *Store) stageNATDrainCompletionLocked(
+	ctx context.Context,
+	completion natDrainCompletion,
+) (StageResult, error) {
+	header := drainCompletionHeader(
+		completion.Network, completion.Guest, completion.NAT)
+	return s.stageLocked(ctx, header, "nat", true,
+		func(ctx context.Context, tx *sql.Tx, header MutationHeader) (Authority, error) {
+			authority, err := validateSystemAuthority(ctx, tx)
+			if err != nil {
+				return Authority{}, err
+			}
+			if authority.PhysicalHostID != completion.PhysicalHostID ||
+				authority.ParentGeneration != completion.ParentGeneration {
+				return Authority{}, storeError(CodeFenceRejected,
+					"authority changed before NAT drain completion")
+			}
+			var (
+				state                              string
+				mark                               int64
+				desired, applied, observed, parent uint64
+				drainStarted                       sql.NullInt64
+			)
+			err = tx.QueryRowContext(ctx, `
+				SELECT state, conntrack_mark, desired_generation,
+					applied_generation, observed_generation, parent_generation,
+					drain_started_unix
+				FROM nat_state WHERE vm_id = ?
+			`, completion.NAT.VMID).Scan(&state, &mark, &desired, &applied,
+				&observed, &parent, &drainStarted)
+			if err != nil {
+				return Authority{}, err
+			}
+			if state != "draining" || !drainStarted.Valid ||
+				mark != completion.NAT.ConntrackMark ||
+				desired != completion.NAT.DesiredGeneration ||
+				desired != applied || desired != observed ||
+				parent != completion.Guest.DesiredGeneration {
+				return Authority{}, storeError(CodeGenerationConflict,
+					"NAT drain state changed before completion")
+			}
+			if err := validateDrainGuestAndNetwork(
+				ctx, tx, completion.Network, completion.Guest); err != nil {
+				return Authority{}, err
+			}
+			if err := requireReservation(ctx, tx, "conntrack_mark", completion.NAT.VMID, `
+				AND conntrack_mark = ?
+			`, completion.NAT.ConntrackMark); err != nil {
+				if fallbackErr := requireReservation(ctx, tx, "guest", completion.NAT.VMID, `
+					AND conntrack_mark = ?
+				`, completion.NAT.ConntrackMark); fallbackErr != nil {
+					return Authority{}, fallbackErr
+				}
+			}
+			return authority, nil
+		},
+		func(ctx context.Context, tx *sql.Tx) error {
+			result, err := tx.ExecContext(ctx, `
+				UPDATE nat_state
+				SET state='disabled', desired_generation=?, parent_generation=?,
+					drain_started_unix=NULL, last_error=NULL
+				WHERE vm_id=? AND state='draining' AND conntrack_mark=?
+					AND desired_generation=? AND applied_generation=?
+					AND observed_generation=? AND parent_generation=?
+					AND drain_started_unix IS NOT NULL
+			`, header.NewGeneration, completion.Guest.DesiredGeneration,
+				completion.NAT.VMID, completion.NAT.ConntrackMark,
+				completion.NAT.DesiredGeneration, completion.NAT.DesiredGeneration,
+				completion.NAT.DesiredGeneration, completion.Guest.DesiredGeneration)
+			if err != nil {
+				return err
+			}
+			if changed, _ := result.RowsAffected(); changed != 1 {
+				return storeError(CodeGenerationConflict,
+					"NAT drain state changed while completing")
+			}
+			return nil
+		})
+}
+
+func validateDrainGuestAndNetwork(
+	ctx context.Context,
+	tx *sql.Tx,
+	network Network,
+	guest Guest,
+) error {
+	var (
+		guestNetwork, guestIPv4, guestState                    string
+		guestDesired, guestApplied, guestObserved, guestParent uint64
+		guestRetired                                           sql.NullInt64
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT network_id, ipv4, state, desired_generation, applied_generation,
+			observed_generation, parent_generation, retired_at_unix
+		FROM guests WHERE id = ?
+	`, guest.ID).Scan(&guestNetwork, &guestIPv4, &guestState, &guestDesired,
+		&guestApplied, &guestObserved, &guestParent, &guestRetired)
+	if err != nil {
+		return err
+	}
+	if guestRetired.Valid || guestNetwork != network.ID || guestIPv4 != guest.IPv4 ||
+		guestState != guest.State || guestDesired != guest.DesiredGeneration ||
+		guestDesired != guestApplied || guestDesired != guestObserved {
+		return storeError(CodeGenerationConflict,
+			"guest changed before NAT drain completion")
+	}
+	var (
+		interfaceName, networkState                     string
+		networkDesired, networkApplied, networkObserved uint64
+		networkRetired                                  sql.NullInt64
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT interface_name, state, desired_generation, applied_generation,
+			observed_generation, retired_at_unix
+		FROM networks WHERE id = ?
+	`, network.ID).Scan(&interfaceName, &networkState, &networkDesired,
+		&networkApplied, &networkObserved, &networkRetired)
+	if err != nil {
+		return err
+	}
+	if networkRetired.Valid || interfaceName != network.InterfaceName ||
+		networkState != network.State || networkDesired != network.DesiredGeneration ||
+		networkDesired != networkApplied || networkDesired != networkObserved ||
+		guestParent != networkDesired {
+		return storeError(CodeGenerationConflict,
+			"network changed before NAT drain completion")
+	}
+	return nil
+}
+
+func validateNATSystemIntent(
+	ctx context.Context,
+	tx *sql.Tx,
+	intent Intent,
+) error {
+	if !intent.SystemTransition || intent.ResourceKind != "nat" ||
+		intent.ResourceID == "" || intent.ParentResourceID != intent.ResourceID ||
+		intent.DesiredGeneration == 0 ||
+		!strings.HasPrefix(intent.MutationID, "nat-drain-complete-") {
+		return storeError(CodeInvalidArgument,
+			"invalid internal NAT drain completion identity")
+	}
+	var (
+		nat          NATState
+		drainStarted sql.NullInt64
+	)
+	if err := tx.QueryRowContext(ctx, `
+		SELECT vm_id, state, conntrack_mark, desired_generation,
+			applied_generation, observed_generation, parent_generation,
+			drain_started_unix, COALESCE(last_error, '')
+		FROM nat_state WHERE vm_id = ?
+	`, intent.ResourceID).Scan(&nat.VMID, &nat.State, &nat.ConntrackMark,
+		&nat.DesiredGeneration, &nat.AppliedGeneration, &nat.ObservedGeneration,
+		&nat.ParentGeneration, &drainStarted, &nat.LastError); err != nil {
+		return err
+	}
+	if drainStarted.Valid || nat.State != "disabled" ||
+		nat.DesiredGeneration != intent.DesiredGeneration ||
+		nat.AppliedGeneration+1 != nat.DesiredGeneration ||
+		nat.ObservedGeneration != nat.AppliedGeneration ||
+		nat.ParentGeneration != intent.ParentGeneration {
+		return storeError(CodeGenerationConflict,
+			"internal NAT drain completion state is not exact")
+	}
+	var guest Guest
+	var guestRetired sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, network_id, ipv4, mac, desired_generation,
+			applied_generation, observed_generation, parent_generation,
+			incarnation, state, COALESCE(last_error, ''), retired_at_unix
+		FROM guests WHERE id = ?
+	`, nat.VMID).Scan(&guest.ID, &guest.NetworkID, &guest.IPv4, &guest.MAC,
+		&guest.DesiredGeneration, &guest.AppliedGeneration,
+		&guest.ObservedGeneration, &guest.ParentGeneration,
+		&guest.Incarnation, &guest.State, &guest.LastError, &guestRetired); err != nil {
+		return err
+	}
+	guest.RetiredAtUnix = nullInt64Ptr(guestRetired)
+	var network Network
+	var networkRetired sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT id, cidr, gateway_ipv4, nic_mac, COALESCE(interface_name, ''),
+			dns_servers_json, desired_generation, applied_generation,
+			observed_generation, parent_generation, incarnation, state,
+			COALESCE(last_error, ''), retired_at_unix
+		FROM networks WHERE id = ?
+	`, guest.NetworkID).Scan(&network.ID, &network.CIDR, &network.GatewayIPv4,
+		&network.NICMAC, &network.InterfaceName, &network.DNSServersJSON,
+		&network.DesiredGeneration, &network.AppliedGeneration,
+		&network.ObservedGeneration, &network.ParentGeneration,
+		&network.Incarnation, &network.State, &network.LastError,
+		&networkRetired); err != nil {
+		return err
+	}
+	network.RetiredAtUnix = nullInt64Ptr(networkRetired)
+	if err := validateDrainGuestAndNetwork(ctx, tx, network, guest); err != nil {
+		return err
+	}
+	oldNAT := nat
+	oldNAT.State = "draining"
+	oldNAT.DesiredGeneration--
+	oldNAT.AppliedGeneration = oldNAT.DesiredGeneration
+	oldNAT.ObservedGeneration = oldNAT.DesiredGeneration
+	expected := drainCompletionHeader(network, guest, oldNAT)
+	if intent.MutationID != expected.MutationID ||
+		intent.ParentOperationID != expected.ParentOperationID ||
+		intent.SemanticHash != expected.SemanticHash ||
+		intent.Fence != expected.HostFence ||
+		intent.ParentGeneration != expected.ExpectedParentGeneration {
+		return storeError(CodeResumeMismatch,
+			"internal NAT drain completion identity changed")
+	}
+	return nil
 }
 
 func ConntrackEntryMatches(entry ConntrackEntry, filter ConntrackFilter) bool {

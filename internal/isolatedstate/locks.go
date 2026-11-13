@@ -74,6 +74,15 @@ type LockManager struct {
 	held map[string]LockLease
 }
 
+type LockSweepResult struct {
+	Expired     int
+	DeadProcess int
+}
+
+func (r LockSweepResult) Total() int {
+	return r.Expired + r.DeadProcess
+}
+
 var (
 	processIdentityOnce sync.Once
 	processIdentity     ProcessIdentity
@@ -212,6 +221,79 @@ func CanonicalLockKey(key string) (string, LockLevel, error) {
 
 func (m *LockManager) Identity() ProcessIdentity {
 	return m.identity
+}
+
+// SweepStale removes only leases that normal acquisition could safely
+// reclaim: expired leases, or same-host leases whose exact process identity is
+// proven dead. Unproven same-host leases remain fenced.
+func (m *LockManager) SweepStale(ctx context.Context) (LockSweepResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := UnixSeconds(m.now().Unix())
+	rows, err := m.store.db.QueryContext(ctx, `
+		SELECT lock_key, holder_cookie, holder_hostname, holder_pid,
+		       holder_process_start_unix, operation_id, fence, acquired_at_unix,
+		       heartbeat_at_unix, expires_at_unix
+		FROM locks ORDER BY lock_key`)
+	if err != nil {
+		return LockSweepResult{}, fmt.Errorf("isolatedstate: list locks for sweep: %w", err)
+	}
+	var locks []Lock
+	for rows.Next() {
+		var lock Lock
+		if err := rows.Scan(
+			&lock.LockKey, &lock.HolderCookie, &lock.HolderHostname,
+			&lock.HolderPID, &lock.HolderProcessStart, &lock.OperationID,
+			&lock.Fence, &lock.AcquiredAt, &lock.HeartbeatAt, &lock.ExpiresAt,
+		); err != nil {
+			_ = rows.Close()
+			return LockSweepResult{}, err
+		}
+		locks = append(locks, lock)
+	}
+	if err := rows.Close(); err != nil {
+		return LockSweepResult{}, err
+	}
+
+	var result LockSweepResult
+	for _, lock := range locks {
+		expired := lock.ExpiresAt <= now
+		dead := false
+		if lock.HolderHostname == m.identity.Hostname {
+			alive, proven, probeErr := m.liveness(ctx, ProcessIdentity{
+				Hostname: lock.HolderHostname, PID: lock.HolderPID,
+				ProcessStart: lock.HolderProcessStart, Cookie: lock.HolderCookie,
+			})
+			if probeErr != nil || !proven {
+				continue
+			}
+			dead = !alive
+		}
+		if !expired && !dead {
+			continue
+		}
+		deleteResult, deleteErr := m.store.db.ExecContext(ctx, `
+			DELETE FROM locks
+			WHERE lock_key=? AND holder_cookie=? AND holder_hostname=?
+			  AND holder_pid=? AND holder_process_start_unix=?
+			  AND operation_id=? AND fence=?`,
+			lock.LockKey, lock.HolderCookie, lock.HolderHostname,
+			lock.HolderPID, lock.HolderProcessStart, lock.OperationID, lock.Fence,
+		)
+		if deleteErr != nil {
+			return result, fmt.Errorf("isolatedstate: sweep lock %s: %w", lock.LockKey, deleteErr)
+		}
+		if changed, _ := deleteResult.RowsAffected(); changed != 1 {
+			continue
+		}
+		delete(m.held, lock.LockKey)
+		if dead {
+			result.DeadProcess++
+		} else {
+			result.Expired++
+		}
+	}
+	return result, nil
 }
 
 func (m *LockManager) Acquire(ctx context.Context, request LockAcquireRequest) (LockLease, error) {

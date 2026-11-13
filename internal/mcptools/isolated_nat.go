@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/nijosmsft/lablink/internal/appliance"
-	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 )
@@ -157,7 +157,7 @@ func setIsolatedVMNATHandler(
 	deps *isolatedLifecycleDeps,
 	desired isolatedstate.NATDesiredState,
 ) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		state, client, err := natDependencies(deps)
 		if err != nil {
 			return isolatedError(err)
@@ -217,23 +217,27 @@ func setIsolatedVMNATHandler(
 		if err != nil {
 			return isolatedError(err)
 		}
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(records.orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: records.orchestrator.PhysicalHostID,
-			HostNode:       records.orchestrator.HostNode, OperationID: operationID,
-			LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, records.orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		records.orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, records.orchestrator, hostLease,
+			"nat", records.vm.ID, string(desired),
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, records.orchestrator, hostLease, &result, &callErr)
 
 		snapshot, err := client.InspectApplianceState(ctx, records.orchestrator.ID)
 		if err != nil {
 			return isolatedError(err)
 		}
 		authority := records.orchestrator
-		authority.HostFence = hostLease.Fence
+		authority.HostFence = int64(snapshot.Fence.HostFence)
 		validationMode := isolated.NATValidateMutation
 		if replay {
 			validationMode = isolated.NATValidateImport
@@ -259,6 +263,13 @@ func setIsolatedVMNATHandler(
 		}
 		current.UpdatedAt = isolatedstate.UnixSeconds(time.Now().Unix())
 		if natAlreadyAtDesired(current, desired) {
+			if desired == isolatedstate.NATDesiredEnabled ||
+				strings.TrimSpace(records.network.DNSServersJSON) != "" {
+				records, err = ensureNATDNS(ctx, deps, records)
+				if err != nil {
+					return isolatedError(err)
+				}
+			}
 			if err := state.PutNAT(ctx, current); err != nil {
 				return isolatedError(err)
 			}
@@ -317,12 +328,123 @@ func setIsolatedVMNATHandler(
 		if err := state.PutNAT(ctx, updated); err != nil {
 			return isolatedError(err)
 		}
+		if desired == isolatedstate.NATDesiredEnabled ||
+			strings.TrimSpace(records.network.DNSServersJSON) != "" {
+			records, err = ensureNATDNS(ctx, deps, records)
+			if err != nil {
+				return isolatedError(err)
+			}
+		}
 		return finishNATWorkflow(ctx, workflow, records, updated, mutation.Mutation)
 	}
 }
 
+func ensureNATDNS(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	records natRecords,
+) (natRecords, error) {
+	dns, err := isolated.ParseDNSServers(records.network.DNSServersJSON)
+	if err != nil {
+		return records, err
+	}
+	if len(dns) == 0 {
+		dns, err = discoverOrchestratorDNS(ctx, deps, records.orchestrator)
+		if err != nil {
+			return records, err
+		}
+	}
+	node, ok := deps.registry.GetNode(records.vm.NodeName)
+	if !ok {
+		return records, fmt.Errorf("isolated guest node %q is not registered", records.vm.NodeName)
+	}
+	client, err := deps.pool.GetClient(node.Address, node.TLSServerName)
+	if err != nil {
+		return records, err
+	}
+	shell := "bash"
+	command, err := isolated.LinuxDNSUpdateScript(records.vm.MAC, dns)
+	if records.vm.GuestOS == isolatedstate.GuestWindows {
+		shell = "powershell"
+		command, err = isolated.WindowsDNSUpdateScript(records.vm.MAC, dns)
+	}
+	if err != nil {
+		return records, err
+	}
+	output, exitCode, _, err := executeAndCollect(ctx, client, command, shell, "", nil, 60)
+	if err != nil {
+		return records, fmt.Errorf("configure isolated guest DNS: %w", err)
+	}
+	if exitCode != 0 {
+		return records, fmt.Errorf("configure isolated guest DNS exited %d: %s",
+			exitCode, strings.TrimSpace(output))
+	}
+	encoded, err := json.Marshal(dns)
+	if err != nil {
+		return records, err
+	}
+	records.network.DNSServersJSON = string(encoded)
+	records.network.UpdatedAt = isolatedstate.UnixSeconds(time.Now().Unix())
+	if err := deps.state.PutNetwork(ctx, records.network); err != nil {
+		return records, err
+	}
+	records.vm.DNSServersJSON = string(encoded)
+	records.vm.UpdatedAt = isolatedstate.UnixSeconds(time.Now().Unix())
+	if err := deps.state.PutVM(ctx, records.vm); err != nil {
+		return records, err
+	}
+	return records, nil
+}
+
+func discoverOrchestratorDNS(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	orchestrator isolatedstate.Orchestrator,
+) ([]string, error) {
+	node, ok := deps.registry.GetNode(orchestrator.NodeName)
+	if !ok {
+		return nil, fmt.Errorf("isolated orchestrator node %q is not registered", orchestrator.NodeName)
+	}
+	client, err := deps.pool.GetClient(node.Address, node.TLSServerName)
+	if err != nil {
+		return nil, err
+	}
+	command := `set -e
+iface="$(ip -4 route show default | awk 'NR==1 {print $5}')"
+{
+    resolvectl dns "$iface" 2>/dev/null | sed -E 's/^.*: //'
+    awk '/^nameserver / {print $2}' /run/systemd/resolve/resolv.conf 2>/dev/null
+} | tr ' ' '\n'
+`
+	output, exitCode, _, err := executeAndCollect(ctx, client, command, "bash", "", nil, 30)
+	if err != nil {
+		return nil, fmt.Errorf("discover orchestrator DNS: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, fmt.Errorf("discover orchestrator DNS exited %d: %s",
+			exitCode, strings.TrimSpace(output))
+	}
+	seen := map[string]bool{}
+	var result []string
+	for _, field := range strings.Fields(output) {
+		address := net.ParseIP(strings.TrimSpace(field))
+		if address == nil || address.To4() == nil {
+			continue
+		}
+		value := address.String()
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("orchestrator uplink DNS discovery returned no IPv4 servers")
+	}
+	return result, nil
+}
+
 func reconcileIsolatedVMNATHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		state, client, err := natDependencies(deps)
 		if err != nil {
 			return isolatedError(err)
@@ -375,23 +497,27 @@ func reconcileIsolatedVMNATHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 		if err != nil {
 			return isolatedError(err)
 		}
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(records.orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: records.orchestrator.PhysicalHostID,
-			HostNode:       records.orchestrator.HostNode, OperationID: operationID,
-			LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, records.orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		records.orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, records.orchestrator, hostLease,
+			"nat", records.vm.ID, "reconcile",
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, records.orchestrator, hostLease, &result, &callErr)
 
 		snapshot, err := client.InspectApplianceState(ctx, records.orchestrator.ID)
 		if err != nil {
 			return isolatedError(err)
 		}
 		authority := records.orchestrator
-		authority.HostFence = hostLease.Fence
+		authority.HostFence = int64(snapshot.Fence.HostFence)
 		var local *isolatedstate.NATAllocation
 		if records.local.VMID != "" {
 			local = &records.local
@@ -427,6 +553,11 @@ func reconcileIsolatedVMNATHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 			}); err != nil {
 				return isolatedError(err)
 			}
+		}
+		if validated.Live.DesiredGeneration == validated.Live.AppliedGeneration &&
+			validated.Live.DesiredGeneration == validated.Live.ObservedGeneration &&
+			strings.TrimSpace(validated.Live.LastError) == "" {
+			return finishNATWorkflow(ctx, workflow, records, imported, nil)
 		}
 		if replay &&
 			validated.Live.DesiredGeneration > uint64(imported.DesiredGeneration+1) {
@@ -512,8 +643,10 @@ func getIsolatedVMNATHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 			if inspectErr != nil {
 				return isolatedError(inspectErr)
 			}
+			authority := records.orchestrator
+			authority.HostFence = int64(snapshot.Fence.HostFence)
 			validated, validateErr := isolated.ValidateNATIdentity(
-				records.orchestrator, records.network, records.vm,
+				authority, records.network, records.vm,
 				&records.local, snapshot, isolated.NATValidateImport,
 			)
 			if validateErr != nil {
@@ -651,6 +784,7 @@ func natEnvelope(
 		},
 		PhysicalHostID: orchestrator.PhysicalHostID,
 		HostLeaseID:    lease.LeaseID, HostLeaseSecret: mustDecodeHex(lease.LeaseSecret),
+		HostLeaseExpiresUnix: lease.ExpiresAtUnix,
 	}
 }
 

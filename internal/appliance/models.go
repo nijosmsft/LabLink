@@ -8,7 +8,7 @@ import (
 
 const (
 	DefaultDBPath        = "/var/lib/lablink-agent/isolated-appliance.db"
-	CurrentSchemaVersion = 1
+	CurrentSchemaVersion = 4
 	RelayPortMin         = 20000
 	RelayPortMax         = 39999
 	RelayTargetPort      = 9091
@@ -32,7 +32,6 @@ const (
 	CodeIntentPending      ErrorCode = "INTENT_PENDING"
 	CodeReservationLost    ErrorCode = "RESERVATION_LOST"
 	CodeStaleCompilation   ErrorCode = "STALE_COMPILATION"
-	CodeApprovalRequired   ErrorCode = "APPROVAL_REQUIRED"
 	CodeApplyFailed        ErrorCode = "APPLY_FAILED"
 	CodeVerifyFailed       ErrorCode = "VERIFY_FAILED"
 	CodeNotReady           ErrorCode = "APPLIANCE_NOT_READY"
@@ -75,6 +74,12 @@ type MutationHeader struct {
 	NewGeneration            uint64
 	HostFence                uint64
 	ExpectedParentGeneration uint64
+	CascadeOperationID       string
+	CascadePlanRevision      string
+	CascadePlanHash          string
+	CascadeItemID            string
+	CascadeResourceKind      string
+	CascadeAction            string
 }
 
 type Authority struct {
@@ -85,8 +90,19 @@ type Authority struct {
 	Fence                uint64
 	ParentGeneration     uint64
 	ParentState          string
+	CascadeOperationID   string
+	CascadePlanRevision  string
+	CascadePlanHash      string
 	HandoffPending       bool
 	UpdatedAtUnix        int64
+}
+
+type CascadeAuthorityItem struct {
+	ItemID             string
+	ResourceKind       string
+	ResourceID         string
+	Action             string
+	ExpectedGeneration uint64
 }
 
 type Status struct {
@@ -115,8 +131,12 @@ type Reservation struct {
 }
 
 type ReserveRequest struct {
-	Header       MutationHeader
-	Reservations []Reservation
+	Header               MutationHeader
+	PhysicalHostID       string
+	HostLeaseID          string
+	HostLeaseSecret      []byte
+	HostLeaseExpiresUnix int64
+	Reservations         []Reservation
 }
 
 type ReserveResult struct {
@@ -127,8 +147,12 @@ type ReserveResult struct {
 }
 
 type ReleaseRequest struct {
-	Header         MutationHeader
-	ReservationIDs []string
+	Header               MutationHeader
+	PhysicalHostID       string
+	HostLeaseID          string
+	HostLeaseSecret      []byte
+	HostLeaseExpiresUnix int64
+	ReservationIDs       []string
 }
 
 type ReleaseResult struct {
@@ -235,20 +259,27 @@ type NATState struct {
 }
 
 type Intent struct {
-	MutationID        string
-	ParentOperationID string
-	ResourceKind      string
-	ResourceID        string
-	ParentResourceID  string
-	DesiredGeneration uint64
-	ParentGeneration  uint64
-	Fence             uint64
-	SemanticHash      string
-	CompiledHash      string
-	Phase             string
-	Error             string
-	CreatedAtUnix     int64
-	UpdatedAtUnix     int64
+	MutationID          string
+	ParentOperationID   string
+	ResourceKind        string
+	ResourceID          string
+	ParentResourceID    string
+	DesiredGeneration   uint64
+	ParentGeneration    uint64
+	Fence               uint64
+	SemanticHash        string
+	CompiledHash        string
+	Phase               string
+	Error               string
+	SystemTransition    bool
+	CascadeOperationID  string
+	CascadePlanRevision string
+	CascadePlanHash     string
+	CascadeItemID       string
+	CascadeResourceKind string
+	CascadeAction       string
+	CreatedAtUnix       int64
+	UpdatedAtUnix       int64
 }
 
 type StageResult struct {

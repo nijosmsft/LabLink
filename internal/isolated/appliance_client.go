@@ -102,14 +102,18 @@ type FenceState struct {
 
 // MutationEnvelope contains the complete mutation authority sent on the wire.
 type MutationEnvelope struct {
-	Header              appliance.MutationHeader
-	PhysicalHostID      string
-	HostLeaseID         string
-	HostLeaseSecret     []byte
-	CascadeOperationID  string
-	CascadePlanRevision string
-	CascadePlanHash     string
-	CascadeItemID       string
+	Header               appliance.MutationHeader
+	PhysicalHostID       string
+	HostLeaseID          string
+	HostLeaseSecret      []byte
+	HostLeaseExpiresUnix int64
+	CascadeOperationID   string
+	CascadePlanRevision  string
+	CascadePlanHash      string
+	CascadeItemID        string
+	CascadeResourceKind  string
+	CascadeAction        string
+	CascadeItems         []appliance.CascadeAuthorityItem
 }
 
 // MutationResult is the typed durable result of an appliance mutation.
@@ -292,11 +296,22 @@ func (c *ApplianceRPCClient) resolveNode(orchestratorID string) (*registry.Node,
 		return &copy, nil
 	}
 	var matches []*registry.Node
+	var unlabeled []*registry.Node
 	for _, node := range c.registry.NodesByRole(isolatedOrchestratorRole) {
-		if node != nil && strings.EqualFold(strings.TrimSpace(node.Labels[orchestratorIDLabel]), orchestratorID) {
+		if node == nil {
+			continue
+		}
+		label := strings.TrimSpace(node.Labels[orchestratorIDLabel])
+		if strings.EqualFold(label, orchestratorID) {
 			copy := *node
 			matches = append(matches, &copy)
+		} else if label == "" {
+			copy := *node
+			unlabeled = append(unlabeled, &copy)
 		}
+	}
+	if len(matches) == 0 && len(unlabeled) == 1 {
+		return unlabeled[0], nil
 	}
 	if len(matches) != 1 {
 		message := fmt.Sprintf("no registered isolated orchestrator has ID %q", orchestratorID)
@@ -492,7 +507,11 @@ func (c *ApplianceRPCClient) ReserveResources(
 		return appliance.ReserveResult{}, err
 	}
 	wire := &pb.ReserveResourcesRequest{
-		Header: mutationHeaderProto(MutationEnvelope{Header: request.Header}),
+		Header: mutationHeaderProto(MutationEnvelope{
+			Header: request.Header, PhysicalHostID: request.PhysicalHostID,
+			HostLeaseID: request.HostLeaseID, HostLeaseSecret: request.HostLeaseSecret,
+			HostLeaseExpiresUnix: request.HostLeaseExpiresUnix,
+		}),
 	}
 	for _, value := range request.Reservations {
 		wire.Candidates = append(wire.Candidates, reservationCandidateProto(value))
@@ -522,7 +541,11 @@ func (c *ApplianceRPCClient) ReleaseResources(
 		return appliance.ReleaseResult{}, err
 	}
 	response, err := client.ReleaseResources(ctx, &pb.ReleaseResourcesRequest{
-		Header:         mutationHeaderProto(MutationEnvelope{Header: request.Header}),
+		Header: mutationHeaderProto(MutationEnvelope{
+			Header: request.Header, PhysicalHostID: request.PhysicalHostID,
+			HostLeaseID: request.HostLeaseID, HostLeaseSecret: request.HostLeaseSecret,
+			HostLeaseExpiresUnix: request.HostLeaseExpiresUnix,
+		}),
 		ReservationIds: append([]string(nil), request.ReservationIDs...),
 	})
 	if err != nil {
@@ -539,6 +562,45 @@ func (c *ApplianceRPCClient) ReleaseResources(
 		}
 	}
 	return result, nil
+}
+
+func (c *ApplianceRPCClient) ReleaseAuthority(
+	ctx context.Context,
+	orchestratorID string,
+	envelope MutationEnvelope,
+) error {
+	client, _, _, err := c.clientFor(ctx, orchestratorID, true)
+	if err != nil {
+		return err
+	}
+	_, err = client.ReleaseApplianceAuthority(ctx, mutationHeaderProto(envelope))
+	if err != nil {
+		return translateApplianceError(ctx, err)
+	}
+	return nil
+}
+
+func (c *ApplianceRPCClient) SetParentLifecycle(
+	ctx context.Context,
+	orchestratorID string,
+	envelope MutationEnvelope,
+	state string,
+	newParentGeneration uint64,
+) error {
+	client, _, _, err := c.clientFor(ctx, orchestratorID, true)
+	if err != nil {
+		return err
+	}
+	_, err = client.SetApplianceParentLifecycle(
+		ctx, &pb.SetApplianceParentLifecycleRequest{
+			Header: mutationHeaderProto(envelope), State: state,
+			NewParentGeneration: newParentGeneration,
+			CascadeItems:        cascadeAuthorityItemsProto(envelope.CascadeItems),
+		})
+	if err != nil {
+		return translateApplianceError(ctx, err)
+	}
+	return nil
 }
 
 func (c *ApplianceRPCClient) ApplyPrivateNetwork(
@@ -961,6 +1023,30 @@ func appendAppliancePage(result *ApplianceSnapshot, response *pb.GetApplianceSta
 
 func mutationHeaderProto(value MutationEnvelope) *pb.MutationHeader {
 	header := value.Header
+	cascadeOperationID := value.CascadeOperationID
+	if cascadeOperationID == "" {
+		cascadeOperationID = header.CascadeOperationID
+	}
+	cascadePlanRevision := value.CascadePlanRevision
+	if cascadePlanRevision == "" {
+		cascadePlanRevision = header.CascadePlanRevision
+	}
+	cascadePlanHash := value.CascadePlanHash
+	if cascadePlanHash == "" {
+		cascadePlanHash = header.CascadePlanHash
+	}
+	cascadeItemID := value.CascadeItemID
+	if cascadeItemID == "" {
+		cascadeItemID = header.CascadeItemID
+	}
+	cascadeResourceKind := value.CascadeResourceKind
+	if cascadeResourceKind == "" {
+		cascadeResourceKind = header.CascadeResourceKind
+	}
+	cascadeAction := value.CascadeAction
+	if cascadeAction == "" {
+		cascadeAction = header.CascadeAction
+	}
 	return &pb.MutationHeader{
 		ParentOperationId: header.ParentOperationID, MutationId: header.MutationID,
 		SemanticHash: header.SemanticHash, ResourceId: header.ResourceID,
@@ -969,9 +1055,26 @@ func mutationHeaderProto(value MutationEnvelope) *pb.MutationHeader {
 		ParentResourceId:         header.ParentResourceID,
 		ExpectedParentGeneration: header.ExpectedParentGeneration,
 		HostLeaseId:              value.HostLeaseID, HostLeaseSecret: append([]byte(nil), value.HostLeaseSecret...),
-		CascadeOperationId: value.CascadeOperationID, CascadePlanRevision: value.CascadePlanRevision,
-		CascadePlanHash: value.CascadePlanHash, CascadeItemId: value.CascadeItemID,
+		HostLeaseExpiresUnix: value.HostLeaseExpiresUnix,
+		CascadeOperationId:   cascadeOperationID, CascadePlanRevision: cascadePlanRevision,
+		CascadePlanHash: cascadePlanHash, CascadeItemId: cascadeItemID,
+		CascadeResourceKind: cascadeResourceKind,
+		CascadeAction:       cascadeAction,
 	}
+}
+
+func cascadeAuthorityItemsProto(
+	values []appliance.CascadeAuthorityItem,
+) []*pb.CascadeAuthorityItem {
+	items := make([]*pb.CascadeAuthorityItem, 0, len(values))
+	for _, value := range values {
+		items = append(items, &pb.CascadeAuthorityItem{
+			ItemId: value.ItemID, ResourceKind: value.ResourceKind,
+			ResourceId: value.ResourceID, Action: value.Action,
+			ExpectedGeneration: value.ExpectedGeneration,
+		})
+	}
+	return items
 }
 
 func reservationCandidateProto(value appliance.Reservation) *pb.ReservationCandidate {

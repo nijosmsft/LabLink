@@ -118,6 +118,40 @@ func (s *Store) GetActiveAllocation(
 	return allocation, nil
 }
 
+func (s *Store) ListActiveAllocations(
+	ctx context.Context,
+	scopeID string,
+) ([]ActiveResourceAllocation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT kind, scope_id, value, resource_id, appliance_reservation_id,
+		       allocated_at_unix
+		FROM active_resource_allocations
+		WHERE scope_id=?
+		ORDER BY kind, value, resource_id`,
+		canonicalID(scopeID),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("isolatedstate: list active allocations: %w", err)
+	}
+	defer rows.Close()
+	var allocations []ActiveResourceAllocation
+	for rows.Next() {
+		var allocation ActiveResourceAllocation
+		if err := rows.Scan(
+			&allocation.Kind, &allocation.ScopeID, &allocation.Value,
+			&allocation.ResourceID, &allocation.ApplianceReservationID,
+			&allocation.AllocatedAt,
+		); err != nil {
+			return nil, err
+		}
+		allocations = append(allocations, allocation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return allocations, nil
+}
+
 // ReleaseAllocation moves the live mirror row to immutable history and
 // removes it from the active uniqueness set in one transaction.
 func (s *Store) ReleaseAllocation(

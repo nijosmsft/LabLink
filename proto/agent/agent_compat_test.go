@@ -87,7 +87,31 @@ func TestMutationHeaderContract(t *testing.T) {
 		"cascade_plan_revision",
 		"cascade_plan_hash",
 		"cascade_item_id",
+		"host_lease_expires_unix",
+		"cascade_resource_kind",
+		"cascade_action",
 	}
+
+	t.Run("cascade authority item", func(t *testing.T) {
+		requestFields := (&SetApplianceParentLifecycleRequest{}).
+			ProtoReflect().Descriptor().Fields()
+		if field := requestFields.ByName("cascade_items"); field == nil ||
+			field.Number() != 4 || !field.IsList() ||
+			field.Message().FullName() != "agent.CascadeAuthorityItem" {
+			t.Fatalf("SetApplianceParentLifecycleRequest.cascade_items = %+v", field)
+		}
+		fields := (&CascadeAuthorityItem{}).ProtoReflect().Descriptor().Fields()
+		want := []protoreflect.Name{
+			"item_id", "resource_kind", "resource_id", "action",
+			"expected_generation",
+		}
+		for index, name := range want {
+			field := fields.ByName(name)
+			if field == nil || field.Number() != protoreflect.FieldNumber(index+1) {
+				t.Fatalf("CascadeAuthorityItem.%s = %+v", name, field)
+			}
+		}
+	})
 	if fields.Len() != len(want) {
 		t.Fatalf("MutationHeader has %d fields, want %d", fields.Len(), len(want))
 	}
@@ -108,23 +132,25 @@ func TestApplianceRPCContract(t *testing.T) {
 		t.Fatal("NodeAgent service missing")
 	}
 	want := map[protoreflect.Name][2]protoreflect.FullName{
-		"GetApplianceState":     {"agent.GetApplianceStateRequest", "agent.GetApplianceStateResponse"},
-		"ReserveResources":      {"agent.ReserveResourcesRequest", "agent.ReserveResourcesResponse"},
-		"ReleaseResources":      {"agent.ReleaseResourcesRequest", "agent.ReleaseResourcesResponse"},
-		"ApplyPrivateNetwork":   {"agent.ApplyPrivateNetworkRequest", "agent.ApplyPrivateNetworkResponse"},
-		"RemovePrivateNetwork":  {"agent.RemovePrivateNetworkRequest", "agent.RemovePrivateNetworkResponse"},
-		"RegisterIsolatedGuest": {"agent.RegisterIsolatedGuestRequest", "agent.RegisterIsolatedGuestResponse"},
-		"RemoveIsolatedGuest":   {"agent.RemoveIsolatedGuestRequest", "agent.RemoveIsolatedGuestResponse"},
-		"ApplyRelay":            {"agent.ApplyRelayRequest", "agent.Relay"},
-		"RemoveRelay":           {"agent.RemoveRelayRequest", "agent.Relay"},
-		"ListRelays":            {"agent.ListRelaysRequest", "agent.ListRelaysResponse"},
-		"GetRelayStats":         {"agent.GetRelayStatsRequest", "agent.GetRelayStatsResponse"},
-		"RebindRelays":          {"agent.RebindRelaysRequest", "agent.RebindRelaysResponse"},
-		"ValidateRelay":         {"agent.ValidateRelayRequest", "agent.ValidateRelayResponse"},
-		"AdoptRelay":            {"agent.AdoptRelayRequest", "agent.Relay"},
-		"SetNatState":           {"agent.SetNatStateRequest", "agent.NatState"},
-		"ListNatState":          {"agent.ListNatStateRequest", "agent.ListNatStateResponse"},
-		"ReconcileNat":          {"agent.ReconcileNatRequest", "agent.ReconcileNatResponse"},
+		"GetApplianceState":           {"agent.GetApplianceStateRequest", "agent.GetApplianceStateResponse"},
+		"ReserveResources":            {"agent.ReserveResourcesRequest", "agent.ReserveResourcesResponse"},
+		"ReleaseResources":            {"agent.ReleaseResourcesRequest", "agent.ReleaseResourcesResponse"},
+		"ReleaseApplianceAuthority":   {"agent.MutationHeader", "agent.FenceState"},
+		"SetApplianceParentLifecycle": {"agent.SetApplianceParentLifecycleRequest", "agent.FenceState"},
+		"ApplyPrivateNetwork":         {"agent.ApplyPrivateNetworkRequest", "agent.ApplyPrivateNetworkResponse"},
+		"RemovePrivateNetwork":        {"agent.RemovePrivateNetworkRequest", "agent.RemovePrivateNetworkResponse"},
+		"RegisterIsolatedGuest":       {"agent.RegisterIsolatedGuestRequest", "agent.RegisterIsolatedGuestResponse"},
+		"RemoveIsolatedGuest":         {"agent.RemoveIsolatedGuestRequest", "agent.RemoveIsolatedGuestResponse"},
+		"ApplyRelay":                  {"agent.ApplyRelayRequest", "agent.Relay"},
+		"RemoveRelay":                 {"agent.RemoveRelayRequest", "agent.Relay"},
+		"ListRelays":                  {"agent.ListRelaysRequest", "agent.ListRelaysResponse"},
+		"GetRelayStats":               {"agent.GetRelayStatsRequest", "agent.GetRelayStatsResponse"},
+		"RebindRelays":                {"agent.RebindRelaysRequest", "agent.RebindRelaysResponse"},
+		"ValidateRelay":               {"agent.ValidateRelayRequest", "agent.ValidateRelayResponse"},
+		"AdoptRelay":                  {"agent.AdoptRelayRequest", "agent.Relay"},
+		"SetNatState":                 {"agent.SetNatStateRequest", "agent.NatState"},
+		"ListNatState":                {"agent.ListNatStateRequest", "agent.ListNatStateResponse"},
+		"ReconcileNat":                {"agent.ReconcileNatRequest", "agent.ReconcileNatResponse"},
 	}
 	for name, types := range want {
 		method := service.Methods().ByName(name)

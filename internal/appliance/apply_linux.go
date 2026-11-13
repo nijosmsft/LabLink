@@ -247,7 +247,7 @@ func (t *LinuxApplyTarget) Verify(
 
 func compileFullRuleset(
 	snapshot DesiredSnapshot,
-	mainInterface, snapshotHash, compiledHash string,
+	mainInterface, _ string, compiledHash string,
 ) (string, bool, error) {
 	if err := validateInterfaceName(mainInterface); err != nil {
 		return "", false, err
@@ -359,7 +359,7 @@ func compileFullRuleset(
 	builder.WriteString("flush ruleset\n\n")
 	builder.WriteString("table inet lablink {\n")
 	fmt.Fprintf(&builder, "    comment %s\n", quoteNFT(
-		ApplianceRuleSignature+" snapshot="+snapshotHash+" compiled="+compiledHash))
+		ApplianceRuleSignature+" compiled="+compiledHash))
 	writeSet(&builder, "private_ifaces", "ifname", privateInterfaces(private))
 	writeSet(&builder, "active_nat_sources", "ifname . ipv4_addr . mark", activeMappings)
 	writeMap(&builder, "enabled_guest_marks", "ifname . ipv4_addr : mark", enabledMappings)

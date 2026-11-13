@@ -58,7 +58,7 @@ func validNATFixture() (
 				DesiredGeneration: 4,
 			}},
 			Reservations: []appliance.Reservation{{
-				ID: "guest-reservation", ResourceKind: "guest",
+				ID: "guest-reservation", ResourceKind: "conntrack_mark",
 				ResourceID: natVMID, NetworkID: natNetworkID,
 				ConntrackMark: &mark,
 			}},
@@ -90,6 +90,22 @@ func TestValidateNATIdentityRequiresExactFenceGuestAndReservation(t *testing.T) 
 		orchestrator, network, vm, &local, snapshot, NATValidateMutation,
 	); ErrorCode(err) != "FENCE_REJECTED" {
 		t.Fatalf("fence mismatch error = %v", err)
+	}
+}
+
+func TestValidateNATIdentityAllowsHostOnlyGuestRepairGeneration(t *testing.T) {
+	orchestrator, network, vm, local, snapshot := validNATFixture()
+	vm.DesiredGeneration++
+	if _, err := ValidateNATIdentity(
+		orchestrator, network, vm, &local, snapshot, NATValidateMutation,
+	); err != nil {
+		t.Fatalf("host-only repair generation should not stale appliance allocation: %v", err)
+	}
+	snapshot.Desired.Guests[0].DesiredGeneration = uint64(vm.DesiredGeneration + 1)
+	if _, err := ValidateNATIdentity(
+		orchestrator, network, vm, &local, snapshot, NATValidateMutation,
+	); ErrorCode(err) != "GENERATION_CONFLICT" {
+		t.Fatalf("newer appliance guest generation error = %v", err)
 	}
 }
 

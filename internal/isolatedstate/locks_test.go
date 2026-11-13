@@ -203,6 +203,85 @@ func TestUnprovenLocalProcessDeathKeepsExpiredLock(t *testing.T) {
 	}
 }
 
+func TestStartupSweepReclaimsOnlySafelyStaleLocks(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "isolated.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	clock := &testClock{now: time.Unix(100, 0)}
+	dead := newTestLockManager(t, store, clock, ProcessIdentity{
+		Hostname: "devbox", PID: 3601, ProcessStart: 10, Cookie: "dead",
+	}, nil)
+	remoteExpired := newTestLockManager(t, store, clock, ProcessIdentity{
+		Hostname: "other-host", PID: 3602, ProcessStart: 20, Cookie: "remote",
+	}, nil)
+	unproven := newTestLockManager(t, store, clock, ProcessIdentity{
+		Hostname: "devbox", PID: 3603, ProcessStart: 30, Cookie: "unproven",
+	}, nil)
+	live := newTestLockManager(t, store, clock, ProcessIdentity{
+		Hostname: "devbox", PID: 3604, ProcessStart: 40, Cookie: "live",
+	}, nil)
+	deadKey, _ := NetworkLockKey("dead")
+	remoteKey, _ := AllocationLockKey("remote")
+	unprovenKey, _ := VMLockKey("unproven")
+	liveKey, _ := RelayLockKey("live")
+	if _, err := dead.Acquire(ctx, LockAcquireRequest{Key: deadKey, OperationID: "op-dead", TTL: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := remoteExpired.Acquire(ctx, LockAcquireRequest{Key: remoteKey, OperationID: "op-remote", TTL: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unproven.Acquire(ctx, LockAcquireRequest{Key: unprovenKey, OperationID: "op-unproven", TTL: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := live.Acquire(ctx, LockAcquireRequest{Key: liveKey, OperationID: "op-live", TTL: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(2 * time.Second)
+	sweeper := newTestLockManager(t, store, clock, ProcessIdentity{
+		Hostname: "devbox", PID: 3699, ProcessStart: 99, Cookie: "sweeper",
+	}, func(_ context.Context, identity ProcessIdentity) (bool, bool, error) {
+		switch identity.PID {
+		case 3601:
+			return false, true, nil
+		case 3603:
+			return false, false, errors.New("access denied")
+		default:
+			return true, true, nil
+		}
+	})
+	result, err := sweeper.SweepStale(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeadProcess != 1 || result.Expired != 1 {
+		t.Fatalf("sweep result = %+v", result)
+	}
+	remoteLease, err := sweeper.Acquire(ctx, LockAcquireRequest{Key: remoteKey, OperationID: "op-new-remote", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("expired remote lock remained: %v", err)
+	}
+	if err := sweeper.Release(ctx, remoteLease); err != nil {
+		t.Fatal(err)
+	}
+	deadLease, err := sweeper.Acquire(ctx, LockAcquireRequest{Key: deadKey, OperationID: "op-new-dead", TTL: time.Minute})
+	if err != nil {
+		t.Fatalf("dead-process lock remained: %v", err)
+	}
+	if err := sweeper.Release(ctx, deadLease); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sweeper.Acquire(ctx, LockAcquireRequest{Key: unprovenKey, OperationID: "op-new-unproven", TTL: time.Minute}); err == nil {
+		t.Fatal("unproven local lock was swept")
+	}
+	if _, err := sweeper.Acquire(ctx, LockAcquireRequest{Key: liveKey, OperationID: "op-new-live", TTL: time.Minute}); err == nil {
+		t.Fatal("live local lock was swept")
+	}
+}
+
 func TestLockOrderViolation(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(filepath.Join(t.TempDir(), "isolated.db"))

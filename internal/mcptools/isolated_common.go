@@ -13,6 +13,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/audit"
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/isolated"
@@ -24,6 +25,11 @@ import (
 
 const isolatedOperationTTL = 2 * time.Minute
 
+var isolatedRelayRetirementTimeout = 30 * time.Second
+var isolatedHostFenceAcquireTimeout = 75 * time.Second
+var isolatedPostFenceCapacityTimeout = 60 * time.Second
+var isolatedCreatePlanningTimeout = 2 * time.Minute
+
 type isolatedState interface {
 	BeginOperation(context.Context, isolatedstate.BeginOperationRequest) (isolatedstate.BeginOperationResult, error)
 	GetOperation(context.Context, string) (isolatedstate.Operation, error)
@@ -34,9 +40,13 @@ type isolatedState interface {
 	OperationPhaseSucceeded(context.Context, string, int, string) (bool, error)
 	LoadSucceededPhaseDetail(context.Context, string, int, string, any) (bool, error)
 	PutApprovalPlan(context.Context, isolatedstate.ApprovalPlan) error
+	GetApprovalPlan(context.Context, string) (isolatedstate.ApprovalPlan, error)
 	ApprovePlan(context.Context, string, string, string) error
 	ConsumePlan(context.Context, string, string, string) error
+	InstallCascadeAuthority(context.Context, isolatedstate.CascadeAuthority) error
+	CompleteCascadeItem(context.Context, string, string, isolatedstate.UnixSeconds) error
 	PutOrchestrator(context.Context, isolatedstate.Orchestrator) error
+	FreezeOrchestrator(context.Context, string, isolatedstate.Generation, isolatedstate.UnixSeconds) (isolatedstate.Orchestrator, error)
 	GetOrchestrator(context.Context, string) (isolatedstate.Orchestrator, error)
 	ListOrchestrators(context.Context, string) ([]isolatedstate.Orchestrator, error)
 	PutNetwork(context.Context, isolatedstate.PrivateNetwork) error
@@ -48,12 +58,102 @@ type isolatedState interface {
 	PutVM(context.Context, isolatedstate.IsolatedVM) error
 	PutNAT(context.Context, isolatedstate.NATAllocation) error
 	GetNAT(context.Context, string) (isolatedstate.NATAllocation, error)
+	ListNAT(context.Context, string, string, string) ([]isolatedstate.NATAllocation, error)
 	PutRelay(context.Context, isolatedstate.RelayAllocation) error
 	GetRelay(context.Context, string) (isolatedstate.RelayAllocation, error)
 	GetRelayForVM(context.Context, string) (isolatedstate.RelayAllocation, error)
 	ListRelays(context.Context, string, string) ([]isolatedstate.RelayAllocation, error)
 	CommitAllocations(context.Context, []isolatedstate.ActiveResourceAllocation) error
+	ListActiveAllocations(context.Context, string) ([]isolatedstate.ActiveResourceAllocation, error)
 	ReleaseAllocation(context.Context, isolatedstate.ReleaseAllocationRequest) (isolatedstate.ResourceAllocationHistory, error)
+}
+
+type cascadeExecutionKey struct{}
+
+type cascadeExecution struct {
+	Plan         isolated.DeleteOrchestratorPlan
+	ResourceType string
+	ResourceID   string
+	Action       cascadeauth.Action
+}
+
+func cascadeExecutionFromContext(ctx context.Context) (cascadeExecution, bool) {
+	value, ok := ctx.Value(cascadeExecutionKey{}).(*cascadeExecution)
+	if !ok || value == nil {
+		return cascadeExecution{}, false
+	}
+	return *value, true
+}
+
+func cascadeExecutionPointerFromContext(ctx context.Context) (*cascadeExecution, bool) {
+	value, ok := ctx.Value(cascadeExecutionKey{}).(*cascadeExecution)
+	return value, ok && value != nil
+}
+
+func cascadeAuthorityFromContext(ctx context.Context) *hyperv.CascadeAuthority {
+	execution, ok := cascadeExecutionFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	authority := cascadeAuthorityForHost(execution.Plan.Authority)
+	return &authority
+}
+
+func cascadeAuthorityItemsForAppliance(
+	authority isolatedstate.CascadeAuthority,
+) []appliance.CascadeAuthorityItem {
+	items := make([]appliance.CascadeAuthorityItem, 0, len(authority.Items))
+	for _, item := range authority.Items {
+		items = append(items, appliance.CascadeAuthorityItem{
+			ItemID: item.MutationID, ResourceKind: item.ResourceType,
+			ResourceID: item.ResourceID, Action: item.Action,
+			ExpectedGeneration: uint64(item.ExpectedGeneration),
+		})
+	}
+	return items
+}
+
+func applyCascadeEnvelope(
+	ctx context.Context,
+	envelope *isolated.MutationEnvelope,
+	action cascadeauth.Action,
+) {
+	execution, ok := cascadeExecutionFromContext(ctx)
+	if !ok || envelope == nil {
+		return
+	}
+	resourceType := cascadeActionResourceType(action)
+	if resourceType == "" {
+		return
+	}
+	envelope.CascadeOperationID = execution.Plan.Authority.OperationID
+	envelope.CascadePlanRevision = execution.Plan.Authority.PlanRevision
+	envelope.CascadePlanHash = execution.Plan.Authority.PlanHash
+	envelope.CascadeResourceKind = resourceType
+	envelope.CascadeAction = string(action)
+	envelope.Header.CascadeOperationID = envelope.CascadeOperationID
+	envelope.Header.CascadePlanRevision = envelope.CascadePlanRevision
+	envelope.Header.CascadePlanHash = envelope.CascadePlanHash
+	envelope.Header.CascadeResourceKind = envelope.CascadeResourceKind
+	envelope.Header.CascadeAction = envelope.CascadeAction
+	for _, item := range execution.Plan.Authority.Items {
+		if item.ResourceID == envelope.Header.ResourceID &&
+			item.ResourceType == resourceType &&
+			item.Action == string(action) {
+			envelope.CascadeItemID = item.MutationID
+			envelope.Header.CascadeItemID = item.MutationID
+			return
+		}
+	}
+}
+
+func cascadeActionResourceType(action cascadeauth.Action) string {
+	for _, resourceType := range []string{"relay", "nat", "vm", "network", "orchestrator"} {
+		if cascadeauth.ValidateScope(resourceType, action) == nil {
+			return resourceType
+		}
+	}
+	return ""
 }
 
 type isolatedAppliance interface {
@@ -62,6 +162,7 @@ type isolatedAppliance interface {
 	GetApplianceState(context.Context, string) (appliance.DesiredSnapshot, error)
 	ReserveResources(context.Context, string, appliance.ReserveRequest) (appliance.ReserveResult, error)
 	ReleaseResources(context.Context, string, appliance.ReleaseRequest) (appliance.ReleaseResult, error)
+	ReleaseAuthority(context.Context, string, isolated.MutationEnvelope) error
 	ApplyPrivateNetwork(context.Context, string, isolated.ApplyPrivateNetworkInput) (isolated.NetworkMutationResult, error)
 	RemovePrivateNetwork(context.Context, string, isolated.MutationEnvelope) (isolated.NetworkMutationResult, error)
 	RegisterIsolatedGuest(context.Context, string, isolated.RegisterGuestInput) (isolated.GuestMutationResult, error)
@@ -83,12 +184,45 @@ type isolatedHost interface {
 	Discover(context.Context, Target, string, string) (hyperv.IsolatedHostDiscovery, error)
 	AcquireFence(context.Context, Target, isolated.HostCreateFenceRequest) (isolated.HostFenceLease, error)
 	ReleaseFence(context.Context, Target, isolated.HostFenceLease)
+	ReleaseFenceChecked(context.Context, Target, isolated.HostFenceLease) error
 	Preflight(context.Context, Target, isolated.ResourcePreflightInput, vmconfig.Profile) (isolated.ResourcePreflightResult, error)
 	ClaimOrchestrator(context.Context, Target, isolatedstate.Orchestrator, isolated.HostFenceLease) (hyperv.IsolatedVMObservation, error)
 	CreateSwitch(context.Context, Target, hyperv.CreateIsolatedPrivateSwitchParams) (hyperv.IsolatedSwitchMutationResult, error)
 	AttachNIC(context.Context, Target, hyperv.AttachIsolatedNICParams) (hyperv.IsolatedAdapterMutationResult, error)
+	ReconcileNICMetadata(context.Context, Target, hyperv.ReconcileIsolatedAdapterMetadataParams) (hyperv.IsolatedAdapterMutationResult, error)
 	RemoveNIC(context.Context, Target, hyperv.RemoveIsolatedNICParams) (hyperv.IsolatedAdapterMutationResult, error)
 	DeleteSwitch(context.Context, Target, hyperv.DeleteIsolatedPrivateSwitchParams) (hyperv.IsolatedSwitchMutationResult, error)
+	CleanupNetworkMetadata(context.Context, Target, hyperv.CleanupIsolatedNetworkMetadataParams) (hyperv.IsolatedMetadataCleanupResult, error)
+	CleanupOrchestratorMetadata(context.Context, Target, hyperv.CleanupIsolatedOrchestratorMetadataParams) (hyperv.IsolatedMetadataCleanupResult, error)
+	DeleteOrchestratorVM(context.Context, Target, hyperv.DeleteIsolatedOrchestratorVMParams) (map[string]any, error)
+}
+
+type isolatedParentLifecycleHost interface {
+	SetParentLifecycle(
+		context.Context,
+		Target,
+		isolatedstate.Orchestrator,
+		isolated.HostFenceLease,
+		isolatedstate.CascadeAuthority,
+		string,
+	) error
+	RebindParentFence(
+		context.Context,
+		Target,
+		isolatedstate.Orchestrator,
+		isolated.HostFenceLease,
+		isolatedstate.CascadeAuthority,
+	) error
+}
+
+type isolatedParentLifecycleAppliance interface {
+	SetParentLifecycle(
+		context.Context,
+		string,
+		isolated.MutationEnvelope,
+		string,
+		uint64,
+	) error
 }
 
 type isolatedLinuxCreator interface {
@@ -104,28 +238,349 @@ type isolatedGuestRuntime interface {
 }
 
 type isolatedLifecycleDeps struct {
-	server        *server.MCPServer
-	state         isolatedState
-	locks         *isolatedstate.LockManager
-	host          isolatedHost
-	orchestrators isolated.OrchestratorStateClient
-	planner       isolated.HostPlanningClient
-	probe         isolated.OrchestratorProbeClient
-	networks      isolated.NetworkStateClient
-	networkHost   isolated.HostNetworkClient
-	appliance     isolatedAppliance
-	linux         isolatedLinuxCreator
-	registry      *registry.Registry
-	pool          *agentclient.Pool
-	defaults      *vmconfig.Store
-	credentials   *credentials.Store
-	secrets       *secretstore.Store
-	audit         *audit.Log
-	enrollment    VMEnrollmentConfig
-	lease         LeaseGateConfig
-	serverVersion string
-	guests        isolatedGuestRuntime
-	joinDomain    func(context.Context, string, vmconfig.WindowsDomainJoin, int, *registry.Registry, *agentclient.Pool, *secretstore.Store, *audit.Log) (windowsDomainJoinResult, error)
+	server               *server.MCPServer
+	state                isolatedState
+	locks                *isolatedstate.LockManager
+	host                 isolatedHost
+	orchestrators        isolated.OrchestratorStateClient
+	planner              isolated.HostPlanningClient
+	probe                isolated.OrchestratorProbeClient
+	networks             isolated.NetworkStateClient
+	networkHost          isolated.HostNetworkClient
+	appliance            isolatedAppliance
+	linux                isolatedLinuxCreator
+	registry             *registry.Registry
+	pool                 *agentclient.Pool
+	defaults             *vmconfig.Store
+	credentials          *credentials.Store
+	secrets              *secretstore.Store
+	audit                *audit.Log
+	enrollment           VMEnrollmentConfig
+	lease                LeaseGateConfig
+	serverVersion        string
+	guests               isolatedGuestRuntime
+	deleteOrchestratorVM func(context.Context, isolatedstate.Orchestrator) (any, error)
+	joinDomain           func(context.Context, string, vmconfig.WindowsDomainJoin, int, *registry.Registry, *agentclient.Pool, *secretstore.Store, *audit.Log) (windowsDomainJoinResult, error)
+}
+
+func claimAndPersistOrchestratorFence(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	target Target,
+	orchestrator isolatedstate.Orchestrator,
+	lease isolated.HostFenceLease,
+) (isolatedstate.Orchestrator, error) {
+	orchestrator.HostFence = lease.Fence
+	observation, err := deps.host.ClaimOrchestrator(ctx, target, orchestrator, lease)
+	if err != nil {
+		return orchestrator, err
+	}
+	orchestrator.HyperVVMID = optionalTrimmed(observation.VMGUID)
+	orchestrator.UpdatedAt = isolatedNow()
+	if err := deps.state.PutOrchestrator(ctx, orchestrator); err != nil {
+		return orchestrator, err
+	}
+	return orchestrator, nil
+}
+
+func freezeApprovedParent(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	target Target,
+	record isolatedstate.Orchestrator,
+	expected isolatedstate.Generation,
+	plan isolated.DeleteOrchestratorPlan,
+) (result isolatedstate.Orchestrator, resultErr error) {
+	hostLifecycle, ok := deps.host.(isolatedParentLifecycleHost)
+	if !ok {
+		return record, errors.New("PARENT_FREEZE_UNAVAILABLE: host lifecycle authority is not configured")
+	}
+	applianceLifecycle, ok := deps.appliance.(isolatedParentLifecycleAppliance)
+	if !ok {
+		return record, errors.New("PARENT_FREEZE_UNAVAILABLE: appliance lifecycle authority is not configured")
+	}
+	hostLease, err := acquireCompatibleOrchestratorFence(
+		ctx, deps, target, record, plan.Plan.OperationID)
+	if err != nil {
+		return record, err
+	}
+	releaseRecord := record
+	defer func() {
+		if err := releaseOrchestratorFence(deps, target, releaseRecord, hostLease); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	current, err := deps.state.GetOrchestrator(ctx, record.ID)
+	if err != nil {
+		return record, err
+	}
+	authority := plan.Authority
+	authority.HostFence = hostLease.Fence
+	authority.LeaseID = hostLease.LeaseID
+	switch {
+	case current.DesiredGeneration == expected &&
+		!orchestratorBlocksChildMutation(current.LifecycleState):
+		current, err = claimAndPersistOrchestratorFence(
+			ctx, deps, target, current, hostLease)
+		if err != nil {
+			return record, err
+		}
+		current, err = deps.state.FreezeOrchestrator(
+			ctx, current.ID, expected, isolatedNow())
+		if err != nil {
+			return record, err
+		}
+		if err := hostLifecycle.SetParentLifecycle(
+			ctx, target, current, hostLease, authority, "frozen",
+		); err != nil {
+			return record, err
+		}
+	case current.DesiredGeneration == expected+1 &&
+		(current.LifecycleState == isolatedstate.OrchestratorFrozen ||
+			current.LifecycleState == isolatedstate.OrchestratorDeleting):
+		if current.HostFence != hostLease.Fence {
+			if err := hostLifecycle.RebindParentFence(
+				ctx, target, current, hostLease, authority,
+			); err != nil {
+				return record, err
+			}
+		}
+		current.HostFence = hostLease.Fence
+		current.UpdatedAt = isolatedNow()
+		if err := deps.state.PutOrchestrator(ctx, current); err != nil {
+			return record, err
+		}
+	default:
+		return record, fmt.Errorf(
+			"PARENT_FROZEN: expected pre-freeze generation %d, current generation/state is %d/%s",
+			expected, current.DesiredGeneration, current.LifecycleState)
+	}
+	authority.HostFence = hostLease.Fence
+	authority.LeaseID = hostLease.LeaseID
+	envelope := isolated.MutationEnvelope{
+		Header: appliance.MutationHeader{
+			ParentOperationID: plan.Plan.OperationID,
+			MutationID: isolatedstate.StableMutationID(
+				plan.Plan.OperationID, current.ID, "freeze_parent", "freeze_parent"),
+			SemanticHash: plan.Plan.SemanticHash, ResourceID: current.ID,
+			ParentResourceID: current.ID, HostFence: uint64(hostLease.Fence),
+			ExpectedParentGeneration: uint64(expected),
+		},
+		PhysicalHostID: current.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
+		HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+		HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
+		CascadeOperationID:   plan.Plan.OperationID,
+		CascadePlanRevision:  plan.Plan.Revision,
+		CascadePlanHash:      plan.Plan.PlanHash,
+		CascadeItems:         cascadeAuthorityItemsForAppliance(authority),
+	}
+	if err := applianceLifecycle.SetParentLifecycle(
+		ctx, current.ID, envelope, "frozen", uint64(expected+1),
+	); err != nil {
+		return record, err
+	}
+	if err := deps.state.InstallCascadeAuthority(ctx, authority); err != nil {
+		return record, err
+	}
+	releaseRecord = current
+	return current, nil
+}
+
+func orchestratorBlocksChildMutation(state isolatedstate.OrchestratorLifecycleState) bool {
+	switch state {
+	case isolatedstate.OrchestratorFrozen, isolatedstate.OrchestratorDeleting,
+		isolatedstate.OrchestratorLost, isolatedstate.OrchestratorDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func admitChildMutationAfterFence(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	target Target,
+	stale isolatedstate.Orchestrator,
+	hostLease isolated.HostFenceLease,
+	resourceType, resourceID, action string,
+) (result isolatedstate.Orchestrator, resultErr error) {
+	admitted := false
+	defer func() {
+		if !admitted {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := deps.host.ReleaseFenceChecked(releaseCtx, target, hostLease); err != nil {
+				resultErr = errors.Join(resultErr,
+					fmt.Errorf("HOST_FENCE_RELEASE_FAILED: %w", err))
+			}
+		}
+	}()
+	current, err := deps.state.GetOrchestrator(ctx, stale.ID)
+	if err != nil {
+		return stale, err
+	}
+	if !orchestratorBlocksChildMutation(current.LifecycleState) {
+		current, err = claimAndPersistOrchestratorFence(
+			ctx, deps, target, current, hostLease)
+		if err == nil {
+			admitted = true
+		}
+		return current, err
+	}
+	execution, ok := cascadeExecutionFromContext(ctx)
+	if !ok || execution.ResourceType != resourceType ||
+		execution.ResourceID != resourceID || string(execution.Action) != action ||
+		execution.Plan.Authority.OrchestratorID != current.ID ||
+		execution.Plan.Authority.FrozenGeneration != current.DesiredGeneration {
+		return current, fmt.Errorf(
+			"PARENT_FROZEN: orchestrator %s is %s at generation %d",
+			current.ID, current.LifecycleState, current.DesiredGeneration)
+	}
+	if err := validateApprovedCascadeChild(
+		ctx, deps.state, execution.Plan.Plan, resourceType, resourceID,
+	); err != nil {
+		return current, err
+	}
+	hostLifecycle, ok := deps.host.(isolatedParentLifecycleHost)
+	if !ok {
+		return current, errors.New("PARENT_FREEZE_UNAVAILABLE: host lifecycle authority is not configured")
+	}
+	applianceLifecycle, ok := deps.appliance.(isolatedParentLifecycleAppliance)
+	if !ok {
+		return current, errors.New("PARENT_FREEZE_UNAVAILABLE: appliance lifecycle authority is not configured")
+	}
+	authority := execution.Plan.Authority
+	authority.HostFence = hostLease.Fence
+	authority.LeaseID = hostLease.LeaseID
+	if current.HostFence != hostLease.Fence {
+		if err := hostLifecycle.RebindParentFence(
+			ctx, target, current, hostLease, authority,
+		); err != nil {
+			return current, err
+		}
+	}
+	current.HostFence = hostLease.Fence
+	current.UpdatedAt = isolatedNow()
+	if err := deps.state.PutOrchestrator(ctx, current); err != nil {
+		return current, err
+	}
+	envelope := isolated.MutationEnvelope{
+		Header: appliance.MutationHeader{
+			ParentOperationID: authority.OperationID,
+			MutationID: isolatedstate.StableMutationID(
+				authority.OperationID, current.ID, "rebind_parent_fence", "cascade_rebind"),
+			SemanticHash: authority.PlanHash, ResourceID: current.ID,
+			ParentResourceID: current.ID, HostFence: uint64(hostLease.Fence),
+			ExpectedParentGeneration: uint64(authority.FrozenGeneration - 1),
+		},
+		PhysicalHostID: current.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
+		HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+		HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
+		CascadeOperationID:   authority.OperationID,
+		CascadePlanRevision:  authority.PlanRevision,
+		CascadePlanHash:      authority.PlanHash,
+		CascadeItems:         cascadeAuthorityItemsForAppliance(authority),
+	}
+	if err := applianceLifecycle.SetParentLifecycle(
+		ctx, current.ID, envelope, "frozen", uint64(authority.FrozenGeneration),
+	); err != nil {
+		return current, err
+	}
+	if err := deps.state.InstallCascadeAuthority(ctx, authority); err != nil {
+		return current, err
+	}
+	if executionPointer, ok := cascadeExecutionPointerFromContext(ctx); ok {
+		executionPointer.Plan.Authority = authority
+	}
+	admitted = true
+	return current, nil
+}
+
+func acquireCompatibleOrchestratorFence(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	target Target,
+	orchestrator isolatedstate.Orchestrator,
+	operationID string,
+) (isolated.HostFenceLease, error) {
+	if _, err := deps.appliance.CheckReadiness(ctx, orchestrator.ID); err != nil {
+		var compatibilityErr *isolated.CompatibilityError
+		if errors.As(err, &compatibilityErr) &&
+			compatibilityErr.Code == "AGENT_UPGRADE_REQUIRED" {
+			return isolated.HostFenceLease{}, fmt.Errorf(
+				"APPLIANCE_UPGRADE_REQUIRED_BEFORE_HOST_FENCE: %w", err)
+		}
+		return isolated.HostFenceLease{}, err
+	}
+	lockKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
+	return deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
+		PhysicalHostID: orchestrator.PhysicalHostID,
+		HostNode:       orchestrator.HostNode,
+		OperationID:    operationID,
+		LockKey:        lockKey,
+	})
+}
+
+func releaseOrchestratorFence(
+	deps *isolatedLifecycleDeps,
+	target Target,
+	orchestrator isolatedstate.Orchestrator,
+	lease isolated.HostFenceLease,
+) error {
+	applianceCtx, cancelAppliance := context.WithTimeout(context.Background(), 15*time.Second)
+	applianceErr := deps.appliance.ReleaseAuthority(applianceCtx, orchestrator.ID, isolated.MutationEnvelope{
+		Header: appliance.MutationHeader{
+			HostFence:                uint64(lease.Fence),
+			ParentResourceID:         orchestrator.ID,
+			ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
+		},
+		PhysicalHostID:       orchestrator.PhysicalHostID,
+		HostLeaseID:          lease.LeaseID,
+		HostLeaseSecret:      mustDecodeHex(lease.LeaseSecret),
+		HostLeaseExpiresUnix: lease.ExpiresAtUnix,
+	})
+	cancelAppliance()
+	hostCtx, cancelHost := context.WithTimeout(context.Background(), 45*time.Second)
+	hostErr := deps.host.ReleaseFenceChecked(hostCtx, target, lease)
+	cancelHost()
+	var result error
+	if applianceErr != nil {
+		result = errors.Join(result, fmt.Errorf(
+			"APPLIANCE_AUTHORITY_RELEASE_FAILED: physical host fence was still released: %w",
+			applianceErr))
+	}
+	if hostErr != nil {
+		result = errors.Join(result, fmt.Errorf("HOST_FENCE_RELEASE_FAILED: %w", hostErr))
+	}
+	return result
+}
+
+func deferOrchestratorFenceRelease(
+	deps *isolatedLifecycleDeps,
+	target Target,
+	orchestrator isolatedstate.Orchestrator,
+	lease isolated.HostFenceLease,
+	result **mcp.CallToolResult,
+	callErr *error,
+) {
+	releaseErr := releaseOrchestratorFence(deps, target, orchestrator, lease)
+	if releaseErr == nil {
+		return
+	}
+	if *callErr != nil {
+		*callErr = errors.Join(*callErr, releaseErr)
+		return
+	}
+	*result = mcp.NewToolResultError(releaseErr.Error())
+}
+
+func boundedRelayRetirement(
+	ctx context.Context,
+	run func(context.Context) (isolated.RelayMutationResult, error),
+) (isolated.RelayMutationResult, error) {
+	retireCtx, cancel := context.WithTimeout(ctx, isolatedRelayRetirementTimeout)
+	defer cancel()
+	return run(retireCtx)
 }
 
 type productionLinuxCreator struct {
@@ -386,6 +841,20 @@ func approveRevision(
 	if approved != "" {
 		if approved != plan.Revision {
 			return false, nil, fmt.Errorf("PLAN_REVISION_MISMATCH: approved revision %q does not match %q", approved, plan.Revision)
+		}
+		existing, err := state.GetApprovalPlan(ctx, plan.Revision)
+		if err != nil {
+			return false, nil, err
+		}
+		if existing.OperationID != operationID || existing.PlanHash != plan.PlanHash ||
+			existing.Action != action {
+			return false, nil, errors.New("APPROVAL_IDENTITY_MISMATCH: stored approval does not authorize this exact operation")
+		}
+		if existing.State == isolatedstate.ApprovalConsumed {
+			if !req.GetBool("resume_exact", false) {
+				return false, nil, errors.New("CONSUMED_APPROVAL_REQUIRES_EXACT_RESUME")
+			}
+			return true, nil, nil
 		}
 		if err := state.ApprovePlan(ctx, operationID, plan.Revision, plan.PlanHash); err != nil {
 			return false, nil, err

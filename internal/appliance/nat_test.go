@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -203,6 +204,7 @@ func TestNATEngineKeepsExistingFlowsUntilConntrackReachesZero(t *testing.T) {
 	if _, err := engine.SetEnabled(ctx, natMutation("nat-enable", 0), mark, true); err != nil {
 		t.Fatalf("enable NAT: %v", err)
 	}
+
 	if _, err := engine.SetEnabled(ctx, natMutation("nat-disable", 1), mark, false); err != nil {
 		t.Fatalf("disable NAT: %v", err)
 	}
@@ -212,6 +214,27 @@ func TestNATEngineKeepsExistingFlowsUntilConntrackReachesZero(t *testing.T) {
 	nat, _, err := store.NAT(ctx, "guest-nat")
 	if err != nil || nat.State != "draining" || nat.DesiredGeneration != 2 {
 		t.Fatalf("NAT with active flow = %+v err=%v", nat, err)
+	}
+	snapshot, err := store.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(ctx, snapshot.Authority); err != nil {
+		t.Fatalf("ReleaseAuthority: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		UPDATE appliance_authority
+		SET host_lease_id='', host_lease_secret_hash='',
+			host_lease_expires_unix=0, handoff_pending=1
+		WHERE singleton=1
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.SetEnabled(
+		ctx, natMutation("nat-external-after-release", 2), mark, true,
+	); ErrorCodeOf(err) != CodeFenceRejected {
+		t.Fatalf("external mutation after release error = %v, want %s",
+			err, CodeFenceRejected)
 	}
 
 	conntrack.setCount(0)
@@ -223,6 +246,108 @@ func TestNATEngineKeepsExistingFlowsUntilConntrackReachesZero(t *testing.T) {
 		nat.DesiredGeneration != 3 || nat.AppliedGeneration != 3 ||
 		nat.ObservedGeneration != 3 {
 		t.Fatalf("NAT after drain completion = %+v err=%v", nat, err)
+	}
+}
+
+func TestNATDrainSystemTransitionRecoversAfterRestartWithoutLease(t *testing.T) {
+	target := &fakeTarget{}
+	store, manager, mark := setupNATFixture(t, target)
+	ctx := context.Background()
+	if _, err := manager.store.StageNAT(ctx, natMutation("nat-enable-restart", 0), NATState{
+		VMID: "guest-nat", State: "enabled", ConntrackMark: mark,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("frozen parent", func(t *testing.T) {
+		target := &fakeTarget{}
+		store, manager, mark := setupNATFixture(t, target)
+		ctx := context.Background()
+		engine := newTestNATEngine(t, store, manager,
+			&fakeConntrackInspector{count: 0})
+		if _, err := engine.SetEnabled(
+			ctx, natMutation("nat-enable-frozen", 0), mark, true,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engine.SetEnabled(
+			ctx, natMutation("nat-disable-frozen", 1), mark, false,
+		); err != nil {
+			t.Fatal(err)
+		}
+		authority, err := store.Authority(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.SetParentLifecycle(
+			ctx, authority, 4, 5, "frozen",
+			"55555555-5555-4555-8555-555555555555",
+			"r1-frozen-drain", "frozen-drain-plan",
+			testCascadeAuthorityItems("network-nat", 1),
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.PollOnce(ctx); err != nil {
+			t.Fatalf("PollOnce frozen: %v", err)
+		}
+		nat, found, err := store.NAT(ctx, "guest-nat")
+		if err != nil || !found || nat.State != "disabled" ||
+			nat.DesiredGeneration != 3 || nat.AppliedGeneration != 3 ||
+			nat.ObservedGeneration != 3 {
+			t.Fatalf("frozen drain completion = %+v found=%v err=%v",
+				nat, found, err)
+		}
+	})
+	if _, err := manager.ApplyIntent(ctx, "nat-enable-restart"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.store.StageNAT(ctx, natMutation("nat-disable-restart", 1), NATState{
+		VMID: "guest-nat", State: "disabled", ConntrackMark: mark,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.ApplyIntent(ctx, "nat-disable-restart"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(ctx, snapshot.Authority); err != nil {
+		t.Fatal(err)
+	}
+
+	failingManager := newTestApplyManager(t, store, target, ApplyHooks{
+		BeforeCommit: func(CompiledApply) error {
+			return errors.New("simulated crash before commit")
+		},
+	})
+	engine := newTestNATEngine(t, store, failingManager,
+		&fakeConntrackInspector{count: 0})
+	if err := engine.PollOnce(ctx); err == nil ||
+		!strings.Contains(err.Error(), "simulated crash before commit") {
+		t.Fatalf("drain completion error = %v", err)
+	}
+	pending, found, err := store.NAT(ctx, "guest-nat")
+	if err != nil || !found || pending.State != "disabled" ||
+		pending.DesiredGeneration != 3 || pending.AppliedGeneration != 2 {
+		t.Fatalf("pending system transition = %+v found=%v err=%v",
+			pending, found, err)
+	}
+
+	restarted := newTestApplyManager(t, store, target, ApplyHooks{})
+	recovered, err := restarted.Recover(ctx)
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered intents = %d, want 1", recovered)
+	}
+	nat, found, err := store.NAT(ctx, "guest-nat")
+	if err != nil || !found || nat.State != "disabled" ||
+		nat.DesiredGeneration != 3 || nat.AppliedGeneration != 3 ||
+		nat.ObservedGeneration != 3 {
+		t.Fatalf("recovered NAT = %+v found=%v err=%v", nat, found, err)
 	}
 }
 

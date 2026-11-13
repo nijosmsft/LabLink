@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/nijosmsft/lablink/internal/appliance"
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
@@ -188,7 +189,7 @@ func selectNetworkOrchestrator(
 }
 
 func addIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		ensureNetworkAdapters(deps)
 		target, err := resolveTarget(req, deps.registry)
 		if err != nil {
@@ -286,19 +287,20 @@ func addIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFu
 		}
 		defer deps.locks.Release(context.Background(), networkLease)
 
-		lockKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: lockKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
-		orchestrator.HostFence = hostLease.Fence
-		if err := deps.state.PutOrchestrator(ctx, orchestrator); err != nil {
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"network", networkID.String(), "create",
+		)
+		if err != nil {
 			return isolatedError(err)
 		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 
 		domain := isolated.NetworkDomain{
 			State: deps.networks, Appliance: deps.appliance, Host: deps.networkHost,
@@ -310,7 +312,9 @@ func addIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFu
 				OperationID: operationID, Orchestrator: orchestrator,
 				NetworkID: networkID, DisplayName: displayName,
 				ExpectedParentGeneration: expected, Routes: discovery.Routes,
-				HostFence: hostLease.Fence,
+				HostFence: hostLease.Fence, HostLeaseID: hostLease.LeaseID,
+				HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+				HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 			})
 			return plan, planErr
 		})
@@ -331,6 +335,7 @@ func addIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFu
 				OperationID:  operationID,
 				MutationID:   isolatedstate.StableMutationID(operationID, networkID.String(), action, phase),
 				ResourceType: "network", ResourceID: networkID.String(), Action: action,
+				CascadeAuthority: cascadeAuthorityFromContext(ctx),
 			}
 		}
 		var switchResult hyperv.IsolatedSwitchMutationResult
@@ -406,9 +411,10 @@ func addIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFu
 						HostFence:                uint64(hostLease.Fence),
 						ExpectedParentGeneration: uint64(expected),
 					},
-					PhysicalHostID:  orchestrator.PhysicalHostID,
-					HostLeaseID:     hostLease.LeaseID,
-					HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+					PhysicalHostID:       orchestrator.PhysicalHostID,
+					HostLeaseID:          hostLease.LeaseID,
+					HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+					HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 				},
 				ReservationID: plan.Reservation.ID, CIDR: plan.Network.CIDR,
 				GatewayIPv4: plan.Network.GatewayIPv4,
@@ -453,7 +459,7 @@ var hexDecodeString = func(value string) ([]byte, error) {
 }
 
 func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		ensureNetworkAdapters(deps)
 		id, err := isolated.ParseNetworkID(req.GetString("network_id", ""))
 		if err != nil {
@@ -521,15 +527,20 @@ func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 		if err != nil {
 			return isolatedError(err)
 		}
-		lockKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: lockKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"network", network.ID, string(cascadeauth.ActionNetworkRemove),
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		header := isolated.MutationEnvelope{
 			Header: appliance.MutationHeader{
 				ParentOperationID: operationID,
@@ -542,7 +553,9 @@ func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 			},
 			PhysicalHostID: orchestrator.PhysicalHostID,
 			HostLeaseID:    hostLease.LeaseID, HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+			HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 		}
+		applyCascadeEnvelope(ctx, &header, cascadeauth.ActionNetworkRemove)
 		if err := workflow.phase(ctx, 0, "appliance_remove_network", "retiring gateway and network policy", func() (any, error) {
 			return deps.appliance.RemovePrivateNetwork(ctx, orchestrator.ID, header)
 		}); err != nil {
@@ -556,10 +569,27 @@ func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 				OperationID:  operationID,
 				MutationID:   isolatedstate.StableMutationID(operationID, network.ID, action, phase),
 				ResourceType: "network", ResourceID: network.ID, Action: action,
+				CascadeAuthority: cascadeAuthorityFromContext(ctx),
 			}
 		}
 		if err := workflow.phase(ctx, 1, "remove_orchestrator_nic", "removing exact orchestrator adapter", func() (any, error) {
-			return deps.host.RemoveNIC(ctx, target, hyperv.RemoveIsolatedNICParams{
+			reconciled, reconcileErr := deps.host.ReconcileNICMetadata(
+				ctx, target, hyperv.ReconcileIsolatedAdapterMetadataParams{
+					Guard:     guard("reconcile_adapter_metadata", "reconcile_orchestrator_nic_metadata"),
+					NetworkID: network.ID, ResourceType: "network", ResourceID: network.ID,
+					OrchestratorVMGUID: valueOrEmpty(orchestrator.HyperVVMID),
+					VMGUID:             valueOrEmpty(orchestrator.HyperVVMID),
+					AdapterName:        names.OrchestratorAdapterName,
+					ExpectedAdapterID:  valueOrEmpty(network.OrchestratorAdapterID),
+					SwitchName:         network.HyperVSwitchName,
+					ExpectedSwitchGUID: valueOrEmpty(network.HyperVSwitchGUID),
+					ExpectedMAC:        network.OrchestratorMAC,
+					ExpectedGeneration: int64(expected),
+				})
+			if reconcileErr != nil {
+				return reconciled, reconcileErr
+			}
+			removed, removeErr := deps.host.RemoveNIC(ctx, target, hyperv.RemoveIsolatedNICParams{
 				Guard:     guard("remove_nic", "remove_orchestrator_nic"),
 				NetworkID: network.ID, ResourceType: "network", ResourceID: network.ID,
 				OrchestratorVMGUID: valueOrEmpty(orchestrator.HyperVVMID),
@@ -570,6 +600,10 @@ func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 				ExpectedMAC:        network.OrchestratorMAC,
 				ExpectedGeneration: int64(expected),
 			})
+			return map[string]any{
+				"metadata_reconciliation": reconciled,
+				"adapter_removal":         removed,
+			}, removeErr
 		}); err != nil {
 			return isolatedError(err)
 		}
@@ -580,6 +614,21 @@ func removeIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHandle
 				NetworkID:          network.ID, SwitchName: network.HyperVSwitchName,
 				ExpectedSwitchGUID: valueOrEmpty(network.HyperVSwitchGUID),
 				ExpectedGeneration: int64(expected),
+			})
+		}); err != nil {
+			return isolatedError(err)
+		}
+		if err := workflow.phase(ctx, 3, "cleanup_host_metadata", "removing exact deleted network ownership metadata", func() (any, error) {
+			return deps.host.CleanupNetworkMetadata(ctx, target, hyperv.CleanupIsolatedNetworkMetadataParams{
+				Guard:              guard("cleanup_network_metadata", "cleanup_host_metadata"),
+				OrchestratorVMGUID: valueOrEmpty(orchestrator.HyperVVMID),
+				NetworkID:          network.ID,
+				AdapterID:          valueOrEmpty(network.OrchestratorAdapterID),
+				AdapterName:        names.OrchestratorAdapterName,
+				SwitchGUID:         valueOrEmpty(network.HyperVSwitchGUID),
+				SwitchName:         network.HyperVSwitchName,
+				MAC:                network.OrchestratorMAC,
+				Generation:         int64(expected),
 			})
 		}); err != nil {
 			return isolatedError(err)

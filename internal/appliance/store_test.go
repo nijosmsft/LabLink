@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 )
 
 func openTestStore(t *testing.T, path string) *Store {
@@ -22,12 +26,13 @@ func openTestStore(t *testing.T, path string) *Store {
 func installTestAuthority(t *testing.T, store *Store, fence, generation uint64) {
 	t.Helper()
 	err := store.InstallAuthority(context.Background(), Authority{
-		PhysicalHostID:      "host-1",
-		HostLeaseID:         "lease-1",
-		HostLeaseSecretHash: "secret-hash",
-		Fence:               fence,
-		ParentGeneration:    generation,
-		ParentState:         "active",
+		PhysicalHostID:       "host-1",
+		HostLeaseID:          "lease-1",
+		HostLeaseSecretHash:  "secret-hash",
+		HostLeaseExpiresUnix: time.Now().Add(time.Hour).Unix(),
+		Fence:                fence,
+		ParentGeneration:     generation,
+		ParentState:          "active",
 	})
 	if err != nil {
 		t.Fatalf("InstallAuthority: %v", err)
@@ -42,6 +47,14 @@ func mutation(id, hash string, fence, parentGeneration uint64) MutationHeader {
 		HostFence:                fence,
 		ExpectedParentGeneration: parentGeneration,
 	}
+}
+
+func testCascadeAuthorityItems(resourceID string, generation uint64) []CascadeAuthorityItem {
+	return []CascadeAuthorityItem{{
+		ItemID:       "22222222-2222-4222-8222-222222222222",
+		ResourceKind: "network", ResourceID: resourceID,
+		Action: "delete_private_switch", ExpectedGeneration: generation,
+	}}
 }
 
 func int64ptr(value int64) *int64 { return &value }
@@ -324,6 +337,7 @@ func TestGenerationFenceAndParentRejection(t *testing.T) {
 	if ErrorCodeOf(err) != CodeFenceRejected {
 		t.Fatalf("bad fence error = %v, want %s", err, CodeFenceRejected)
 	}
+
 	_, err = store.ReserveResources(ctx, ReserveRequest{
 		Header: mutation("bad-parent", "hash-bad-parent", 11, 5),
 		Reservations: []Reservation{{
@@ -374,13 +388,18 @@ func TestGenerationFenceAndParentRejection(t *testing.T) {
 		ResourceID:   "network-2",
 		MAC:          "02:00:00:00:10:02",
 	})
+	currentAuthority, err := store.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.InstallAuthority(ctx, Authority{
-		PhysicalHostID:      "host-1",
-		HostLeaseID:         "lease-1",
-		HostLeaseSecretHash: "secret-hash",
-		Fence:               11,
-		ParentGeneration:    6,
-		ParentState:         "frozen",
+		PhysicalHostID:       "host-1",
+		HostLeaseID:          "lease-1",
+		HostLeaseSecretHash:  "secret-hash",
+		HostLeaseExpiresUnix: currentAuthority.HostLeaseExpiresUnix,
+		Fence:                11,
+		ParentGeneration:     6,
+		ParentState:          "frozen",
 	}); err != nil {
 		t.Fatalf("freeze authority: %v", err)
 	}
@@ -396,6 +415,27 @@ func TestGenerationFenceAndParentRejection(t *testing.T) {
 	})
 	if ErrorCodeOf(err) != CodeParentFrozen {
 		t.Fatalf("frozen parent error = %v, want %s", err, CodeParentFrozen)
+	}
+}
+
+func TestExpiredAuthorityRejectsExternalMutation(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
+	installTestAuthority(t, store, 13, 4)
+	if _, err := store.db.ExecContext(context.Background(), `
+		UPDATE appliance_authority SET host_lease_expires_unix = ?
+		WHERE singleton = 1
+	`, time.Now().Add(-time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	header := mutation("expired-authority", "expired-authority-hash", 13, 4)
+	header.ResourceID = "network-expired"
+	header.NewGeneration = 1
+	if _, err := store.StageNetwork(context.Background(), header, Network{
+		ID: "network-expired", CIDR: "10.80.0.0/26",
+		GatewayIPv4: "10.80.0.1", NICMAC: "02:00:00:00:80:01",
+		DNSServersJSON: "[]",
+	}); ErrorCodeOf(err) != CodeFenceRejected {
+		t.Fatalf("expired mutation error = %v, want %s", err, CodeFenceRejected)
 	}
 }
 
@@ -424,6 +464,7 @@ func TestIntentRecoveryAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StageNetwork: %v", err)
 	}
+
 	if stage.Intent.Phase != "pending" {
 		t.Fatalf("intent phase = %q, want pending", stage.Intent.Phase)
 	}
@@ -478,7 +519,123 @@ func TestIntentRecoveryAndCommit(t *testing.T) {
 	}
 }
 
-func TestDrainingNATNormalizedOnReopen(t *testing.T) {
+func TestSetParentLifecycleCannotBeThawedByNewFence(t *testing.T) {
+	store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
+	installTestAuthority(t, store, 8, 2)
+	ctx := context.Background()
+	current, err := store.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("exact frozen cascade items", func(t *testing.T) {
+		store := openTestStore(t, filepath.Join(t.TempDir(), "appliance.db"))
+		installTestAuthority(t, store, 14, 2)
+		ctx := context.Background()
+		mustReserve(t, store, 14, 2, Reservation{
+			ID: "network-cascade-reservation", ResourceKind: "network",
+			ResourceID: "network-cascade", MAC: "02:00:00:00:90:01",
+		})
+		create := mutation("network-cascade-create", "hash-network-cascade-create", 14, 2)
+		create.ResourceID = "network-cascade"
+		create.NewGeneration = 1
+		if _, err := store.StageNetwork(ctx, create, Network{
+			ID: "network-cascade", CIDR: "10.90.0.0/26",
+			GatewayIPv4: "10.90.0.1", NICMAC: "02:00:00:00:90:01",
+			DNSServersJSON: "[]",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		commitTestIntent(t, store, create)
+
+		authority, err := store.Authority(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const (
+			operationID = "11111111-1111-4111-8111-111111111111"
+			itemID      = "22222222-2222-4222-8222-222222222222"
+		)
+		if _, err := store.SetParentLifecycle(
+			ctx, authority, 2, 3, "frozen", operationID, "r1-exact",
+			"exact-plan-hash", []CascadeAuthorityItem{{
+				ItemID: itemID, ResourceKind: "network",
+				ResourceID:         "network-cascade",
+				Action:             string(cascadeauth.ActionNetworkRemove),
+				ExpectedGeneration: 1,
+			}},
+		); err != nil {
+			t.Fatal(err)
+		}
+		header := mutation("network-cascade-remove", "hash-network-cascade-remove", 14, 3)
+		header.ResourceID = "network-cascade"
+		header.ExpectedGeneration = 1
+		header.NewGeneration = 2
+		header.CascadeOperationID = operationID
+		header.CascadePlanRevision = "r1-exact"
+		header.CascadePlanHash = "exact-plan-hash"
+		header.CascadeItemID = itemID
+		header.CascadeResourceKind = "network"
+		header.CascadeAction = string(cascadeauth.ActionNetworkRemove)
+
+		for name, mutate := range map[string]func(*MutationHeader){
+			"resource": func(value *MutationHeader) { value.ResourceID = "other-network" },
+			"kind":     func(value *MutationHeader) { value.CascadeResourceKind = "vm" },
+			"action": func(value *MutationHeader) {
+				value.CascadeAction = string(cascadeauth.ActionPrivateSwitchDelete)
+			},
+			"generation": func(value *MutationHeader) {
+				value.ExpectedGeneration = 2
+				value.NewGeneration = 3
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				reused := header
+				reused.MutationID += "-" + name
+				reused.SemanticHash += "-" + name
+				mutate(&reused)
+				if _, err := store.StageNetwork(ctx, reused, Network{
+					ID: reused.ResourceID, CIDR: "10.90.0.0/26",
+					GatewayIPv4: "10.90.0.1", NICMAC: "02:00:00:00:90:01",
+					DNSServersJSON: "[]",
+				}); ErrorCodeOf(err) != CodeParentFrozen {
+					t.Fatalf("reused item error = %v, want %s", err, CodeParentFrozen)
+				}
+			})
+		}
+		if _, err := store.StageNetwork(ctx, header, Network{
+			ID: "network-cascade", CIDR: "10.90.0.0/26",
+			GatewayIPv4: "10.90.0.1", NICMAC: "02:00:00:00:90:01",
+			DNSServersJSON: "[]", State: "removing",
+		}); err != nil {
+			t.Fatalf("exact approved item rejected: %v", err)
+		}
+	})
+	frozen, err := store.SetParentLifecycle(
+		ctx, current, 2, 3, "frozen",
+		"11111111-1111-4111-8111-111111111111",
+		"r1-plan", strings.Repeat("a", 64),
+		testCascadeAuthorityItems("33333333-3333-4333-8333-333333333333", 1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frozen.ParentState != "frozen" || frozen.ParentGeneration != 3 {
+		t.Fatalf("frozen authority = %+v", frozen)
+	}
+	thaw := frozen
+	thaw.Fence = 9
+	thaw.HostLeaseID = "lease-2"
+	thaw.HostLeaseSecretHash = "secret-hash-2"
+	thaw.HostLeaseExpiresUnix = time.Now().Add(time.Hour).Unix()
+	thaw.ParentState = "active"
+	err = store.InstallAuthority(ctx, thaw)
+	if ErrorCodeOf(err) != CodeParentFrozen {
+		t.Fatalf("thaw error = %v, want %s", err, CodeParentFrozen)
+	}
+}
+
+func TestDrainingNATPersistsOnReopenForSystemCompletion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "appliance.db")
 	store := openTestStore(t, path)
 	installTestAuthority(t, store, 12, 4)
@@ -588,8 +745,9 @@ func TestDrainingNATNormalizedOnReopen(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("NAT: found=%v err=%v", found, err)
 	}
-	if nat.State != "disabled" || nat.DrainStartedUnix != nil {
-		t.Fatalf("normalized NAT = %+v, want disabled with no drain timestamp", nat)
+	if nat.State != "draining" || nat.DrainStartedUnix == nil ||
+		*nat.DrainStartedUnix != drainStarted {
+		t.Fatalf("reopened NAT = %+v, want preserved draining transition", nat)
 	}
 }
 

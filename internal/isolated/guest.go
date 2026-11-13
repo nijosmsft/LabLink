@@ -43,6 +43,9 @@ type CreateGuestRequest struct {
 	ReachableServices           []ReachableService
 	ExpectedParentGeneration    isolatedstate.Generation
 	HostFence                   int64
+	HostLeaseID                 string
+	HostLeaseSecret             []byte
+	HostLeaseExpiresUnix        int64
 	StorageRoot                 string
 	VMPath                      string
 	VHDPath                     string
@@ -180,7 +183,10 @@ func (d GuestDomain) ReserveAndPlan(ctx context.Context, request CreateGuestRequ
 			HostFence:                uint64(request.HostFence),
 			ExpectedParentGeneration: uint64(request.ExpectedParentGeneration),
 		},
-		Reservations: reservations,
+		PhysicalHostID: request.Orchestrator.PhysicalHostID,
+		HostLeaseID:    request.HostLeaseID, HostLeaseSecret: request.HostLeaseSecret,
+		HostLeaseExpiresUnix: request.HostLeaseExpiresUnix,
+		Reservations:         reservations,
 	})
 	if err != nil {
 		return GuestPlan{}, err
@@ -344,9 +350,11 @@ func LinuxStaticNetworkConfig(ip string, prefixLength int, gateway, mac string, 
 		return "", fmt.Errorf("invalid isolated Linux static network")
 	}
 	hw := strings.ToLower(strings.ReplaceAll(mac, "-", ":"))
-	if _, err := net.ParseMAC(hw); err != nil {
+	parsedMAC, err := net.ParseMAC(hw)
+	if err != nil {
 		return "", fmt.Errorf("invalid isolated Linux MAC %q", mac)
 	}
+	hw = parsedMAC.String()
 	var nameservers string
 	if len(dns) > 0 {
 		nameservers = "\n      nameservers:\n        addresses: [" + strings.Join(dns, ", ") + "]"
@@ -354,4 +362,129 @@ func LinuxStaticNetworkConfig(ip string, prefixLength int, gateway, mac string, 
 	return "version: 2\nethernets:\n  isolated:\n    match:\n      macaddress: " + strconv.Quote(hw) +
 		"\n    set-name: isolated0\n    dhcp4: false\n    dhcp6: false\n    addresses: [" + ip + "/" + strconv.Itoa(prefixLength) + "]" +
 		"\n    routes:\n      - to: 0.0.0.0/0\n        via: " + gateway + nameservers, nil
+}
+
+func LinuxStaticNetworkBootstrapScript(ip string, prefixLength int, gateway, mac string, dns []string) (string, error) {
+	if net.ParseIP(ip) == nil || net.ParseIP(gateway) == nil || prefixLength != PrivateNetworkPrefixBits {
+		return "", fmt.Errorf("invalid isolated Linux static network")
+	}
+	parsedMAC, err := net.ParseMAC(strings.ToLower(strings.ReplaceAll(mac, "-", ":")))
+	if err != nil {
+		return "", fmt.Errorf("invalid isolated Linux MAC %q", mac)
+	}
+	for _, value := range dns {
+		if net.ParseIP(value) == nil {
+			return "", fmt.Errorf("invalid DNS server %q", value)
+		}
+	}
+	var networkd strings.Builder
+	fmt.Fprintf(&networkd, `[Match]
+MACAddress=%s
+
+[Network]
+Address=%s/%d
+Gateway=%s
+`, parsedMAC.String(), ip, prefixLength, gateway)
+	for _, value := range dns {
+		fmt.Fprintf(&networkd, "DNS=%s\n", value)
+	}
+	return fmt.Sprintf(`#!/bin/bash
+set -euo pipefail
+expected_mac=%s
+interface=
+for address_file in /sys/class/net/*/address; do
+    if [ "$(tr '[:upper:]' '[:lower:]' < "$address_file")" = "$expected_mac" ]; then
+        interface="$(basename "$(dirname "$address_file")")"
+        break
+    fi
+done
+if [ -z "$interface" ]; then
+    echo "ISOLATED_ADAPTER_IDENTITY_MISMATCH" >&2
+    exit 1
+fi
+install -d -m 0755 /etc/systemd/network
+cat > /etc/systemd/network/10-lablink-isolated.network <<'EOF'
+%sEOF
+chmod 0644 /etc/systemd/network/10-lablink-isolated.network
+ip link set dev "$interface" up
+ip -4 address flush dev "$interface" scope global
+ip address add %s/%d dev "$interface"
+ip route replace default via %s dev "$interface"
+systemctl restart systemd-networkd.service
+for attempt in $(seq 1 30); do
+    if ip -4 -o address show dev "$interface" | grep -Fq ' %s/%d '; then
+        exit 0
+    fi
+    sleep 1
+done
+echo "ISOLATED_STATIC_IPV4_VERIFY_FAILED" >&2
+exit 1
+`, strconv.Quote(parsedMAC.String()), networkd.String(), ip, prefixLength, gateway, ip, prefixLength), nil
+}
+
+func WindowsDNSUpdateScript(mac string, dns []string) (string, error) {
+	normalizedMAC := strings.ToUpper(strings.NewReplacer("-", "", ":", "").Replace(mac))
+	if len(normalizedMAC) != 12 {
+		return "", fmt.Errorf("invalid isolated Windows MAC %q", mac)
+	}
+	values := make([]string, 0, len(dns))
+	for _, value := range dns {
+		if net.ParseIP(value) == nil {
+			return "", fmt.Errorf("invalid DNS server %q", value)
+		}
+		values = append(values, "'"+strings.ReplaceAll(value, "'", "''")+"'")
+	}
+	if len(values) == 0 {
+		return "", fmt.Errorf("at least one DNS server is required")
+	}
+	return fmt.Sprintf(`$expectedMac = '%s'
+$adapter = @(Get-NetAdapter | Where-Object { ($_.MacAddress -replace '[-:]','').ToUpperInvariant() -eq $expectedMac })
+if ($adapter.Count -ne 1) { throw "ISOLATED_ADAPTER_IDENTITY_MISMATCH" }
+Set-DnsClientServerAddress -InterfaceIndex ([int]$adapter[0].ifIndex) -ServerAddresses @(%s) -ErrorAction Stop
+`, normalizedMAC, strings.Join(values, ",")), nil
+}
+
+func LinuxDNSUpdateScript(mac string, dns []string) (string, error) {
+	parsedMAC, err := net.ParseMAC(strings.ToLower(strings.ReplaceAll(mac, "-", ":")))
+	if err != nil {
+		return "", fmt.Errorf("invalid isolated Linux MAC %q", mac)
+	}
+	if len(dns) == 0 {
+		return "", fmt.Errorf("at least one DNS server is required")
+	}
+	lines := make([]string, 0, len(dns))
+	for _, value := range dns {
+		if net.ParseIP(value) == nil {
+			return "", fmt.Errorf("invalid DNS server %q", value)
+		}
+		lines = append(lines, "DNS="+value)
+	}
+	return fmt.Sprintf(`set -euo pipefail
+expected_mac=%s
+interface=
+for address_file in /sys/class/net/*/address; do
+    if [ "$(tr '[:upper:]' '[:lower:]' < "$address_file")" = "$expected_mac" ]; then
+        interface="$(basename "$(dirname "$address_file")")"
+        break
+    fi
+done
+if [ -z "$interface" ]; then
+    echo "ISOLATED_ADAPTER_IDENTITY_MISMATCH" >&2
+    exit 1
+fi
+unit=/etc/systemd/network/10-lablink-isolated.network
+if [ ! -f "$unit" ]; then
+    echo "ISOLATED_NETWORK_UNIT_MISSING" >&2
+    exit 1
+fi
+temp="$(mktemp)"
+trap 'rm -f "$temp"' EXIT
+sed '/^DNS=/d' "$unit" > "$temp"
+cat >> "$temp" <<'EOF'
+%s
+EOF
+install -m 0644 "$temp" "$unit"
+networkctl reload
+resolvectl dns "$interface" %s
+`, strconv.Quote(parsedMAC.String()), strings.Join(lines, "\n"), strings.Join(dns, " ")), nil
 }

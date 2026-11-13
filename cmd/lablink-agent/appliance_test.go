@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/isolated"
@@ -13,6 +16,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	gproto "google.golang.org/protobuf/proto"
 )
 
 func TestNormalAgentCompatibility(t *testing.T) {
@@ -119,13 +123,16 @@ func TestApplianceRPCReplayConflictCollisionAndPendingApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("appliance.Open: %v", err)
 	}
+
 	t.Cleanup(func() { _ = store.Close() })
 	if err := store.InstallAuthority(context.Background(), appliance.Authority{
-		PhysicalHostID:   "host-1",
-		HostLeaseID:      "lease-1",
-		Fence:            7,
-		ParentGeneration: 3,
-		ParentState:      "active",
+		PhysicalHostID:       "host-1",
+		HostLeaseID:          "lease-1",
+		HostLeaseSecretHash:  testLeaseSecretHash(),
+		HostLeaseExpiresUnix: time.Now().Add(time.Hour).Unix(),
+		Fence:                7,
+		ParentGeneration:     3,
+		ParentState:          "active",
 	}); err != nil {
 		t.Fatalf("InstallAuthority: %v", err)
 	}
@@ -257,6 +264,162 @@ func TestApplianceRPCReplayConflictCollisionAndPendingApply(t *testing.T) {
 	}
 }
 
+func TestApplianceAuthorityRejectsUnauthenticatedEqualFenceAndReleasedLease(t *testing.T) {
+	store, err := appliance.Open(filepath.Join(t.TempDir(), "appliance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	expires := time.Now().Add(time.Hour).Unix()
+	secret := []byte("current-secret")
+	sum := sha256.Sum256(secret)
+	current := appliance.Authority{
+		PhysicalHostID: "host-1", HostLeaseID: "lease-1",
+		HostLeaseSecretHash:  hex.EncodeToString(sum[:]),
+		HostLeaseExpiresUnix: expires, Fence: 7,
+		ParentGeneration: 3, ParentState: "active",
+	}
+	if err := store.InstallAuthority(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated := &pb.MutationHeader{
+		HostFence: 7, ParentResourceId: "orchestrator-1",
+		ExpectedParentGeneration: 3,
+	}
+	if err := ensureInitialApplianceAuthority(
+		context.Background(), store, unauthenticated); status.Code(err) != codes.Aborted {
+		t.Fatalf("unauthenticated equal fence error = %v", err)
+	}
+	authenticated := &pb.MutationHeader{
+		PhysicalHostId: "host-1", HostLeaseId: "lease-1",
+		HostLeaseSecret: secret, HostLeaseExpiresUnix: expires,
+		HostFence: 7, ParentResourceId: "orchestrator-1",
+		ExpectedParentGeneration: 3,
+	}
+	if err := ensureInitialApplianceAuthority(
+		context.Background(), store, authenticated); err != nil {
+		t.Fatalf("authenticated equal fence: %v", err)
+	}
+	if _, err := store.ReleaseAuthority(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureInitialApplianceAuthority(
+		context.Background(), store, authenticated); status.Code(err) != codes.Aborted {
+		t.Fatalf("released authority error = %v", err)
+	}
+	next := gproto.Clone(authenticated).(*pb.MutationHeader)
+	next.HostFence = 8
+	next.HostLeaseId = "lease-2"
+	next.HostLeaseSecret = []byte("next-secret")
+	next.HostLeaseExpiresUnix = time.Now().Add(2 * time.Hour).Unix()
+	if err := ensureInitialApplianceAuthority(
+		context.Background(), store, next); err != nil {
+		t.Fatalf("higher-fence handoff after release: %v", err)
+	}
+}
+
+func TestApplianceAuthorityHandoffPreservesFrozenCascade(t *testing.T) {
+	store, err := appliance.Open(filepath.Join(t.TempDir(), "appliance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	currentSecret := []byte("current-secret")
+	currentSecretHash := sha256.Sum256(currentSecret)
+	current := appliance.Authority{
+		PhysicalHostID:       "host-1",
+		HostLeaseID:          "lease-1",
+		HostLeaseSecretHash:  hex.EncodeToString(currentSecretHash[:]),
+		HostLeaseExpiresUnix: time.Now().Add(time.Hour).Unix(),
+		Fence:                7,
+		ParentGeneration:     3,
+		ParentState:          "active",
+	}
+	if err := store.InstallAuthority(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		cascadeOperationID  = "11111111-1111-4111-8111-111111111111"
+		cascadePlanRevision = "r1-approved"
+		cascadePlanHash     = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	frozen, err := store.SetParentLifecycle(
+		ctx, current, 3, 4, "frozen",
+		cascadeOperationID, cascadePlanRevision, cascadePlanHash,
+		[]appliance.CascadeAuthorityItem{{
+			ItemID:       "22222222-2222-4222-8222-222222222222",
+			ResourceKind: "network",
+			ResourceID:   "33333333-3333-4333-8333-333333333333",
+			Action:       "delete_private_switch", ExpectedGeneration: 1,
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReleaseAuthority(ctx, frozen); err != nil {
+		t.Fatal(err)
+	}
+
+	nextSecret := []byte("next-secret")
+	nextExpiry := time.Now().Add(2 * time.Hour).Unix()
+	nextHeader := &pb.MutationHeader{
+		PhysicalHostId:           "host-1",
+		HostLeaseId:              "lease-2",
+		HostLeaseSecret:          nextSecret,
+		HostLeaseExpiresUnix:     nextExpiry,
+		HostFence:                8,
+		ParentResourceId:         "orchestrator-1",
+		ExpectedParentGeneration: 3,
+		CascadeOperationId:       cascadeOperationID,
+		CascadePlanRevision:      cascadePlanRevision,
+		CascadePlanHash:          cascadePlanHash,
+	}
+	if err := ensureInitialApplianceAuthority(ctx, store, nextHeader); err != nil {
+		t.Fatalf("higher-fence frozen handoff: %v", err)
+	}
+
+	installed, err := store.Authority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextSecretHash := sha256.Sum256(nextSecret)
+	if installed.PhysicalHostID != "host-1" ||
+		installed.HostLeaseID != "lease-2" ||
+		installed.HostLeaseSecretHash != hex.EncodeToString(nextSecretHash[:]) ||
+		installed.HostLeaseExpiresUnix != nextExpiry ||
+		installed.Fence != 8 ||
+		installed.ParentGeneration != 4 ||
+		installed.ParentState != "frozen" ||
+		installed.CascadeOperationID != cascadeOperationID ||
+		installed.CascadePlanRevision != cascadePlanRevision ||
+		installed.CascadePlanHash != cascadePlanHash ||
+		installed.HandoffPending {
+		t.Fatalf("installed authority lost handoff state: %+v", installed)
+	}
+
+	server := &agentServer{appliance: &applianceRPC{enabled: true, store: store}}
+	state, err := server.SetApplianceParentLifecycle(
+		ctx, &pb.SetApplianceParentLifecycleRequest{
+			Header: nextHeader, State: "frozen", NewParentGeneration: 4,
+			CascadeItems: []*pb.CascadeAuthorityItem{{
+				ItemId:       "22222222-2222-4222-8222-222222222222",
+				ResourceKind: "network",
+				ResourceId:   "33333333-3333-4333-8333-333333333333",
+				Action:       "delete_private_switch", ExpectedGeneration: 1,
+			}},
+		})
+	if err != nil {
+		t.Fatalf("idempotent frozen lifecycle after handoff: %v", err)
+	}
+	if !state.GetFrozen() || state.GetHostFence() != 8 ||
+		state.GetParentGeneration() != 4 {
+		t.Fatalf("idempotent lifecycle state = %+v", state)
+	}
+}
+
 func rpcHeader(
 	mutationID, semanticHash, resourceID string,
 	expected, next, fence, parentGeneration uint64,
@@ -270,5 +433,14 @@ func rpcHeader(
 		NewGeneration:            next,
 		HostFence:                fence,
 		ExpectedParentGeneration: parentGeneration,
+		PhysicalHostId:           "host-1",
+		HostLeaseId:              "lease-1",
+		HostLeaseSecret:          []byte("test-lease-secret"),
+		HostLeaseExpiresUnix:     time.Now().Add(time.Hour).Unix(),
 	}
+}
+
+func testLeaseSecretHash() string {
+	sum := sha256.Sum256([]byte("test-lease-secret"))
+	return hex.EncodeToString(sum[:])
 }

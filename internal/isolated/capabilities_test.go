@@ -55,6 +55,8 @@ func TestMissingCapabilitiesFailClosedWithUpdateGuidance(t *testing.T) {
 		CapabilityRelayV1,
 		CapabilityNATV1,
 		CapabilityStatsV1,
+		CapabilityAuthorityReleaseV1,
+		CapabilityParentLifecycleV1,
 	}
 	if len(compatibilityErr.MissingCapabilities) != len(wantMissing) {
 		t.Fatalf("missing capabilities = %v, want %v", compatibilityErr.MissingCapabilities, wantMissing)
@@ -103,7 +105,7 @@ func TestProtocolRangeBoundariesAndFailures(t *testing.T) {
 			t.Errorf("protocol version %d rejected: %v", version, err)
 		}
 	}
-	for _, version := range []uint32{0, 1, 5} {
+	for _, version := range []uint32{0, 1} {
 		err := CheckAgentCompatibility(
 			AgentCompatibility{
 				Node:            "orch",
@@ -118,14 +120,26 @@ func TestProtocolRangeBoundariesAndFailures(t *testing.T) {
 			continue
 		}
 		for _, want := range []string{
-			"AGENT_PROTOCOL_UNSUPPORTED",
-			"supported range is 2-4",
+			"AGENT_UPGRADE_REQUIRED",
+			"protocol v2 or newer is required",
 			"update_agent(node=orch)",
 		} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("protocol error %q does not contain %q", err, want)
 			}
 		}
+	}
+	err := CheckAgentCompatibility(
+		AgentCompatibility{
+			Node: "orch", AgentVersion: "agent",
+			Capabilities:    []string{string(CapabilityApplianceV1)},
+			ProtocolVersion: 5,
+		},
+		requirements,
+	)
+	if err == nil || !strings.Contains(err.Error(), "AGENT_PROTOCOL_UNSUPPORTED") ||
+		!strings.Contains(err.Error(), "supported range is 2-4") {
+		t.Fatalf("newer protocol error = %v", err)
 	}
 }
 

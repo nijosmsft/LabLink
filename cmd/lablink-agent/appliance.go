@@ -2,10 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,9 +38,15 @@ type applianceConfig struct {
 }
 
 type applianceRPC struct {
-	enabled    bool
-	store      *appliance.Store
-	startupErr error
+	enabled       bool
+	store         *appliance.Store
+	apply         *appliance.ApplyManager
+	relay         *appliance.RelayManager
+	nat           *appliance.NATEngine
+	natCancel     context.CancelFunc
+	natDone       chan struct{}
+	mainInterface string
+	startupErr    error
 }
 
 func resolveApplianceConfig(
@@ -93,17 +105,248 @@ func openApplianceRPC(cfg applianceConfig, goos string) *applianceRPC {
 		return service
 	}
 	service.store = store
-	if err := store.SetReadiness(context.Background(), false, externalApplyPending); err != nil {
+	if runtime.GOOS != "linux" {
+		if err := store.SetReadiness(context.Background(), false, externalApplyPending); err != nil {
+			_ = store.Close()
+			service.store = nil
+			service.startupErr = fmt.Errorf("mark appliance not ready: %w", err)
+		}
+		return service
+	}
+	mainInterface, err := discoverMainInterface(context.Background())
+	if err != nil {
 		_ = store.Close()
 		service.store = nil
-		service.startupErr = fmt.Errorf("mark appliance not ready: %w", err)
+		service.startupErr = err
+		return service
 	}
+	snapshot, err := store.Snapshot(context.Background())
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("read appliance state for interface recovery: %w", err)
+		return service
+	}
+	for _, network := range snapshot.Networks {
+		if network.RetiredAtUnix != nil || strings.TrimSpace(network.InterfaceName) != "" {
+			continue
+		}
+		interfaceName, resolveErr := interfaceNameForMAC(network.NICMAC)
+		if resolveErr != nil {
+			_ = store.Close()
+			service.store = nil
+			service.startupErr = fmt.Errorf(
+				"recover network %s interface from MAC %s: %w",
+				network.ID, network.NICMAC, resolveErr)
+			return service
+		}
+		if bindErr := store.BindNetworkInterface(context.Background(), network.ID, interfaceName); bindErr != nil {
+			_ = store.Close()
+			service.store = nil
+			service.startupErr = bindErr
+			return service
+		}
+	}
+	snapshot, err = store.Snapshot(context.Background())
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("reload appliance state after interface recovery: %w", err)
+		return service
+	}
+	for _, network := range snapshot.Networks {
+		if network.RetiredAtUnix != nil {
+			continue
+		}
+		if applyErr := applyPrivateNetworkd(context.Background(), network); applyErr != nil {
+			_ = store.Close()
+			service.store = nil
+			service.startupErr = applyErr
+			return service
+		}
+	}
+	compiler, err := appliance.NewLinuxCompiler(appliance.LinuxCompilerConfig{MainInterface: mainInterface})
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = err
+		return service
+	}
+	target, err := appliance.NewLinuxApplyTarget(appliance.LinuxTargetConfig{
+		EmergencyPath: "/opt/lablink/orchestrator/emergency.nft",
+	})
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = err
+		return service
+	}
+	conflicts, err := appliance.NewConflictScanner(appliance.ConflictScannerConfig{})
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = err
+		return service
+	}
+	manager, err := appliance.NewApplyManager(appliance.ApplyManagerOptions{
+		Store: store, Compiler: compiler, Target: target, Conflicts: conflicts,
+	})
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = err
+		return service
+	}
+	if _, err := manager.Start(context.Background()); err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("start appliance apply engine: %w", err)
+		return service
+	}
+	relayManager, err := appliance.NewRelayManager(store, appliance.RelayManagerOptions{
+		CurrentMainIPv4: func(ctx context.Context) (string, error) {
+			return waitForMainIPv4(ctx, mainInterface, 30*time.Second)
+		},
+	})
+	if err != nil {
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = err
+		return service
+	}
+	if err := relayManager.Start(context.Background()); err != nil {
+		_ = relayManager.Shutdown(context.Background())
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("start relay manager: %w", err)
+		return service
+	}
+	if err := manager.Reconcile(context.Background()); err != nil {
+		_ = relayManager.Shutdown(context.Background())
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("reconcile after relay restore: %w", err)
+		return service
+	}
+	conntrack, err := appliance.NewLinuxConntrack(appliance.LinuxConntrackConfig{})
+	if err != nil {
+		_ = relayManager.Shutdown(context.Background())
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("start conntrack inspector: %w", err)
+		return service
+	}
+	natEngine, err := appliance.NewNATEngine(appliance.NATEngineOptions{
+		Store: store, Applier: manager, Conntrack: conntrack,
+		MainInterface: mainInterface,
+		OnPollError: func(pollErr error) {
+			if pollErr == nil {
+				log.Printf("appliance NAT conntrack monitor recovered")
+				return
+			}
+			log.Printf("WARNING: appliance NAT conntrack monitor: %v", pollErr)
+		},
+	})
+	if err != nil {
+		_ = relayManager.Shutdown(context.Background())
+		_ = store.Close()
+		service.store = nil
+		service.startupErr = fmt.Errorf("start NAT engine: %w", err)
+		return service
+	}
+	natContext, natCancel := context.WithCancel(context.Background())
+	natDone := make(chan struct{})
+	service.nat = natEngine
+	service.natCancel = natCancel
+	service.natDone = natDone
+	go func() {
+		defer close(natDone)
+		if monitorErr := natEngine.Monitor(natContext); monitorErr != nil &&
+			!errors.Is(monitorErr, context.Canceled) {
+			_ = store.SetReadiness(context.Background(), false,
+				fmt.Sprintf("NAT conntrack monitor stopped: %v", monitorErr))
+		}
+	}()
+	service.apply = manager
+	service.relay = relayManager
+	service.mainInterface = mainInterface
 	return service
+}
+
+func discoverMainInterface(ctx context.Context) (string, error) {
+	result, err := (appliance.OSCommandExecutor{}).Run(ctx, "ip", "-4", "route", "show", "default")
+	if err != nil {
+		return "", fmt.Errorf("discover appliance main interface: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("discover appliance main interface: ip exited %d: %s",
+			result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	fields := strings.Fields(result.Stdout)
+	for index, field := range fields {
+		if field == "dev" && index+1 < len(fields) {
+			return fields[index+1], nil
+		}
+	}
+	return "", errors.New("discover appliance main interface: default route has no dev")
+}
+
+func discoverMainIPv4(ctx context.Context, mainInterface string) (string, error) {
+	result, err := (appliance.OSCommandExecutor{}).Run(
+		ctx, "ip", "-4", "-o", "address", "show", "dev", mainInterface, "scope", "global")
+	if err != nil {
+		return "", err
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("ip address exited %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+	}
+	fields := strings.Fields(result.Stdout)
+	for index, field := range fields {
+		if field == "inet" && index+1 < len(fields) {
+			return strings.SplitN(fields[index+1], "/", 2)[0], nil
+		}
+	}
+	return "", errors.New("main interface has no global IPv4 address")
+}
+
+func waitForMainIPv4(
+	ctx context.Context,
+	mainInterface string,
+	timeout time.Duration,
+) (string, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		address, err := discoverMainIPv4(ctx, mainInterface)
+		if err == nil {
+			return address, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-deadline.C:
+			return "", fmt.Errorf("wait for main IPv4 on %s: %w", mainInterface, lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *applianceRPC) Close() error {
 	if a == nil || a.store == nil {
 		return nil
+	}
+	if a.natCancel != nil {
+		a.natCancel()
+	}
+	if a.natDone != nil {
+		<-a.natDone
+	}
+	if a.relay != nil {
+		_ = a.relay.Shutdown(context.Background())
 	}
 	return a.store.Close()
 }
@@ -150,6 +393,19 @@ func (s *agentServer) applianceStore() (*appliance.Store, error) {
 	return s.appliance.store, nil
 }
 
+func (s *agentServer) applyApplianceIntent(ctx context.Context, mutationID string) error {
+	if s.appliance == nil || s.appliance.apply == nil {
+		if s.appliance != nil && s.appliance.store != nil {
+			return markExternalApplyPending(ctx, s.appliance.store)
+		}
+		return status.Error(codes.Unavailable, externalApplyPending)
+	}
+	if _, err := s.appliance.apply.ApplyIntent(ctx, mutationID); err != nil {
+		return applianceError(err)
+	}
+	return nil
+}
+
 func (s *agentServer) GetApplianceState(
 	ctx context.Context,
 	req *pb.GetApplianceStateRequest,
@@ -175,9 +431,23 @@ func (s *agentServer) GetApplianceState(
 		return nil, applianceError(err)
 	}
 
-	response := &pb.GetApplianceStateResponse{
-		Appliance: applianceStateProto(schemaVersion, snapshot),
+	applianceState := applianceStateProto(schemaVersion, snapshot)
+	if s.appliance.apply != nil {
+		verification, compiled, verifyErr := s.appliance.apply.VerifyCurrent(ctx)
+		applianceState.PolicyVerified = verifyErr == nil && verification.Matched
+		applianceState.Ipv4ForwardingEnabled = compiled.EnableForwarding
+		if verifyErr != nil && applianceState.Error == "" {
+			applianceState.Error = verifyErr.Error()
+		} else if !verification.Matched && applianceState.Error == "" {
+			applianceState.Error = verification.Detail
+		}
 	}
+	if mainIPv4, mainErr := discoverMainIPv4(ctx, s.appliance.mainInterface); mainErr == nil {
+		applianceState.MainIpv4 = mainIPv4
+	} else if applianceState.Error == "" {
+		applianceState.Error = mainErr.Error()
+	}
+	response := &pb.GetApplianceStateResponse{Appliance: applianceState}
 	type appendEntry func()
 	entries := make([]appendEntry, 0,
 		len(reservations)+len(snapshot.Networks)+len(snapshot.Guests)+
@@ -254,10 +524,14 @@ func (s *agentServer) ReserveResources(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
 	}
+
 	reservations := make([]appliance.Reservation, 0, len(req.GetCandidates()))
 	for i, candidate := range req.GetCandidates() {
 		if candidate == nil {
@@ -296,12 +570,159 @@ func (s *agentServer) ReserveResources(
 	return response, nil
 }
 
+func ensureInitialApplianceAuthority(
+	ctx context.Context,
+	store *appliance.Store,
+	header *pb.MutationHeader,
+) error {
+	if header == nil {
+		return status.Error(codes.InvalidArgument, "mutation header is required")
+	}
+	current, err := store.Authority(ctx)
+	if err != nil {
+		return applianceError(err)
+	}
+	if header.GetHostFence() == current.Fence {
+		_, err := store.AuthenticateAuthority(ctx, applianceAuthorityCredentials(header))
+		return applianceError(err)
+	}
+	if header.GetHostFence() < current.Fence {
+		return status.Errorf(codes.Aborted,
+			"%s: host fence is %d; request supplied %d",
+			appliance.CodeFenceRejected, current.Fence, header.GetHostFence())
+	}
+	if strings.TrimSpace(header.GetPhysicalHostId()) == "" ||
+		strings.TrimSpace(header.GetHostLeaseId()) == "" ||
+		len(header.GetHostLeaseSecret()) == 0 ||
+		header.GetHostFence() == 0 ||
+		strings.TrimSpace(header.GetParentResourceId()) == "" {
+		return status.Error(codes.FailedPrecondition,
+			"initial appliance authority requires physical host, lease, fence, and parent identity")
+	}
+	if header.GetHostLeaseExpiresUnix() <= time.Now().Unix() &&
+		!(current.Fence == 0 && header.GetHostLeaseExpiresUnix() == 0) {
+		return status.Error(codes.FailedPrecondition,
+			"initial appliance authority requires a future host lease expiry")
+	}
+	next := applianceAuthorityCredentials(header)
+	next.ParentGeneration = header.GetExpectedParentGeneration()
+	next.ParentState = "active"
+	if current.ParentState != "active" {
+		if strings.TrimSpace(header.GetCascadeOperationId()) == "" ||
+			header.GetCascadeOperationId() != current.CascadeOperationID ||
+			header.GetCascadePlanRevision() != current.CascadePlanRevision ||
+			header.GetCascadePlanHash() != current.CascadePlanHash {
+			return status.Errorf(codes.FailedPrecondition,
+				"%s: parent state is %s", appliance.CodeParentFrozen, current.ParentState)
+		}
+		next.ParentGeneration = current.ParentGeneration
+		next.ParentState = current.ParentState
+		next.CascadeOperationID = current.CascadeOperationID
+		next.CascadePlanRevision = current.CascadePlanRevision
+		next.CascadePlanHash = current.CascadePlanHash
+	}
+	if err := store.InstallAuthority(ctx, next); err != nil {
+		return applianceError(err)
+	}
+	return nil
+}
+
+func applianceAuthorityCredentials(header *pb.MutationHeader) appliance.Authority {
+	if header == nil {
+		return appliance.Authority{}
+	}
+	sum := sha256.Sum256(header.GetHostLeaseSecret())
+	return appliance.Authority{
+		PhysicalHostID:       strings.TrimSpace(header.GetPhysicalHostId()),
+		HostLeaseID:          strings.TrimSpace(header.GetHostLeaseId()),
+		HostLeaseSecretHash:  hex.EncodeToString(sum[:]),
+		HostLeaseExpiresUnix: header.GetHostLeaseExpiresUnix(),
+		Fence:                header.GetHostFence(),
+	}
+}
+
+func (s *agentServer) ReleaseApplianceAuthority(
+	ctx context.Context,
+	header *pb.MutationHeader,
+) (*pb.FenceState, error) {
+	store, err := s.applianceStore()
+	if err != nil {
+		return nil, err
+	}
+	if header == nil || header.GetHostFence() == 0 ||
+		strings.TrimSpace(header.GetPhysicalHostId()) == "" ||
+		strings.TrimSpace(header.GetHostLeaseId()) == "" ||
+		len(header.GetHostLeaseSecret()) == 0 {
+		return nil, status.Error(codes.InvalidArgument,
+			"physical host, lease, secret, fence, and expiry are required")
+	}
+	released, err := store.ReleaseAuthority(ctx, applianceAuthorityCredentials(header))
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	return &pb.FenceState{
+		PhysicalHostId: released.PhysicalHostID,
+		HostFence:      released.Fence,
+		HostLeaseId:    released.HostLeaseID,
+		Frozen:         released.ParentState == "frozen",
+		Deleting:       released.ParentState == "deleting",
+		Lost:           released.ParentState == "lost",
+	}, nil
+}
+
+func (s *agentServer) SetApplianceParentLifecycle(
+	ctx context.Context,
+	req *pb.SetApplianceParentLifecycleRequest,
+) (*pb.FenceState, error) {
+	store, err := s.applianceStore()
+	if err != nil {
+		return nil, err
+	}
+	if req == nil || req.GetHeader() == nil {
+		return nil, status.Error(codes.InvalidArgument, "mutation header is required")
+	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
+	header, err := mutationHeader(req.GetHeader())
+	if err != nil {
+		return nil, err
+	}
+	if header.CascadeOperationID == "" || header.CascadePlanRevision == "" ||
+		header.CascadePlanHash == "" {
+		return nil, status.Error(codes.InvalidArgument,
+			"cascade operation, revision, and plan hash are required")
+	}
+	next, err := store.SetParentLifecycle(
+		ctx, applianceAuthorityCredentials(req.GetHeader()),
+		header.ExpectedParentGeneration, req.GetNewParentGeneration(),
+		req.GetState(), header.CascadeOperationID,
+		header.CascadePlanRevision, header.CascadePlanHash,
+		cascadeAuthorityItems(req.GetCascadeItems()),
+	)
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	return &pb.FenceState{
+		PhysicalHostId:   next.PhysicalHostID,
+		HostFence:        next.Fence,
+		HostLeaseId:      next.HostLeaseID,
+		ParentGeneration: next.ParentGeneration,
+		Frozen:           next.ParentState == "frozen",
+		Deleting:         next.ParentState == "deleting",
+		Lost:             next.ParentState == "lost",
+	}, nil
+}
+
 func (s *agentServer) ReleaseResources(
 	ctx context.Context,
 	req *pb.ReleaseResourcesRequest,
 ) (*pb.ReleaseResourcesResponse, error) {
 	store, err := s.applianceStore()
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
 		return nil, err
 	}
 	header, err := mutationHeader(req.GetHeader())
@@ -354,6 +775,9 @@ func (s *agentServer) ApplyPrivateNetwork(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -367,20 +791,38 @@ func (s *agentServer) ApplyPrivateNetwork(
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "encode DNS servers: %v", err)
 	}
+	interfaceName := strings.TrimSpace(req.GetInterfaceName())
+	if interfaceName == "" && s.appliance != nil && s.appliance.apply != nil {
+		interfaceName, err = interfaceNameForMAC(req.GetNicMac())
+		if err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"resolve private interface for MAC %s: %v", req.GetNicMac(), err)
+		}
+	}
 	stage, err := store.StageNetwork(ctx, header, appliance.Network{
 		ID:             header.ResourceID,
 		CIDR:           req.GetCidr(),
 		GatewayIPv4:    req.GetGatewayIpv4(),
 		NICMAC:         req.GetNicMac(),
-		InterfaceName:  req.GetInterfaceName(),
+		InterfaceName:  interfaceName,
 		DNSServersJSON: string(dns),
 		State:          "pending",
-		LastError:      externalApplyPending,
 	})
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
+	if s.appliance != nil && s.appliance.apply != nil {
+		if err := applyPrivateNetworkd(ctx, appliance.Network{
+			ID: header.ResourceID, CIDR: req.GetCidr(), GatewayIPv4: req.GetGatewayIpv4(),
+			NICMAC: req.GetNicMac(), InterfaceName: interfaceName,
+		}); err != nil {
+			return nil, status.Errorf(codes.Internal, "apply private networkd unit: %v", err)
+		}
+	}
+	if stage.Intent.MutationID != "" {
+		err = s.applyApplianceIntent(ctx, stage.Intent.MutationID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	network, found, err := store.Network(ctx, header.ResourceID)
@@ -400,12 +842,99 @@ func (s *agentServer) ApplyPrivateNetwork(
 	}, nil
 }
 
+func applyPrivateNetworkd(ctx context.Context, network appliance.Network) error {
+	subnet, err := netip.ParsePrefix(strings.TrimSpace(network.CIDR))
+	if err != nil {
+		return err
+	}
+	mac := strings.ToUpper(strings.NewReplacer(":", "", "-", "").Replace(network.NICMAC))
+	if len(mac) != 12 {
+		return fmt.Errorf("invalid private NIC MAC %q", network.NICMAC)
+	}
+	formattedMAC := strings.Join([]string{
+		mac[0:2], mac[2:4], mac[4:6], mac[6:8], mac[8:10], mac[10:12],
+	}, ":")
+	unit, err := appliance.RenderPrivateNetworkdUnit(appliance.PrivateNICSpec{
+		NetworkID: network.ID, MAC: formattedMAC,
+		InterfaceName: network.InterfaceName, Subnet: subnet,
+	})
+	if err != nil {
+		return err
+	}
+	files := appliance.OSFileSystem{}
+	if err := files.WriteFileAtomic(unit.Path, []byte(unit.Content), 0o644); err != nil {
+		return err
+	}
+	executor := appliance.OSCommandExecutor{}
+	for _, command := range [][]string{
+		{"networkctl", "reload"},
+		{"networkctl", "reconfigure", network.InterfaceName},
+	} {
+		result, runErr := executor.Run(ctx, command[0], command[1:]...)
+		if runErr != nil {
+			return runErr
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("%s failed: %s", strings.Join(command, " "), strings.TrimSpace(result.Stderr))
+		}
+	}
+	gateway, err := appliance.PrivateGateway(subnet)
+	if err != nil {
+		return err
+	}
+	var result appliance.CommandResult
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		result, err = executor.Run(ctx, "ip", "-4", "-o", "address", "show", "dev", network.InterfaceName)
+		if err != nil {
+			return err
+		}
+		if result.ExitCode == 0 && strings.Contains(result.Stdout, gateway.String()+"/26") {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("interface %s did not acquire %s/26: %s",
+		network.InterfaceName, gateway, strings.TrimSpace(result.Stdout+" "+result.Stderr))
+}
+
+func interfaceNameForMAC(mac string) (string, error) {
+	normalize := func(value string) string {
+		return strings.ToUpper(strings.NewReplacer(":", "", "-", "").Replace(strings.TrimSpace(value)))
+	}
+	expected := normalize(mac)
+	if expected == "" {
+		return "", errors.New("MAC address is required")
+	}
+	entries, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		data, readErr := os.ReadFile(filepath.Join("/sys/class/net", entry.Name(), "address"))
+		if readErr == nil && normalize(string(data)) == expected {
+			return entry.Name(), nil
+		}
+	}
+	return "", fmt.Errorf("no interface has MAC %s", expected)
+}
+
 func (s *agentServer) RemovePrivateNetwork(
 	ctx context.Context,
 	req *pb.RemovePrivateNetworkRequest,
 ) (*pb.RemovePrivateNetworkResponse, error) {
 	store, err := s.applianceStore()
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
 		return nil, err
 	}
 	header, err := mutationHeader(req.GetHeader())
@@ -421,13 +950,16 @@ func (s *agentServer) RemovePrivateNetwork(
 	}
 	now := time.Now().Unix()
 	current.State = "retiring"
-	current.LastError = externalApplyPending
+	current.LastError = ""
 	current.RetiredAtUnix = &now
 	stage, err := store.StageNetwork(ctx, header, current)
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
+	if stage.Intent.MutationID != "" {
+		err = s.applyApplianceIntent(ctx, stage.Intent.MutationID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	current, _, err = store.Network(ctx, header.ResourceID)
@@ -452,6 +984,9 @@ func (s *agentServer) RegisterIsolatedGuest(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -460,7 +995,7 @@ func (s *agentServer) RegisterIsolatedGuest(
 		header.ParentResourceID = req.GetNetworkId()
 	}
 	if err := requireReservationForMutation(
-		ctx, store, header, req.GetReservationId(), "guest", header.ResourceID,
+		ctx, store, header, req.GetReservationId(), "guest_ip", header.ResourceID,
 	); err != nil {
 		return nil, err
 	}
@@ -470,12 +1005,14 @@ func (s *agentServer) RegisterIsolatedGuest(
 		IPv4:      req.GetIpv4(),
 		MAC:       req.GetMac(),
 		State:     "pending",
-		LastError: externalApplyPending,
 	})
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
+	if stage.Intent.MutationID != "" {
+		err = s.applyApplianceIntent(ctx, stage.Intent.MutationID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	snapshot, err := store.Snapshot(ctx)
@@ -501,6 +1038,9 @@ func (s *agentServer) RemoveIsolatedGuest(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -518,13 +1058,16 @@ func (s *agentServer) RemoveIsolatedGuest(
 	}
 	now := time.Now().Unix()
 	guest.State = "retiring"
-	guest.LastError = externalApplyPending
+	guest.LastError = ""
 	guest.RetiredAtUnix = &now
 	stage, err := store.StageGuest(ctx, header, guest)
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
+	if stage.Intent.MutationID != "" {
+		err = s.applyApplianceIntent(ctx, stage.Intent.MutationID)
+	}
+	if err != nil {
 		return nil, err
 	}
 	snapshot, err = store.Snapshot(ctx)
@@ -566,6 +1109,9 @@ func (s *agentServer) stageRelay(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, pbHeader); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(pbHeader)
 	if err != nil {
 		return nil, err
@@ -578,20 +1124,30 @@ func (s *agentServer) stageRelay(
 	); err != nil {
 		return nil, err
 	}
-	_, err = store.StageRelay(ctx, header, appliance.Relay{
+	stage, err := store.StageRelay(ctx, header, appliance.Relay{
 		ID:            header.ResourceID,
 		VMID:          vmID,
 		ListenPort:    int64(listenPort),
 		TargetIPv4:    targetIPv4,
 		TargetPort:    appliance.RelayTargetPort,
 		State:         desiredState,
-		LastBindError: externalApplyPending,
+		LastBindError: "",
 	})
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
-		return nil, err
+	if stage.Intent.MutationID != "" {
+		if err := s.applyApplianceIntent(ctx, stage.Intent.MutationID); err != nil {
+			return nil, err
+		}
+	}
+	if s.appliance != nil && s.appliance.relay != nil {
+		if !stage.Replay {
+			if err := s.appliance.relay.Apply(
+				ctx, header.ResourceID, header.NewGeneration, header.HostFence); err != nil {
+				return nil, applianceError(err)
+			}
+		}
 	}
 	snapshot, err := store.Snapshot(ctx)
 	if err != nil {
@@ -615,6 +1171,9 @@ func (s *agentServer) RemoveRelay(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -630,22 +1189,61 @@ func (s *agentServer) RemoveRelay(
 	if header.ParentResourceID == "" {
 		header.ParentResourceID = firstNonEmpty(req.GetVmId(), relay.VMID)
 	}
-	now := time.Now().Unix()
-	relay.State = "retiring"
-	relay.LastBindError = externalApplyPending
-	relay.RetiredAtUnix = &now
-	_, err = store.StageRelay(ctx, header, relay)
+	if relay.State == "removed" || relay.RetiredAtUnix != nil {
+		networkID := firstNonEmpty(req.GetNetworkId(), guestNetworkMap(snapshot.Guests)[relay.VMID])
+		return relayProto(relay, networkID), nil
+	}
+	if s.appliance == nil || s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
+	}
+	if relay.State == "retiring" {
+		relay, err = s.appliance.relay.Retire(
+			ctx, header.ResourceID, relay.DesiredGeneration, header.HostFence)
+		if err != nil {
+			return nil, applianceError(err)
+		}
+		if s.appliance.apply != nil {
+			if err := s.appliance.apply.Reconcile(ctx); err != nil {
+				return nil, applianceError(err)
+			}
+		}
+		snapshot, err = store.Snapshot(ctx)
+		if err != nil {
+			return nil, applianceError(err)
+		}
+		networkID := firstNonEmpty(req.GetNetworkId(), guestNetworkMap(snapshot.Guests)[relay.VMID])
+		return relayProto(relay, networkID), nil
+	}
+	relay.State = "ready"
+	relay.LastBindError = ""
+	relay.RetiredAtUnix = nil
+	stage, err := store.StageRelay(ctx, header, relay)
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
-		return nil, err
+	if stage.Intent.MutationID != "" {
+		if err := s.applyApplianceIntent(ctx, stage.Intent.MutationID); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.appliance.relay.Apply(
+		ctx, header.ResourceID, header.NewGeneration, header.HostFence); err != nil {
+		return nil, applianceError(err)
+	}
+	relay, err = s.appliance.relay.RemoveRelay(
+		ctx, header.ResourceID, header.NewGeneration, header.HostFence)
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	if s.appliance.apply != nil {
+		if err := s.appliance.apply.Reconcile(ctx); err != nil {
+			return nil, applianceError(err)
+		}
 	}
 	snapshot, err = store.Snapshot(ctx)
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	relay, _ = findRelay(snapshot, header.ResourceID)
 	networkID := firstNonEmpty(req.GetNetworkId(), guestNetworkMap(snapshot.Guests)[relay.VMID])
 	return relayProto(relay, networkID), nil
 }
@@ -696,25 +1294,26 @@ func (s *agentServer) GetRelayStats(
 	ctx context.Context,
 	req *pb.GetRelayStatsRequest,
 ) (*pb.GetRelayStatsResponse, error) {
-	store, err := s.applianceStore()
-	if err != nil {
+	if _, err := s.applianceStore(); err != nil {
 		return nil, err
 	}
-	snapshot, err := store.Snapshot(ctx)
+	if s.appliance == nil || s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
+	}
+	stats, err := s.appliance.relay.Stats(ctx, req.GetRelayId())
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	relay, found := findRelay(snapshot, req.GetRelayId())
-	if !found {
-		return nil, status.Error(codes.NotFound, "relay not found")
-	}
 	return &pb.GetRelayStatsResponse{
-		RelayId:             relay.ID,
-		ListenerState:       "pending",
-		BindAddress:         relay.BoundMainIP,
-		LastFailure:         externalApplyPending,
-		RelayGeneration:     relay.DesiredGeneration,
-		ApplianceGeneration: snapshot.Status.InventoryGeneration,
+		RelayId: stats.RelayID, ListenerState: stats.ListenerState,
+		BindAddress: stats.BindAddress, ActiveConnections: stats.ActiveConnections,
+		TotalAcceptedConnections: stats.TotalAcceptedConnections,
+		BytesGuestToMain:         stats.BytesGuestToMain, BytesMainToGuest: stats.BytesMainToGuest,
+		LastSuccessfulConnectionUnix: stats.LastSuccessfulConnectionUnix,
+		TargetDialFailureCount:       stats.TargetDialFailureCount,
+		LastFailure:                  firstNonEmpty(stats.LastFailure, stats.BindError),
+		RelayGeneration:              stats.RelayGeneration,
+		ApplianceGeneration:          stats.ApplianceGeneration,
 	}, nil
 }
 
@@ -726,6 +1325,9 @@ func (s *agentServer) RebindRelays(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -733,7 +1335,32 @@ func (s *agentServer) RebindRelays(
 	if err := validateMutationEnvelopeReadOnly(ctx, store, header); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unavailable, externalApplyPending)
+	if s.appliance == nil || s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
+	}
+	mainIPv4, err := waitForMainIPv4(ctx, s.appliance.mainInterface, 30*time.Second)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, err.Error())
+	}
+	if err := s.appliance.relay.Rebind(ctx, mainIPv4); err != nil {
+		return nil, applianceError(err)
+	}
+	snapshot, err := store.Snapshot(ctx)
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	guestNetworks := guestNetworkMap(snapshot.Guests)
+	response := &pb.RebindRelaysResponse{}
+	for _, relay := range snapshot.Relays {
+		if relay.RetiredAtUnix == nil {
+			response.Relays = append(response.Relays, relayProto(relay, guestNetworks[relay.VMID]))
+		}
+	}
+	response.Mutation = mutationResult(header, &pb.GenerationState{
+		DesiredGeneration: header.NewGeneration, AppliedGeneration: header.NewGeneration,
+		ObservedGeneration: header.NewGeneration, ParentGeneration: header.ExpectedParentGeneration,
+	}, false, snapshot.Status.InventoryGeneration)
+	return response, nil
 }
 
 func (s *agentServer) ValidateRelay(
@@ -752,9 +1379,37 @@ func (s *agentServer) ValidateRelay(
 	if !found {
 		return nil, status.Error(codes.NotFound, "relay not found")
 	}
+	if s.appliance == nil || s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
+	}
+	stats, err := s.appliance.relay.Stats(ctx, relay.ID)
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	guest, guestFound := findGuest(snapshot, relay.VMID)
+	mappingValid := guestFound && guest.RetiredAtUnix == nil &&
+		relay.TargetIPv4 == guest.IPv4 && relay.TargetPort == appliance.RelayTargetPort
+	targetReachable := false
+	message := firstNonEmpty(stats.LastFailure, stats.BindError)
+	if req.GetProbeTarget() && mappingValid {
+		targetAddress := net.JoinHostPort(relay.TargetIPv4, strconv.Itoa(appliance.RelayTargetPort))
+		connection, dialErr := net.DialTimeout("tcp4", targetAddress, 3*time.Second)
+		if dialErr == nil {
+			targetReachable = true
+			_ = connection.Close()
+		} else if message == "" {
+			message = dialErr.Error()
+		}
+	}
 	return &pb.ValidateRelayResponse{
-		Relay:               relayProto(relay, guestNetworkMap(snapshot.Guests)[relay.VMID]),
-		Message:             externalApplyPending,
+		Relay:         relayProto(relay, guestNetworkMap(snapshot.Guests)[relay.VMID]),
+		ListenerValid: stats.ListenerState == "ready" && stats.BindAddress != "",
+		MappingValid:  mappingValid,
+		GenerationValid: stats.RelayGeneration == relay.DesiredGeneration &&
+			relay.DesiredGeneration == relay.AppliedGeneration &&
+			relay.DesiredGeneration == relay.ObservedGeneration,
+		TargetReachable:     targetReachable,
+		Message:             message,
 		ApplianceGeneration: snapshot.Status.InventoryGeneration,
 	}, nil
 }
@@ -767,6 +1422,9 @@ func (s *agentServer) SetNatState(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -775,34 +1433,27 @@ func (s *agentServer) SetNatState(
 		header.ParentResourceID = header.ResourceID
 	}
 	if err := requireReservationForMutation(
-		ctx, store, header, req.GetReservationId(), "guest", header.ResourceID,
+		ctx, store, header, req.GetReservationId(), "conntrack_mark", header.ResourceID,
 	); err != nil {
 		return nil, err
 	}
-	var drainStarted *int64
-	if req.GetDesiredState() == "draining" {
-		now := time.Now().Unix()
-		drainStarted = &now
+	if s.appliance.nat == nil {
+		return nil, status.Error(codes.Unavailable, "NAT engine is not available")
 	}
-	_, err = store.StageNAT(ctx, header, appliance.NATState{
-		VMID:             header.ResourceID,
-		State:            req.GetDesiredState(),
-		ConntrackMark:    int64(req.GetConntrackMark()),
-		DrainStartedUnix: drainStarted,
-		LastError:        externalApplyPending,
-	})
+	var enabled bool
+	switch req.GetDesiredState() {
+	case "enabled":
+		enabled = true
+	case "disabled":
+		enabled = false
+	default:
+		return nil, status.Errorf(codes.InvalidArgument,
+			"desired NAT state must be enabled or disabled, got %q", req.GetDesiredState())
+	}
+	nat, err := s.appliance.nat.SetEnabled(
+		ctx, header, int64(req.GetConntrackMark()), enabled)
 	if err != nil {
 		return nil, applianceError(err)
-	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
-		return nil, err
-	}
-	nat, found, err := store.NAT(ctx, header.ResourceID)
-	if err != nil {
-		return nil, applianceError(err)
-	}
-	if !found {
-		return nil, status.Error(codes.Internal, "staged NAT state was not found")
 	}
 	return natProto(nat, req.GetNetworkId()), nil
 }
@@ -857,6 +1508,9 @@ func (s *agentServer) ReconcileNat(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureInitialApplianceAuthority(ctx, store, req.GetHeader()); err != nil {
+		return nil, err
+	}
 	header, err := mutationHeader(req.GetHeader())
 	if err != nil {
 		return nil, err
@@ -871,13 +1525,15 @@ func (s *agentServer) ReconcileNat(
 	if header.ParentResourceID == "" {
 		header.ParentResourceID = header.ResourceID
 	}
-	current.LastError = externalApplyPending
+	current.LastError = ""
 	stage, err := store.StageNAT(ctx, header, current)
 	if err != nil {
 		return nil, applianceError(err)
 	}
-	if err := markExternalApplyPending(ctx, store); err != nil {
-		return nil, err
+	if stage.Intent.MutationID != "" {
+		if err := s.applyApplianceIntent(ctx, stage.Intent.MutationID); err != nil {
+			return nil, err
+		}
 	}
 	current, _, err = store.NAT(ctx, header.ResourceID)
 	if err != nil {
@@ -908,7 +1564,30 @@ func mutationHeader(header *pb.MutationHeader) (appliance.MutationHeader, error)
 		NewGeneration:            header.GetNewGeneration(),
 		HostFence:                header.GetHostFence(),
 		ExpectedParentGeneration: header.GetExpectedParentGeneration(),
+		CascadeOperationID:       header.GetCascadeOperationId(),
+		CascadePlanRevision:      header.GetCascadePlanRevision(),
+		CascadePlanHash:          header.GetCascadePlanHash(),
+		CascadeItemID:            header.GetCascadeItemId(),
+		CascadeResourceKind:      header.GetCascadeResourceKind(),
+		CascadeAction:            header.GetCascadeAction(),
 	}, nil
+}
+
+func cascadeAuthorityItems(values []*pb.CascadeAuthorityItem) []appliance.CascadeAuthorityItem {
+	items := make([]appliance.CascadeAuthorityItem, 0, len(values))
+	for _, value := range values {
+		if value == nil {
+			continue
+		}
+		items = append(items, appliance.CascadeAuthorityItem{
+			ItemID:             value.GetItemId(),
+			ResourceKind:       value.GetResourceKind(),
+			ResourceID:         value.GetResourceId(),
+			Action:             value.GetAction(),
+			ExpectedGeneration: value.GetExpectedGeneration(),
+		})
+	}
+	return items
 }
 
 func reservationCandidate(

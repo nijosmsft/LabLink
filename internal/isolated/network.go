@@ -191,6 +191,9 @@ type AddNetworkRequest struct {
 	ExplicitSubnetIndex      *int
 	Routes                   []hyperv.IsolatedRouteObservation
 	HostFence                int64
+	HostLeaseID              string
+	HostLeaseSecret          []byte
+	HostLeaseExpiresUnix     int64
 }
 
 type AddNetworkPlan struct {
@@ -320,7 +323,10 @@ func (d NetworkDomain) ReserveAndPlan(
 				HostFence:                uint64(request.HostFence),
 				ExpectedParentGeneration: uint64(request.ExpectedParentGeneration),
 			},
-			Reservations: []appliance.Reservation{reservation},
+			PhysicalHostID: request.Orchestrator.PhysicalHostID,
+			HostLeaseID:    request.HostLeaseID, HostLeaseSecret: request.HostLeaseSecret,
+			HostLeaseExpiresUnix: request.HostLeaseExpiresUnix,
+			Reservations:         []appliance.Reservation{reservation},
 		})
 		if reserveErr == nil {
 			if len(result.Reservations) != 1 {

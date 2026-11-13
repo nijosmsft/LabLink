@@ -8,14 +8,18 @@ import (
 type Capability string
 
 const (
-	CapabilityApplianceV1 Capability = "isolated.appliance.v1"
-	CapabilityNetworkV1   Capability = "isolated.network.v1"
-	CapabilityRelayV1     Capability = "isolated.relay.v1"
-	CapabilityNATV1       Capability = "isolated.nat.v1"
-	CapabilityStatsV1     Capability = "isolated.stats.v1"
+	CapabilityApplianceV1        Capability = "isolated.appliance.v1"
+	CapabilityNetworkV1          Capability = "isolated.network.v1"
+	CapabilityRelayV1            Capability = "isolated.relay.v1"
+	CapabilityNATV1              Capability = "isolated.nat.v1"
+	CapabilityStatsV1            Capability = "isolated.stats.v1"
+	CapabilityAuthorityReleaseV1 Capability = "isolated.authority-release.v1"
+	CapabilityParentLifecycleV1  Capability = "isolated.parent-lifecycle.v1"
 
-	MinimumProtocolVersion uint32 = 1
-	MaximumProtocolVersion uint32 = 1
+	// Isolated orchestrators have no legacy fallback: authority release and
+	// frozen-parent lifecycle are mandatory protocol-v2 operations.
+	MinimumProtocolVersion uint32 = 2
+	MaximumProtocolVersion uint32 = 2
 )
 
 type ProtocolRange struct {
@@ -53,6 +57,8 @@ func RequiredOrchestratorCapabilities() []Capability {
 		CapabilityRelayV1,
 		CapabilityNATV1,
 		CapabilityStatsV1,
+		CapabilityAuthorityReleaseV1,
+		CapabilityParentLifecycleV1,
 	}
 }
 
@@ -108,6 +114,26 @@ func CheckAgentCompatibility(
 	if err := requirements.Validate(); err != nil {
 		return err
 	}
+	if agent.ProtocolVersion < requirements.ProtocolRange.Minimum {
+		return &CompatibilityError{
+			Code:              "AGENT_UPGRADE_REQUIRED",
+			Node:              agent.Node,
+			AgentVersion:      agent.AgentVersion,
+			ServerVersion:     requirements.ServerVersion,
+			ProtocolVersion:   agent.ProtocolVersion,
+			SupportedProtocol: requirements.ProtocolRange,
+		}
+	}
+	if agent.ProtocolVersion > requirements.ProtocolRange.Maximum {
+		return &CompatibilityError{
+			Code:              "AGENT_PROTOCOL_UNSUPPORTED",
+			Node:              agent.Node,
+			AgentVersion:      agent.AgentVersion,
+			ServerVersion:     requirements.ServerVersion,
+			ProtocolVersion:   agent.ProtocolVersion,
+			SupportedProtocol: requirements.ProtocolRange,
+		}
+	}
 
 	reported := make(map[string]struct{}, len(agent.Capabilities))
 	for _, capability := range agent.Capabilities {
@@ -133,16 +159,6 @@ func CheckAgentCompatibility(
 			MissingCapabilities: missing,
 			ProtocolVersion:     agent.ProtocolVersion,
 			SupportedProtocol:   requirements.ProtocolRange,
-		}
-	}
-	if !requirements.ProtocolRange.Contains(agent.ProtocolVersion) {
-		return &CompatibilityError{
-			Code:              "AGENT_PROTOCOL_UNSUPPORTED",
-			Node:              agent.Node,
-			AgentVersion:      agent.AgentVersion,
-			ServerVersion:     requirements.ServerVersion,
-			ProtocolVersion:   agent.ProtocolVersion,
-			SupportedProtocol: requirements.ProtocolRange,
 		}
 	}
 	return nil
@@ -184,6 +200,17 @@ func (e *CompatibilityError) Error() string {
 			e.ProtocolVersion,
 			e.SupportedProtocol.Minimum,
 			e.SupportedProtocol.Maximum,
+			serverVersion,
+			guidanceNode,
+		)
+	case "AGENT_UPGRADE_REQUIRED":
+		return fmt.Sprintf(
+			"%s: node %q agent version %q reports protocol version %d but isolated appliance protocol v%d or newer is required for authority release and frozen lifecycle; server version %q; run update_agent(node=%s)",
+			e.Code,
+			node,
+			agentVersion,
+			e.ProtocolVersion,
+			e.SupportedProtocol.Minimum,
 			serverVersion,
 			guidanceNode,
 		)

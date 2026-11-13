@@ -227,9 +227,19 @@ func (r *Registry) Save() error {
 
 // SetNode adds or updates a node.
 func (r *Registry) SetNode(n *Node) error {
+	if n == nil {
+		return fmt.Errorf("node must not be nil")
+	}
 	return r.withWriteLock(func() error {
-		n.Role = normalizeRole(n.Role)
-		r.nodes[n.Name] = n
+		next := cloneNode(n)
+		next.Role = normalizeRole(next.Role)
+		if existing := r.nodes[next.Name]; existing != nil && next.Labels == nil && existing.Labels != nil {
+			next.Labels = make(map[string]string, len(existing.Labels))
+			for key, value := range existing.Labels {
+				next.Labels[key] = value
+			}
+		}
+		r.nodes[next.Name] = next
 		return nil
 	})
 }
@@ -241,7 +251,10 @@ func (r *Registry) GetNode(name string) (*Node, bool) {
 		ok   bool
 	)
 	r.withReadLock(func() {
-		node, ok = r.nodes[name]
+		internal, found := r.nodes[name]
+		if found {
+			node, ok = cloneNode(internal), true
+		}
 	})
 	return node, ok
 }
@@ -309,7 +322,7 @@ func (r *Registry) AllNodes() []*Node {
 	r.withReadLock(func() {
 		nodes = make([]*Node, 0, len(r.nodes))
 		for _, n := range r.nodes {
-			nodes = append(nodes, n)
+			nodes = append(nodes, cloneNode(n))
 		}
 	})
 	return nodes
@@ -322,11 +335,25 @@ func (r *Registry) NodesByRole(role string) []*Node {
 	r.withReadLock(func() {
 		for _, n := range r.nodes {
 			if n.Role == target {
-				nodes = append(nodes, n)
+				nodes = append(nodes, cloneNode(n))
 			}
 		}
 	})
 	return nodes
+}
+
+func cloneNode(node *Node) *Node {
+	if node == nil {
+		return nil
+	}
+	copy := *node
+	if node.Labels != nil {
+		copy.Labels = make(map[string]string, len(node.Labels))
+		for key, value := range node.Labels {
+			copy.Labels[key] = value
+		}
+	}
+	return &copy
 }
 
 // AllTopologyNames returns the names of all topologies.
@@ -383,7 +410,7 @@ func (r *Registry) NodesForTopologyRole(topologyName, role string) []*Node {
 		}
 		for _, name := range names {
 			if n, ok := r.nodes[name]; ok {
-				nodes = append(nodes, n)
+				nodes = append(nodes, cloneNode(n))
 			}
 		}
 	})

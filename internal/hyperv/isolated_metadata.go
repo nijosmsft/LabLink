@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 )
 
 const (
@@ -36,14 +38,14 @@ type CascadeAuthority struct {
 }
 
 type CascadeAuthorityItem struct {
-	ResourceType string `json:"resource_type"`
-	ResourceID   string `json:"resource_id"`
-	Action       string `json:"action"`
-	Generation   int64  `json:"generation"`
-	SwitchGUID   string `json:"switch_guid,omitempty"`
-	VMGUID       string `json:"vm_guid,omitempty"`
-	AdapterID    string `json:"adapter_id,omitempty"`
-	Completed    bool   `json:"completed"`
+	ResourceType string             `json:"resource_type"`
+	ResourceID   string             `json:"resource_id"`
+	Action       cascadeauth.Action `json:"action"`
+	Generation   int64              `json:"generation"`
+	SwitchGUID   string             `json:"switch_guid,omitempty"`
+	VMGUID       string             `json:"vm_guid,omitempty"`
+	AdapterID    string             `json:"adapter_id,omitempty"`
+	Completed    bool               `json:"completed"`
 }
 
 // IsolatedOrchestratorMetadata is persisted in the orchestrator VM Notes.
@@ -299,11 +301,16 @@ func validateVMMetadata(m IsolatedVMMetadata) error {
 	if !macRE.MatchString(strings.ToUpper(strings.ReplaceAll(m.MAC, "-", ""))) {
 		return fmt.Errorf("invalid isolated VM MAC %q", m.MAC)
 	}
-	for kind, value := range map[string]string{"switch": m.SwitchGUID, "VM": m.VMGUID, "adapter": m.AdapterID} {
+	for kind, value := range map[string]string{"switch": m.SwitchGUID, "VM": m.VMGUID} {
 		if value != "" {
 			if err := validateGUID(kind, value); err != nil {
 				return err
 			}
+		}
+	}
+	if m.AdapterID != "" {
+		if err := validateAdapterID(m.AdapterID); err != nil {
+			return err
 		}
 	}
 	if m.LifecycleState == "ready" || m.LifecycleState == "repairing" || m.LifecycleState == "degraded" {
@@ -321,10 +328,13 @@ func validateNetworkMetadata(m IsolatedNetworkMetadata) error {
 	if err := validateHostID(m.PhysicalHostID); err != nil {
 		return err
 	}
-	for kind, value := range map[string]string{"orchestrator": m.OrchestratorID, "network": m.NetworkID, "mutation": m.MutationID} {
+	for kind, value := range map[string]string{"orchestrator": m.OrchestratorID, "network": m.NetworkID} {
 		if err := validateIsolatedID(kind, value); err != nil {
 			return err
 		}
+	}
+	if err := validateMutationID(m.MutationID); err != nil {
+		return err
 	}
 	if err := validateOwnerMarker(m.OwnerMarker, m.OrchestratorID); err != nil {
 		return err
@@ -333,14 +343,18 @@ func validateNetworkMetadata(m IsolatedNetworkMetadata) error {
 		return fmt.Errorf("incomplete isolated network metadata")
 	}
 	for kind, value := range map[string]string{
-		"switch":  m.SwitchGUID,
-		"VM":      m.OrchestratorVMGUID,
-		"adapter": m.OrchestratorAdapterID,
+		"switch": m.SwitchGUID,
+		"VM":     m.OrchestratorVMGUID,
 	} {
 		if value != "" {
 			if err := validateGUID(kind, value); err != nil {
 				return err
 			}
+		}
+	}
+	if m.OrchestratorAdapterID != "" {
+		if err := validateAdapterID(m.OrchestratorAdapterID); err != nil {
+			return err
 		}
 	}
 	if m.OrchestratorMAC != "" && !macRE.MatchString(strings.ToUpper(strings.ReplaceAll(m.OrchestratorMAC, "-", ""))) {
@@ -360,11 +374,13 @@ func validateAdapterMetadata(m IsolatedAdapterMetadata) error {
 		"orchestrator": m.OrchestratorID,
 		"network":      m.NetworkID,
 		"resource":     m.ResourceID,
-		"mutation":     m.MutationID,
 	} {
 		if err := validateIsolatedID(kind, value); err != nil {
 			return err
 		}
+	}
+	if err := validateMutationID(m.MutationID); err != nil {
+		return err
 	}
 	if err := validateOwnerMarker(m.OwnerMarker, m.OrchestratorID); err != nil {
 		return err
@@ -379,7 +395,7 @@ func validateAdapterMetadata(m IsolatedAdapterMetadata) error {
 		}
 	}
 	if m.AdapterID != "" {
-		if err := validateGUID("adapter", m.AdapterID); err != nil {
+		if err := validateAdapterID(m.AdapterID); err != nil {
 			return err
 		}
 	}
@@ -411,21 +427,17 @@ func validateCascadeAuthority(authority *CascadeAuthority) error {
 		if err := validateIsolatedID(item.ResourceType, item.ResourceID); err != nil {
 			return err
 		}
-		if !isCascadeCleanupAction(item.Action) || item.Generation <= 0 {
+		if err := cascadeauth.ValidateScope(item.ResourceType, item.Action); err != nil {
+			return err
+		}
+		if !cascadeauth.IsHostAction(item.Action) {
+			return fmt.Errorf("cascade action %q is not a host operation", item.Action)
+		}
+		if item.Generation <= 0 {
 			return fmt.Errorf("incomplete cascade authority item")
 		}
 	}
 	return nil
-}
-
-func isCascadeCleanupAction(action string) bool {
-	switch action {
-	case "delete_private_switch", "remove_nic", "delete_vm", "delete_storage",
-		"retire_relay", "retire_nat", "remove_network", "tombstone_allocation":
-		return true
-	default:
-		return false
-	}
 }
 
 func validateHostID(value string) error {
@@ -442,10 +454,35 @@ func validateIsolatedID(kind, value string) error {
 	return nil
 }
 
+func validateMutationID(value string) error {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if !isolatedUUIDRE.MatchString(normalized) && !hostIDRE.MatchString(normalized) {
+		return fmt.Errorf("invalid mutation ID %q", value)
+	}
+	return nil
+}
+
 func validateGUID(kind, value string) error {
 	value = strings.Trim(strings.ToLower(strings.TrimSpace(value)), "{}")
 	if !isolatedUUIDRE.MatchString(value) {
 		return fmt.Errorf("invalid %s GUID %q", kind, value)
+	}
+	return nil
+}
+
+func validateAdapterID(value string) error {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if isolatedUUIDRE.MatchString(strings.Trim(normalized, "{}")) {
+		return nil
+	}
+	parts := strings.Split(normalized, `\`)
+	if len(parts) != 2 || !strings.HasPrefix(parts[0], "microsoft:") {
+		return fmt.Errorf("invalid adapter ID %q", value)
+	}
+	vmGUID := strings.TrimPrefix(parts[0], "microsoft:")
+	if !isolatedUUIDRE.MatchString(strings.Trim(vmGUID, "{}")) ||
+		!isolatedUUIDRE.MatchString(strings.Trim(parts[1], "{}")) {
+		return fmt.Errorf("invalid adapter ID %q", value)
 	}
 	return nil
 }

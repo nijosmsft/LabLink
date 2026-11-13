@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -66,7 +65,14 @@ const (
 	ConflictService       ConflictKind = "service"
 	ConflictRuleset       ConflictKind = "ruleset"
 	ConflictConfiguration ConflictKind = "configuration"
+
+	UFWServiceName       = "ufw.service"
+	FirewalldServiceName = "firewalld.service"
 )
+
+func AutomaticallyNeutralizedFirewallManagerServices() []string {
+	return []string{UFWServiceName, FirewalldServiceName}
+}
 
 type Conflict struct {
 	Kind    ConflictKind `json:"kind"`
@@ -82,10 +88,9 @@ type ConflictAction struct {
 }
 
 type ConflictPlan struct {
-	Revision         string           `json:"revision"`
-	ApprovalRequired bool             `json:"approval_required"`
-	Conflicts        []Conflict       `json:"conflicts"`
-	Actions          []ConflictAction `json:"actions"`
+	Revision  string           `json:"revision"`
+	Conflicts []Conflict       `json:"conflicts"`
+	Actions   []ConflictAction `json:"actions"`
 }
 
 type ConflictDetector interface {
@@ -112,15 +117,6 @@ type LinuxTargetConfig struct {
 type ConflictScannerConfig struct {
 	Executor CommandExecutor
 	Files    FileSystem
-}
-
-type ApprovalRequiredError struct {
-	Plan ConflictPlan
-}
-
-func (e *ApprovalRequiredError) Error() string {
-	return fmt.Sprintf("%s: conflicting firewall or NAT managers require approval for plan %s",
-		CodeApprovalRequired, e.Plan.Revision)
 }
 
 type ApplyHooks struct {
@@ -191,11 +187,12 @@ func (m *ApplyManager) Start(ctx context.Context) (StartupResult, error) {
 			_ = m.store.SetReadiness(ctx, false, "firewall conflict scan failed: "+err.Error())
 			return result, err
 		}
-		if plan.ApprovalRequired {
+		if len(plan.Conflicts) != 0 {
 			result.ConflictPlan = &plan
 			_ = m.store.SetReadiness(ctx, false,
-				fmt.Sprintf("approval required for conflict plan %s", plan.Revision))
-			return result, &ApprovalRequiredError{Plan: plan}
+				fmt.Sprintf("firewall conflict remains after bootstrap neutralization; plan %s", plan.Revision))
+			return result, storeError(CodeApplyFailed,
+				"firewall conflict remains after bootstrap neutralization; plan %s", plan.Revision)
 		}
 	}
 	recovered, err := m.Recover(ctx)
@@ -216,7 +213,13 @@ func (m *ApplyManager) Recover(ctx context.Context) (int, error) {
 	}
 	recovered := 0
 	for _, intent := range intents {
-		if _, err := m.ApplyIntent(ctx, intent.MutationID); err != nil {
+		var err error
+		if intent.SystemTransition {
+			err = m.recoverSystemIntent(ctx, intent)
+		} else {
+			_, err = m.ApplyIntent(ctx, intent.MutationID)
+		}
+		if err != nil {
 			return recovered, err
 		}
 		recovered++
@@ -231,6 +234,10 @@ func (m *ApplyManager) ApplyIntent(ctx context.Context, mutationID string) (Appl
 	}
 	if !found {
 		return AppliedOperation{}, storeError(CodeNotFound, "intent %q not found", mutationID)
+	}
+	if intent.SystemTransition {
+		return AppliedOperation{}, storeError(CodeInvalidArgument,
+			"system transition %q cannot use the external apply path", mutationID)
 	}
 	if intent.Phase == "complete" {
 		return AppliedOperation{}, storeError(CodeNotFound, "intent %q is already complete", mutationID)
@@ -262,7 +269,94 @@ func (m *ApplyManager) ApplyIntent(ctx context.Context, mutationID string) (Appl
 	releaseStore := m.store.beginExternalApply()
 	defer releaseStore()
 
-	current, _, err := m.store.ValidateCompiledIntent(ctx, compiled)
+	return m.applyPreparedIntent(ctx, intent, compiled, fenceValidationAdmitted)
+}
+
+func (m *ApplyManager) completeNATDrain(
+	ctx context.Context,
+	completion natDrainCompletion,
+) error {
+	// This is the only lease-independent mutation path. It is appliance
+	// internal, serialized with external apply and authority installation,
+	// and revalidates the exact durable NAT/guest/network identity.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.applyGate.Lock()
+	defer m.applyGate.Unlock()
+	releaseStore := m.store.beginExternalApply()
+	defer releaseStore()
+
+	stage, err := m.store.stageNATDrainCompletionLocked(ctx, completion)
+	if err != nil {
+		return err
+	}
+	if stage.Replay && stage.Intent.MutationID == "" {
+		return nil
+	}
+	intent := stage.Intent
+	if intent.MutationID == "" {
+		intent, _, err = m.store.Intent(ctx,
+			drainCompletionHeader(completion.Network,
+				completion.Guest, completion.NAT).MutationID)
+		if err != nil {
+			return err
+		}
+	}
+	return m.applySystemIntentLocked(ctx, intent)
+}
+
+func (m *ApplyManager) recoverSystemIntent(ctx context.Context, intent Intent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.applyGate.Lock()
+	defer m.applyGate.Unlock()
+	releaseStore := m.store.beginExternalApply()
+	defer releaseStore()
+	current, found, err := m.store.Intent(ctx, intent.MutationID)
+	if err != nil {
+		return err
+	}
+	if !found || !current.SystemTransition {
+		return storeError(CodeNotFound,
+			"system transition %q is no longer pending", intent.MutationID)
+	}
+	return m.applySystemIntentLocked(ctx, current)
+}
+
+func (m *ApplyManager) applySystemIntentLocked(ctx context.Context, intent Intent) error {
+	if !intent.SystemTransition {
+		return storeError(CodeInvalidArgument,
+			"intent %q is not an internal system transition", intent.MutationID)
+	}
+	if err := m.store.SetReadiness(ctx, false,
+		fmt.Sprintf("internal NAT drain completion %s pending", intent.MutationID)); err != nil {
+		return err
+	}
+	compiled, err := m.compile(ctx, intent)
+	if err != nil {
+		m.failIntent(ctx, intent, "compile failed: "+err.Error())
+		return err
+	}
+	if err := callHook(m.hooks.AfterCompile, compiled); err != nil {
+		return err
+	}
+	if err := m.store.UpdateIntent(ctx, intent.MutationID, intent.SemanticHash,
+		"compiled", compiled.CompiledHash, ""); err != nil {
+		return err
+	}
+	_, err = m.applyPreparedIntent(ctx, intent, compiled, fenceValidationSystem)
+	return err
+}
+
+func (m *ApplyManager) applyPreparedIntent(
+	ctx context.Context,
+	intent Intent,
+	compiled CompiledApply,
+	mode fenceValidationMode,
+) (AppliedOperation, error) {
+	current, _, err := m.store.validateCompiledIntent(ctx, compiled, mode)
 	if err != nil {
 		m.failIntent(ctx, intent, err.Error())
 		return AppliedOperation{}, err
@@ -324,13 +418,13 @@ func (m *ApplyManager) ApplyIntent(ctx context.Context, mutationID string) (Appl
 		"inventory_generation": compiled.InventoryGeneration,
 		"verified":             true,
 	})
-	operation, err := m.store.commitAdmittedIntent(ctx, CommitIntentRequest{
+	operation, err := m.store.commitIntent(ctx, CommitIntentRequest{
 		MutationID:   current.MutationID,
 		SemanticHash: current.SemanticHash,
 		CompiledHash: compiled.CompiledHash,
 		HostFence:    current.Fence,
 		Result:       resultJSON,
-	})
+	}, mode)
 	if err != nil {
 		m.failIntent(ctx, intent, "commit failed: "+err.Error())
 		return AppliedOperation{}, err
@@ -393,6 +487,34 @@ func (m *ApplyManager) Reconcile(ctx context.Context) error {
 		return storeError(CodeVerifyFailed, "%s", detail)
 	}
 	return m.refreshReadiness(ctx)
+}
+
+func (m *ApplyManager) VerifyCurrent(ctx context.Context) (Verification, CompiledApply, error) {
+	m.compileMu.Lock()
+	snapshot, err := m.store.Snapshot(ctx)
+	if err != nil {
+		m.compileMu.Unlock()
+		return Verification{}, CompiledApply{}, err
+	}
+	intent := Intent{
+		MutationID:        "read-only-verify",
+		ResourceKind:      "appliance",
+		ResourceID:        "appliance",
+		ParentGeneration:  snapshot.Authority.ParentGeneration,
+		Fence:             snapshot.Authority.Fence,
+		DesiredGeneration: snapshot.Status.InventoryGeneration,
+		SemanticHash:      "read-only-verify",
+	}
+	compiled, err := m.compiler.Compile(ctx, snapshot, intent)
+	if err == nil {
+		compiled = finalizeCompiled(snapshot, intent, compiled)
+	}
+	m.compileMu.Unlock()
+	if err != nil {
+		return Verification{}, CompiledApply{}, err
+	}
+	verification, err := m.target.Verify(ctx, compiled)
+	return verification, compiled, err
 }
 
 func (m *ApplyManager) InstallAuthority(ctx context.Context, expectedFence uint64, next Authority) error {
@@ -508,20 +630,15 @@ func HashDesiredSnapshot(snapshot DesiredSnapshot) (string, error) {
 		DesiredGeneration, ParentGeneration uint64
 	}
 	canonical := struct {
-		InventoryGeneration uint64
-		Fence               uint64
-		ParentGeneration    uint64
-		ParentState         string
-		Networks            []desiredNetwork
-		Guests              []desiredGuest
-		Relays              []desiredRelay
-		NAT                 []desiredNAT
-		Reservations        []Reservation
+		ParentGeneration uint64
+		ParentState      string
+		Networks         []desiredNetwork
+		Guests           []desiredGuest
+		Relays           []desiredRelay
+		NAT              []desiredNAT
 	}{
-		InventoryGeneration: snapshot.Status.InventoryGeneration,
-		Fence:               snapshot.Authority.Fence,
-		ParentGeneration:    snapshot.Authority.ParentGeneration,
-		ParentState:         snapshot.Authority.ParentState,
+		ParentGeneration: snapshot.Authority.ParentGeneration,
+		ParentState:      snapshot.Authority.ParentState,
 	}
 	for _, value := range snapshot.Networks {
 		canonical.Networks = append(canonical.Networks, desiredNetwork{
@@ -551,12 +668,10 @@ func HashDesiredSnapshot(snapshot DesiredSnapshot) (string, error) {
 			value.DesiredGeneration, value.ParentGeneration,
 		})
 	}
-	canonical.Reservations = append(canonical.Reservations, snapshot.Reservations...)
 	sort.Slice(canonical.Networks, func(i, j int) bool { return canonical.Networks[i].ID < canonical.Networks[j].ID })
 	sort.Slice(canonical.Guests, func(i, j int) bool { return canonical.Guests[i].ID < canonical.Guests[j].ID })
 	sort.Slice(canonical.Relays, func(i, j int) bool { return canonical.Relays[i].ID < canonical.Relays[j].ID })
 	sort.Slice(canonical.NAT, func(i, j int) bool { return canonical.NAT[i].VMID < canonical.NAT[j].VMID })
-	sort.Slice(canonical.Reservations, func(i, j int) bool { return canonical.Reservations[i].ID < canonical.Reservations[j].ID })
 	data, err := json.Marshal(canonical)
 	if err != nil {
 		return "", err
@@ -625,6 +740,14 @@ func (s *Store) ValidateCompiledIntent(
 	ctx context.Context,
 	compiled CompiledApply,
 ) (Intent, DesiredSnapshot, error) {
+	return s.validateCompiledIntent(ctx, compiled, fenceValidationExternal)
+}
+
+func (s *Store) validateCompiledIntent(
+	ctx context.Context,
+	compiled CompiledApply,
+	mode fenceValidationMode,
+) (Intent, DesiredSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return Intent{}, DesiredSnapshot{}, err
@@ -641,14 +764,38 @@ func (s *Store) ValidateCompiledIntent(
 	if intent.SemanticHash != compiled.Intent.SemanticHash {
 		return Intent{}, DesiredSnapshot{}, resumeMismatch(intent.MutationID)
 	}
+	if mode == fenceValidationSystem {
+		if err := validateNATSystemIntent(ctx, tx, intent); err != nil {
+			return Intent{}, DesiredSnapshot{}, err
+		}
+	} else if intent.SystemTransition {
+		return Intent{}, DesiredSnapshot{}, storeError(CodeInvalidArgument,
+			"system transition %q cannot use an external authority", intent.MutationID)
+	}
 	header := MutationHeader{
 		MutationID:               intent.MutationID,
 		SemanticHash:             intent.SemanticHash,
+		ResourceID:               intent.ResourceID,
+		ExpectedGeneration:       intent.DesiredGeneration - 1,
 		ParentResourceID:         intent.ParentResourceID,
 		HostFence:                intent.Fence,
 		ExpectedParentGeneration: intent.ParentGeneration,
+		CascadeOperationID:       intent.CascadeOperationID,
+		CascadePlanRevision:      intent.CascadePlanRevision,
+		CascadePlanHash:          intent.CascadePlanHash,
+		CascadeItemID:            intent.CascadeItemID,
+		CascadeResourceKind:      intent.CascadeResourceKind,
+		CascadeAction:            intent.CascadeAction,
 	}
-	authority, err := validateFence(ctx, tx, header, s.now())
+	var authority Authority
+	switch mode {
+	case fenceValidationAdmitted:
+		authority, err = validateAdmittedFence(ctx, tx, header, s.now())
+	case fenceValidationSystem:
+		authority, err = validateSystemAuthority(ctx, tx)
+	default:
+		authority, err = validateFence(ctx, tx, header, s.now())
+	}
 	if err != nil {
 		return Intent{}, DesiredSnapshot{}, err
 	}
@@ -694,9 +841,10 @@ func (s *Store) ValidateCompiledSnapshot(ctx context.Context, compiled CompiledA
 	if err != nil {
 		return err
 	}
-	if snapshot.Authority.HandoffPending ||
-		snapshot.Authority.ParentState != "active" ||
-		snapshot.Authority.Fence != compiled.Intent.Fence ||
+	if err := validateRuntimeAuthorityValue(snapshot.Authority); err != nil {
+		return err
+	}
+	if snapshot.Authority.Fence != compiled.Intent.Fence ||
 		snapshot.Authority.ParentGeneration != compiled.Intent.ParentGeneration {
 		return storeError(CodeFenceRejected, "authority changed before external apply")
 	}
@@ -811,11 +959,4 @@ func (s *Store) Converged(ctx context.Context) (bool, string, error) {
 		}
 	}
 	return true, "", nil
-}
-
-func IsApprovalRequired(err error) bool {
-	var approval *ApprovalRequiredError
-	return errors.As(err, &approval) ||
-		(ErrorCodeOf(err) == CodeApprovalRequired) ||
-		strings.Contains(fmt.Sprint(err), string(CodeApprovalRequired))
 }

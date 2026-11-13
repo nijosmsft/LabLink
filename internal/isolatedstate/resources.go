@@ -58,12 +58,72 @@ func (s *Store) PutOrchestrator(ctx context.Context, value Orchestrator) error {
 			main_ip=excluded.main_ip,
 			agent_port=excluded.agent_port,
 			appliance_schema=excluded.appliance_schema,
-			desired_generation=excluded.desired_generation,
-			applied_generation=excluded.applied_generation,
-			observed_generation=excluded.observed_generation,
-			host_fence=excluded.host_fence,
-			lifecycle_state=excluded.lifecycle_state,
-			health_state=excluded.health_state,
+			desired_generation=CASE
+				WHEN orchestrators.lifecycle_state='deleted' THEN orchestrators.desired_generation
+				WHEN orchestrators.lifecycle_state='deleting' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.desired_generation
+				WHEN orchestrators.lifecycle_state='frozen'
+				     AND excluded.lifecycle_state NOT IN ('deleting','deleted')
+					THEN orchestrators.desired_generation
+				WHEN orchestrators.lifecycle_state='lost' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.desired_generation
+				ELSE MAX(orchestrators.desired_generation, excluded.desired_generation)
+			END,
+			applied_generation=CASE
+				WHEN orchestrators.lifecycle_state='deleted' THEN orchestrators.applied_generation
+				WHEN orchestrators.lifecycle_state='deleting' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.applied_generation
+				WHEN orchestrators.lifecycle_state='frozen'
+				     AND excluded.lifecycle_state NOT IN ('deleting','deleted')
+					THEN orchestrators.applied_generation
+				WHEN orchestrators.lifecycle_state='lost' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.applied_generation
+				ELSE MIN(
+					MAX(orchestrators.desired_generation, excluded.desired_generation),
+					MAX(orchestrators.applied_generation, excluded.applied_generation)
+				)
+			END,
+			observed_generation=CASE
+				WHEN orchestrators.lifecycle_state='deleted' THEN orchestrators.observed_generation
+				WHEN orchestrators.lifecycle_state='deleting' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.observed_generation
+				WHEN orchestrators.lifecycle_state='frozen'
+				     AND excluded.lifecycle_state NOT IN ('deleting','deleted')
+					THEN orchestrators.observed_generation
+				WHEN orchestrators.lifecycle_state='lost' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.observed_generation
+				ELSE MIN(
+					MAX(orchestrators.desired_generation, excluded.desired_generation),
+					MAX(orchestrators.observed_generation, excluded.observed_generation)
+				)
+			END,
+			host_fence=MAX(orchestrators.host_fence, excluded.host_fence),
+			lifecycle_state=CASE
+				WHEN orchestrators.lifecycle_state='deleted' THEN orchestrators.lifecycle_state
+				WHEN orchestrators.lifecycle_state='deleting' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.lifecycle_state
+				WHEN orchestrators.lifecycle_state='frozen'
+				     AND excluded.lifecycle_state NOT IN ('deleting','deleted')
+					THEN orchestrators.lifecycle_state
+				WHEN orchestrators.lifecycle_state='lost' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.lifecycle_state
+				WHEN excluded.desired_generation < orchestrators.desired_generation
+					THEN orchestrators.lifecycle_state
+				ELSE excluded.lifecycle_state
+			END,
+			health_state=CASE
+				WHEN orchestrators.lifecycle_state='deleted' THEN orchestrators.health_state
+				WHEN orchestrators.lifecycle_state='deleting' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.health_state
+				WHEN orchestrators.lifecycle_state='frozen'
+				     AND excluded.lifecycle_state NOT IN ('deleting','deleted')
+					THEN orchestrators.health_state
+				WHEN orchestrators.lifecycle_state='lost' AND excluded.lifecycle_state<>'deleted'
+					THEN orchestrators.health_state
+				WHEN excluded.desired_generation < orchestrators.desired_generation
+					THEN orchestrators.health_state
+				ELSE excluded.health_state
+			END,
 			max_networks=excluded.max_networks,
 			max_vms=excluded.max_vms,
 			updated_at_unix=excluded.updated_at_unix,
@@ -79,6 +139,82 @@ func (s *Store) PutOrchestrator(ctx context.Context, value Orchestrator) error {
 		return fmt.Errorf("isolatedstate: put orchestrator: %w", err)
 	}
 	return nil
+}
+
+// FreezeOrchestrator atomically closes child admission at the exact approved
+// pre-freeze generation. Replaying the same freeze is idempotent.
+func (s *Store) FreezeOrchestrator(
+	ctx context.Context,
+	orchestratorID string,
+	expectedGeneration Generation,
+	frozenAt UnixSeconds,
+) (Orchestrator, error) {
+	orchestratorID = canonicalID(orchestratorID)
+	if orchestratorID == "" {
+		return Orchestrator{}, errors.New("isolatedstate: orchestrator ID must not be empty")
+	}
+	frozenAt = nowUnix(frozenAt)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Orchestrator{}, fmt.Errorf("isolatedstate: begin orchestrator freeze: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentGeneration Generation
+	var currentState OrchestratorLifecycleState
+	err = tx.QueryRowContext(ctx, `
+		SELECT desired_generation, lifecycle_state
+		FROM orchestrators WHERE id=?`, orchestratorID,
+	).Scan(&currentGeneration, &currentState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Orchestrator{}, ErrOrchestratorNotFound
+	}
+	if err != nil {
+		return Orchestrator{}, fmt.Errorf("isolatedstate: read orchestrator freeze state: %w", err)
+	}
+	frozenGeneration := expectedGeneration + 1
+	if currentGeneration == frozenGeneration &&
+		(currentState == OrchestratorFrozen || currentState == OrchestratorDeleting ||
+			currentState == OrchestratorDeleted) {
+		if err := tx.Commit(); err != nil {
+			return Orchestrator{}, err
+		}
+		return s.GetOrchestrator(ctx, orchestratorID)
+	}
+	if currentGeneration != expectedGeneration || parentBlocksMutation(currentState) {
+		return Orchestrator{}, &MutationConflictError{
+			Code: ConflictParentFrozen,
+			Current: GenerationState{
+				ResourceType: "orchestrator", ResourceID: orchestratorID,
+				DesiredGeneration: currentGeneration, ParentState: currentState,
+			},
+			Expected: expectedGeneration, Proposed: frozenGeneration,
+			Message: fmt.Sprintf(
+				"cannot freeze generation %d from current generation/state %d/%s",
+				expectedGeneration, currentGeneration, currentState),
+		}
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE orchestrators
+		SET desired_generation=?, lifecycle_state=?, health_state='frozen',
+		    updated_at_unix=?
+		WHERE id=? AND desired_generation=? AND lifecycle_state=?`,
+		frozenGeneration, OrchestratorFrozen, frozenAt,
+		orchestratorID, expectedGeneration, currentState,
+	)
+	if err != nil {
+		return Orchestrator{}, fmt.Errorf("isolatedstate: freeze orchestrator: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return Orchestrator{}, &MutationConflictError{
+			Code: ConflictParentFrozen, Expected: expectedGeneration,
+			Proposed: frozenGeneration, Message: "orchestrator changed concurrently during freeze",
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Orchestrator{}, fmt.Errorf("isolatedstate: commit orchestrator freeze: %w", err)
+	}
+	return s.GetOrchestrator(ctx, orchestratorID)
 }
 
 func (s *Store) GetOrchestrator(ctx context.Context, id string) (Orchestrator, error) {
@@ -312,6 +448,7 @@ func (s *Store) PutVM(ctx context.Context, value IsolatedVM) error {
 				hyperv_adapter_id=excluded.hyperv_adapter_id,
 				incarnation=excluded.incarnation,
 				profile_name=excluded.profile_name,
+				dns_servers_json=excluded.dns_servers_json,
 				storage_root=excluded.storage_root,
 				vm_path=excluded.vm_path,
 				vhd_path=excluded.vhd_path,

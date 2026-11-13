@@ -27,15 +27,16 @@ var (
 )
 
 type SeedConfig struct {
-	Hostname             string
-	Username             string
-	SSHPublicKey         string
-	PasswordHash         string
-	AllowSSHPasswordAuth bool
-	NetworkConfig        string
-	NodeName             string
-	Port                 int
-	Orchestrator         *orchestratorseed.Config
+	Hostname               string
+	Username               string
+	SSHPublicKey           string
+	PasswordHash           string
+	AllowSSHPasswordAuth   bool
+	NetworkConfig          string
+	NetworkBootstrapScript string
+	NodeName               string
+	Port                   int
+	Orchestrator           *orchestratorseed.Config
 }
 
 func ValidateHostname(value string) error {
@@ -146,14 +147,20 @@ users:
 	if strings.TrimSpace(config.SSHPublicKey) != "" {
 		fmt.Fprintf(&user, "    ssh_authorized_keys:\n      - %s\n", yamlScalar(strings.TrimSpace(config.SSHPublicKey)))
 	}
+	prepareCustomize := ""
 	customize := ""
+	configureNetwork := ""
+	if strings.TrimSpace(config.NetworkBootstrapScript) != "" {
+		configureNetwork = "; /bin/bash /run/lablink-cidata/configure-network.sh"
+	}
 	if config.Orchestrator != nil {
-		customize = "; /bin/bash /run/lablink-cidata/orchestrator/install-orchestrator.sh"
+		prepareCustomize = "; install -d -m 0700 /run/lablink-orchestrator-seed; cp -a /run/lablink-cidata/orchestrator/. /run/lablink-orchestrator-seed/"
+		customize = "; /bin/bash /run/lablink-orchestrator-seed/install-orchestrator.sh"
 	}
 	fmt.Fprintf(&user, `runcmd:
-  - [bash, -c, "set -eu; mkdir -p /run/lablink-cidata; mount -o ro LABEL=CIDATA /run/lablink-cidata; trap 'umount /run/lablink-cidata || true' EXIT; /bin/bash /run/lablink-cidata/install-lablink.sh%s"]
+  - [bash, -c, "set -eu; mkdir -p /run/lablink-cidata; mount -o ro LABEL=CIDATA /run/lablink-cidata; trap 'umount /run/lablink-cidata || true' EXIT%s%s; /bin/bash /run/lablink-cidata/install-lablink.sh%s"]
 final_message: "LabLink NoCloud provisioning complete"
-`, customize)
+`, prepareCustomize, configureNetwork, customize)
 	return []byte(user.String()), nil
 }
 
@@ -269,6 +276,12 @@ func Files(config SeedConfig) (map[string][]byte, error) {
 		"user-data":          userData,
 		"meta-data":          metaData,
 		"install-lablink.sh": installer,
+	}
+	if strings.TrimSpace(config.NetworkBootstrapScript) != "" {
+		if strings.IndexByte(config.NetworkBootstrapScript, 0) >= 0 {
+			return nil, fmt.Errorf("network bootstrap script contains a NUL byte")
+		}
+		files["configure-network.sh"] = []byte(strings.TrimSpace(config.NetworkBootstrapScript) + "\n")
 	}
 	if config.Orchestrator != nil {
 		orchestratorFiles, err := orchestratorseed.Files(*config.Orchestrator)

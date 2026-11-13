@@ -194,8 +194,15 @@ func TestOrchestratorSeedAddsCustomizationWithoutChangingMainNetwork(t *testing.
 		t.Fatal(err)
 	}
 	userData := string(files["user-data"])
-	if !strings.Contains(userData, "/orchestrator/install-orchestrator.sh") {
+	if !strings.Contains(userData, "/run/lablink-orchestrator-seed/install-orchestrator.sh") {
 		t.Fatalf("orchestrator customization is not invoked:\n%s", userData)
+	}
+	copyIndex := strings.Index(userData, "cp -a /run/lablink-cidata/orchestrator/. /run/lablink-orchestrator-seed/")
+	agentIndex := strings.Index(userData, "/bin/bash /run/lablink-cidata/install-lablink.sh")
+	customizeIndex := strings.Index(userData, "/bin/bash /run/lablink-orchestrator-seed/install-orchestrator.sh")
+	if copyIndex < 0 || agentIndex < 0 || customizeIndex < 0 ||
+		!(copyIndex < agentIndex && agentIndex < customizeIndex) {
+		t.Fatalf("orchestrator payload must be copied before agent registration and invoked afterward:\n%s", userData)
 	}
 	network := string(files["network-config"])
 	for _, want := range []string{"driver: hv_netvsc", "dhcp4: true", "dhcp6: true"} {
@@ -205,8 +212,8 @@ func TestOrchestratorSeedAddsCustomizationWithoutChangingMainNetwork(t *testing.
 	}
 	install := string(files["orchestrator/install-orchestrator.sh"])
 	for _, want := range []string{
-		"main_iface=", "ip -4 route show default", "nftables=1.0.9-1build1",
-		"lablink-appliance-firewall.service", "LABLINK_APPLIANCE_MODE=isolated_orchestrator",
+		"main_iface=", "ip -4 route show default", "nftables=1.0.9-1ubuntu0.1",
+		"lablink-appliance-firewall.service", "LABLINK_APPLIANCE_MODE=true",
 	} {
 		combined := install + string(files["orchestrator/lablink-agent-appliance.conf"])
 		if !strings.Contains(combined, want) {

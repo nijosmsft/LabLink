@@ -63,6 +63,14 @@ type natWaitAppliance struct {
 	states []appliance.NATState
 }
 
+func (a *natWaitAppliance) ReleaseAuthority(
+	context.Context,
+	string,
+	isolated.MutationEnvelope,
+) error {
+	return nil
+}
+
 func (f *natWaitAppliance) ListNATState(
 	context.Context,
 	string, string, string, string,

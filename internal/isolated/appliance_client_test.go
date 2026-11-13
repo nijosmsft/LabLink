@@ -110,7 +110,7 @@ func compatibleInfo() *pb.GetInfoResponse {
 		values[i] = string(capability)
 	}
 	return &pb.GetInfoResponse{
-		AgentVersion: "v2", Capabilities: values, ProtocolVersion: 1,
+		AgentVersion: "v2", Capabilities: values, ProtocolVersion: MaximumProtocolVersion,
 		ApplianceReady: true, ApplianceGeneration: 9,
 	}
 }
@@ -135,7 +135,7 @@ func TestApplianceClientConvertsPagedStateAndPendingMutation(t *testing.T) {
 	}
 	fake.stateFn = func(_ context.Context, req *pb.GetApplianceStateRequest) (*pb.GetApplianceStateResponse, error) {
 		state := &pb.ApplianceState{
-			SchemaVersion: 1, ProtocolVersion: 1, Ready: true,
+			SchemaVersion: MaximumApplianceSchema, ProtocolVersion: MaximumProtocolVersion, Ready: true,
 			ApplianceGeneration: 8, InventoryGeneration: 7,
 			Fence: &pb.FenceState{
 				PhysicalHostId: testHostID, HostFence: 4, HostLeaseId: "lease",
@@ -368,5 +368,32 @@ func TestApplianceClientRebindAlwaysResetsEndpoint(t *testing.T) {
 	}
 	if mutation.MutationID != "rebind" || len(pool.resets) != 1 {
 		t.Fatalf("mutation = %+v, resets = %v", mutation, pool.resets)
+	}
+}
+
+func TestMutationHeaderProtoCarriesHostLeaseExpiry(t *testing.T) {
+	header := mutationHeaderProto(MutationEnvelope{
+		Header: appliance.MutationHeader{
+			HostFence: 9, CascadeResourceKind: "network",
+			CascadeAction: "remove_network",
+		},
+		PhysicalHostID: "host", HostLeaseID: "lease",
+		HostLeaseSecret: []byte("secret"), HostLeaseExpiresUnix: 1_800_000_000,
+	})
+	if header.GetHostLeaseExpiresUnix() != 1_800_000_000 {
+		t.Fatalf("host lease expiry = %d", header.GetHostLeaseExpiresUnix())
+	}
+	if header.GetCascadeResourceKind() != "network" ||
+		header.GetCascadeAction() != "remove_network" {
+		t.Fatalf("cascade scope = %q/%q",
+			header.GetCascadeResourceKind(), header.GetCascadeAction())
+	}
+	items := cascadeAuthorityItemsProto([]appliance.CascadeAuthorityItem{{
+		ItemID: "item", ResourceKind: "network", ResourceID: "resource",
+		Action: "remove_network", ExpectedGeneration: 7,
+	}})
+	if len(items) != 1 || items[0].GetItemId() != "item" ||
+		items[0].GetExpectedGeneration() != 7 {
+		t.Fatalf("cascade items = %+v", items)
 	}
 }

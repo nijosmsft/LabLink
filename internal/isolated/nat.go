@@ -117,7 +117,7 @@ func ValidateNATIdentity(
 			Message: "appliance guest network, IPv4, or MAC identity differs",
 		}
 	}
-	if liveGuest.DesiredGeneration != uint64(vm.DesiredGeneration) {
+	if liveGuest.DesiredGeneration > uint64(vm.DesiredGeneration) {
 		return ValidatedNAT{}, staleGenerationError(
 			int64(vm.DesiredGeneration), int64(liveGuest.DesiredGeneration),
 		)
@@ -133,7 +133,7 @@ func ValidateNATIdentity(
 	var reservation appliance.Reservation
 	reservationFound := false
 	for _, candidate := range snapshot.Desired.Reservations {
-		if candidate.RetiredAtUnix == nil && candidate.ResourceKind == "guest" &&
+		if candidate.RetiredAtUnix == nil && candidate.ResourceKind == "conntrack_mark" &&
 			candidate.ResourceID == vm.ID {
 			if reservationFound {
 				return ValidatedNAT{}, &DomainError{

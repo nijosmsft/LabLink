@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +84,7 @@ type linuxVMPlan struct {
 	LinuxPasswordCredential   string                   `json:"linux_password_credential,omitempty"`
 	AllowSSHPasswordAuth      bool                     `json:"allow_ssh_password_auth"`
 	NetworkConfig             string                   `json:"network_config,omitempty"`
+	NetworkBootstrapScript    string                   `json:"-"`
 	PasswordHash              string                   `json:"-"`
 	ImageCacheRoot            string                   `json:"image_cache_root"`
 	VMRoot                    string                   `json:"vm_root"`
@@ -751,10 +754,12 @@ func finishLinuxVM(
 	if _, _, err := runPS(ctx, reg, pool, target, registrationScript, vmDefaultTimeoutSec); err != nil {
 		return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verification succeeded but managed registration metadata update failed: %w", err)), nil
 	}
-	progress.Update("cleanup", "registration verified; detaching and deleting the owned CIDATA ISO")
-	cleanupISO, _ := hyperv.BuildLinuxVMCIDATACleanupScript(plan.Name, isoPath)
-	if _, _, err := runPS(ctx, reg, pool, target, cleanupISO, vmDefaultTimeoutSec); err != nil {
-		return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verified but CIDATA cleanup failed: %w", err)), nil
+	if strings.TrimSpace(isoPath) != "" {
+		progress.Update("cleanup", "registration verified; detaching and deleting the owned CIDATA ISO")
+		cleanupISO, _ := hyperv.BuildLinuxVMCIDATACleanupScript(plan.Name, isoPath)
+		if _, _, err := runPS(ctx, reg, pool, target, cleanupISO, vmDefaultTimeoutSec); err != nil {
+			return retainedLinuxVMError(plan, isoPath, fmt.Errorf("guest verified but CIDATA cleanup failed: %w", err)), nil
+		}
 	}
 	plan.CIDATAPath = ""
 	plan.LabLinkAddress = fmt.Sprintf("%s:%d", started.IPAddress, plan.LabLinkPort)
@@ -898,9 +903,10 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 	seedFiles, err := linuxvm.Files(linuxvm.SeedConfig{
 		Hostname: plan.Hostname, Username: plan.LinuxUsername,
 		SSHPublicKey: plan.SSHPublicKey, PasswordHash: plan.PasswordHash,
-		AllowSSHPasswordAuth: plan.AllowSSHPasswordAuth,
-		NetworkConfig:        plan.NetworkConfig,
-		NodeName:             plan.LabLinkNodeName, Port: plan.LabLinkPort,
+		AllowSSHPasswordAuth:   plan.AllowSSHPasswordAuth,
+		NetworkConfig:          plan.NetworkConfig,
+		NetworkBootstrapScript: plan.NetworkBootstrapScript,
+		NodeName:               plan.LabLinkNodeName, Port: plan.LabLinkPort,
 		Orchestrator: plan.Orchestrator,
 	})
 	if err != nil {
@@ -918,7 +924,14 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 	seedFiles["server.key"] = keyPEM
 	seedFiles["agent.token"] = []byte(config.AuthToken)
 
-	prepareStage, err := hyperv.BuildPrepareLinuxVMStageScript(hyperv.LinuxVMOwnershipParams{Ownership: ownership})
+	stageDirectories, err := prepareLocalLinuxSeedDirectories(localDir, seedFiles)
+	if err != nil {
+		cleanupLocal()
+		return linuxSeedStage{}, err
+	}
+	prepareStage, err := hyperv.BuildPrepareLinuxVMStageScript(hyperv.LinuxVMOwnershipParams{
+		Ownership: ownership, StageDirectories: stageDirectories,
+	})
 	if err != nil {
 		cleanupLocal()
 		return linuxSeedStage{}, err
@@ -961,6 +974,38 @@ func prepareLinuxSeedPayload(ctx context.Context, plan linuxVMPlan, ownership hy
 		remoteDir: ownership.StageDir, isoPath: ownership.ISOPath, ownershipPath: ownershipPath,
 		cleanupLocal: cleanupLocal, cleanupRemote: cleanupRemote,
 	}, nil
+}
+
+func prepareLocalLinuxSeedDirectories(localDir string, seedFiles map[string][]byte) ([]string, error) {
+	directories := make(map[string]struct{})
+	for name := range seedFiles {
+		normalized := path.Clean(strings.ReplaceAll(name, `\`, "/"))
+		if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") ||
+			strings.HasPrefix(normalized, "/") || strings.Contains(normalized, ":") {
+			return nil, fmt.Errorf("invalid Linux seed file path %q", name)
+		}
+		for directory := path.Dir(normalized); directory != "."; directory = path.Dir(directory) {
+			directories[directory] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(directories))
+	for directory := range directories {
+		result = append(result, directory)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		leftDepth := strings.Count(result[i], "/")
+		rightDepth := strings.Count(result[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return result[i] < result[j]
+	})
+	for _, directory := range result {
+		if err := os.MkdirAll(filepath.Join(localDir, filepath.FromSlash(directory)), 0700); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func linuxVMOwnership(plan linuxVMPlan, persistedISO string) (hyperv.LinuxVMOwnership, error) {

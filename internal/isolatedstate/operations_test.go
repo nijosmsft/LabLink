@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -88,6 +89,63 @@ func TestStableMutationIDAndCanonicalHash(t *testing.T) {
 	}
 	if id == StableMutationID("op", "vm", "create", "relay-bind") {
 		t.Fatal("different phases aliased")
+	}
+	operationID := StableOperationID(
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"cascade_delete_vm",
+		"guest",
+	)
+	if operationID != StableOperationID(
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"cascade_delete_vm",
+		"guest",
+	) {
+		t.Fatal("nested operation ID is not deterministic")
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(operationID) {
+		t.Fatalf("nested operation ID %q is not a canonical v4 UUID", operationID)
+	}
+	if operationID == StableOperationID(
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+		"cascade_delete_network",
+		"network",
+	) {
+		t.Fatal("different nested operations aliased")
+	}
+}
+
+func TestStableOperationIDSupportsExactResume(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "isolated.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	parentID := "11111111-1111-4111-8111-111111111111"
+	resourceID := "22222222-2222-4222-8222-222222222222"
+	operationID := StableOperationID(parentID, resourceID, "cascade_delete_vm", "guest")
+	request := BeginOperationRequest{
+		ID: operationID, Kind: "delete_isolated_vm", ResourceType: "vm",
+		ResourceID: resourceID, CanonicalInputs: map[string]any{
+			"isolated_vm_id": resourceID, "delete_storage": true,
+		},
+	}
+	first, err := store.BeginOperation(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ID = StableOperationID(parentID, resourceID, "cascade_delete_vm", "guest")
+	request.ResumeExact = true
+	replayed, err := store.BeginOperation(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replay || replayed.Operation.ID != first.Operation.ID ||
+		replayed.Operation.ArgumentHash != first.Operation.ArgumentHash {
+		t.Fatalf("exact replay = %+v, first = %+v", replayed, first)
 	}
 }
 

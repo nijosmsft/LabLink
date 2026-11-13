@@ -3,10 +3,13 @@ package isolated
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nijosmsft/lablink/internal/appliance"
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 )
@@ -66,12 +69,14 @@ type fakeProbe struct {
 	observeErr   map[string]error
 	recoverErr   map[string]error
 	recovered    []string
+	observed     []string
 }
 
 func (f *fakeProbe) ObserveOrchestrator(
 	_ context.Context,
 	record isolatedstate.Orchestrator,
 ) (OrchestratorObservation, error) {
+	f.observed = append(f.observed, record.ID)
 	if err := f.observeErr[record.ID]; err != nil {
 		return OrchestratorObservation{}, err
 	}
@@ -90,9 +95,13 @@ func (f *fakeProbe) RecoverOrchestrator(
 }
 
 type fakeHostPlanner struct {
-	lease     HostFenceLease
-	preflight ResourcePreflightResult
-	events    *[]string
+	lease        HostFenceLease
+	preflight    ResourcePreflightResult
+	preflightErr error
+	reconcileErr error
+	reconcileFn  func(context.Context, StaleOrchestratorMetadataRequest) error
+	reconciled   []string
+	events       *[]string
 }
 
 func (f *fakeHostPlanner) AcquireOrchestratorCreateFence(
@@ -105,6 +114,31 @@ func (f *fakeHostPlanner) AcquireOrchestratorCreateFence(
 	return f.lease, nil
 }
 
+func (f *fakeHostPlanner) ReleaseOrchestratorCreateFence(
+	_ context.Context,
+	_ HostCreateFenceRequest,
+	_ HostFenceLease,
+) error {
+	if f.events != nil {
+		*f.events = append(*f.events, "release_fence")
+	}
+	return nil
+}
+
+func (f *fakeHostPlanner) ReconcileStaleOrchestratorMetadata(
+	ctx context.Context,
+	request StaleOrchestratorMetadataRequest,
+) error {
+	if f.events != nil {
+		*f.events = append(*f.events, "reconcile_stale")
+	}
+	f.reconciled = append(f.reconciled, request.OrchestratorID)
+	if f.reconcileFn != nil {
+		return f.reconcileFn(ctx, request)
+	}
+	return f.reconcileErr
+}
+
 func (f *fakeHostPlanner) PreflightOrchestrator(
 	_ context.Context,
 	_ ResourcePreflightInput,
@@ -112,7 +146,7 @@ func (f *fakeHostPlanner) PreflightOrchestrator(
 	if f.events != nil {
 		*f.events = append(*f.events, "preflight")
 	}
-	return f.preflight, nil
+	return f.preflight, f.preflightErr
 }
 
 type fakeApplianceClient struct {
@@ -155,12 +189,14 @@ func readyObservation(record isolatedstate.Orchestrator) OrchestratorObservation
 				string(CapabilityRelayV1),
 				string(CapabilityNATV1),
 				string(CapabilityStatsV1),
+				string(CapabilityAuthorityReleaseV1),
+				string(CapabilityParentLifecycleV1),
 			},
-			ProtocolVersion: 1,
+			ProtocolVersion: MaximumProtocolVersion,
 		},
 		ApplianceReady:          true,
 		AppliancePolicyVerified: true,
-		ApplianceSchema:         1,
+		ApplianceSchema:         MaximumApplianceSchema,
 		ImmutableIdentityMatch:  true,
 		Capacity: OperationCapacity{
 			FreeSubnets: 10, PrivateAdapterSlots: 10, SwitchSlots: 10,
@@ -310,7 +346,7 @@ func TestCreateFenceRecheckReusesConcurrentWinner(t *testing.T) {
 		events: &events,
 		lease: HostFenceLease{
 			LeaseID: "99999999-9999-4999-8999-999999999999", LeaseSecret: strings.Repeat("a", 64),
-			Fence: 7, LockKey: lock,
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 7, LockKey: lock,
 		},
 		preflight: ResourcePreflightResult{Allowed: true},
 	}
@@ -326,8 +362,150 @@ func TestCreateFenceRecheckReusesConcurrentWinner(t *testing.T) {
 	if plan.Reused == nil || plan.Reused.Orchestrator.ID != record.ID {
 		t.Fatalf("plan did not reuse concurrent winner: %+v", plan)
 	}
-	if strings.Join(events, ",") != "fence,list" {
+	if strings.Join(events, ",") != "fence,list,list" {
 		t.Fatalf("events = %v, want fence before reuse recheck", events)
+	}
+}
+
+func TestCreateAfterDeletedOrchestratorSkipsProbeAndAcquiresPromptly(t *testing.T) {
+	deleted := orchestrator(orchAID, 10)
+	deleted.LifecycleState = isolatedstate.OrchestratorDeleted
+	var events []string
+	state := &fakeOrchestratorState{records: []isolatedstate.Orchestrator{deleted}, events: &events}
+	probe := &fakeProbe{observations: map[string]OrchestratorObservation{}}
+	lock, _ := hyperv.HostOrchestratorCreateLockKey(testHostID)
+	host := &fakeHostPlanner{
+		events: &events,
+		lease: HostFenceLease{
+			LeaseID:       "99999999-9999-4999-8999-999999999999",
+			LeaseSecret:   strings.Repeat("c", 64),
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 9, LockKey: lock,
+		},
+		preflight: ResourcePreflightResult{Allowed: true},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	plan, err := (OrchestratorDomain{State: state, Probe: probe, Host: host}).
+		PlanCreateOrReuse(ctx, OrchestratorCreateRequest{
+			OperationID: operationA, PhysicalHostID: testHostID, HostNode: "host",
+			ProfileName: "ubuntu", MainVSwitch: "main",
+			OrchestratorID: OrchestratorID(orchBID), ServerVersion: "v1",
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Lease.Fence != 9 || len(probe.observed) != 0 {
+		t.Fatalf("plan=%+v observed=%v", plan, probe.observed)
+	}
+}
+
+func TestCreateAfterDeletedOrchestratorCleansStaleMetadataBeforeCapacity(t *testing.T) {
+	deleted := orchestrator(orchAID, 10)
+	deleted.LifecycleState = isolatedstate.OrchestratorDeleted
+	vmID := "77777777-7777-4777-8777-777777777777"
+	deleted.HyperVVMID = &vmID
+	var events []string
+	var phases []string
+	state := &fakeOrchestratorState{records: []isolatedstate.Orchestrator{deleted}, events: &events}
+	probe := &fakeProbe{observations: map[string]OrchestratorObservation{}}
+	lock, _ := hyperv.HostOrchestratorCreateLockKey(testHostID)
+	host := &fakeHostPlanner{
+		events: &events,
+		lease: HostFenceLease{
+			LeaseID:       "99999999-9999-4999-8999-999999999999",
+			LeaseSecret:   strings.Repeat("e", 64),
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 11, LockKey: lock,
+		},
+		preflight: ResourcePreflightResult{Allowed: true},
+	}
+	plan, err := (OrchestratorDomain{State: state, Probe: probe, Host: host}).
+		PlanCreateOrReuse(context.Background(), OrchestratorCreateRequest{
+			OperationID: operationA, PhysicalHostID: testHostID, HostNode: "host",
+			ProfileName: "ubuntu", MainVSwitch: "main",
+			OrchestratorID: OrchestratorID(orchBID), ServerVersion: "v1",
+			Progress: func(phase, _ string) {
+				phases = append(phases, phase)
+			},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Lease.Fence != 11 || !slices.Equal(host.reconciled, []string{deleted.ID}) {
+		t.Fatalf("plan=%+v reconciled=%v", plan, host.reconciled)
+	}
+	if strings.Join(events, ",") != "fence,list,reconcile_stale,list,preflight" {
+		t.Fatalf("events = %v", events)
+	}
+	if !slices.Contains(phases, "host_fence_acquired") ||
+		!slices.Contains(phases, "stale_metadata_reconcile") ||
+		!slices.Contains(phases, "capacity_preflight") {
+		t.Fatalf("progress phases = %v", phases)
+	}
+}
+
+func TestPostFenceCapacityTimeoutIsExplicitAndReleasesFence(t *testing.T) {
+	deleted := orchestrator(orchAID, 10)
+	deleted.LifecycleState = isolatedstate.OrchestratorDeleted
+	vmID := "77777777-7777-4777-8777-777777777777"
+	deleted.HyperVVMID = &vmID
+	var events []string
+	state := &fakeOrchestratorState{records: []isolatedstate.Orchestrator{deleted}, events: &events}
+	lock, _ := hyperv.HostOrchestratorCreateLockKey(testHostID)
+	host := &fakeHostPlanner{
+		events: &events,
+		lease: HostFenceLease{
+			LeaseID:       "99999999-9999-4999-8999-999999999999",
+			LeaseSecret:   strings.Repeat("f", 64),
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 12, LockKey: lock,
+		},
+		reconcileFn: func(ctx context.Context, _ StaleOrchestratorMetadataRequest) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	_, err := (OrchestratorDomain{
+		State: state, Probe: &fakeProbe{observations: map[string]OrchestratorObservation{}}, Host: host,
+	}).PlanCreateOrReuse(context.Background(), OrchestratorCreateRequest{
+		OperationID: operationA, PhysicalHostID: testHostID, HostNode: "host",
+		ProfileName: "ubuntu", MainVSwitch: "main",
+		OrchestratorID: OrchestratorID(orchBID), ServerVersion: "v1",
+		PostFenceTimeout: 20 * time.Millisecond,
+	})
+	if ErrorCode(err) != "POST_FENCE_CAPACITY_TIMEOUT" ||
+		!strings.Contains(err.Error(), "stale metadata reconciliation") ||
+		!strings.Contains(err.Error(), "fence 12") {
+		t.Fatalf("timeout error = %v", err)
+	}
+	if !slices.Contains(events, "release_fence") {
+		t.Fatalf("fence was not released after post-fence timeout: %v", events)
+	}
+}
+
+func TestCreatePlanningFailureReleasesAcquiredFence(t *testing.T) {
+	var events []string
+	state := &fakeOrchestratorState{events: &events}
+	probe := &fakeProbe{observations: map[string]OrchestratorObservation{}}
+	lock, _ := hyperv.HostOrchestratorCreateLockKey(testHostID)
+	host := &fakeHostPlanner{
+		events: &events,
+		lease: HostFenceLease{
+			LeaseID:       "99999999-9999-4999-8999-999999999999",
+			LeaseSecret:   strings.Repeat("d", 64),
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 10, LockKey: lock,
+		},
+		preflightErr: errors.New("injected preflight cancellation"),
+	}
+	_, err := (OrchestratorDomain{State: state, Probe: probe, Host: host}).
+		PlanCreateOrReuse(context.Background(), OrchestratorCreateRequest{
+			OperationID: operationA, PhysicalHostID: testHostID, HostNode: "host",
+			ProfileName: "ubuntu", MainVSwitch: "main",
+			OrchestratorID: OrchestratorID(orchBID), ServerVersion: "v1",
+		})
+	if err == nil {
+		t.Fatal("planning failure was not returned")
+	}
+	if !strings.Contains(strings.Join(events, ","), "release_fence") {
+		t.Fatalf("acquired fence was not released on planning failure: %v", events)
 	}
 }
 
@@ -344,7 +522,7 @@ func TestCreatePlanHasImmutableNamesAndPreflightInputs(t *testing.T) {
 	host := &fakeHostPlanner{
 		lease: HostFenceLease{
 			LeaseID: "99999999-9999-4999-8999-999999999999", LeaseSecret: strings.Repeat("b", 64),
-			Fence: 1, LockKey: lock,
+			ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Fence: 1, LockKey: lock,
 		},
 		preflight: ResourcePreflightResult{
 			Allowed: true, EffectivePrivateAdapterSlots: 8,
@@ -398,7 +576,7 @@ func TestCascadeRevisionMismatchAndInventoryDrift(t *testing.T) {
 	vmGUID := "77777777-7777-4777-8777-777777777777"
 	record.HyperVVMID = &vmGUID
 	children := []CascadeChild{{
-		ResourceType: "vm", ResourceID: vmID, Action: "delete_vm",
+		ResourceType: "vm", ResourceID: vmID, Action: cascadeauth.ActionGuestDeleteExact,
 		ExpectedHostIdentity: "88888888-8888-4888-8888-888888888888",
 		ExpectedGeneration:   3,
 	}}
@@ -409,6 +587,76 @@ func TestCascadeRevisionMismatchAndInventoryDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("canonical resource scoped operations", func(t *testing.T) {
+		record := orchestrator(orchAID, 10)
+		record.HostFence = 9
+		children := []CascadeChild{
+			{
+				ResourceType:       "vm",
+				ResourceID:         "66666666-6666-4666-8666-666666666666",
+				Action:             cascadeauth.ActionGuestDeleteExact,
+				ExpectedGeneration: 2,
+			},
+			{
+				ResourceType:       "relay",
+				ResourceID:         "77777777-7777-4777-8777-777777777777",
+				Action:             cascadeauth.ActionRelayRemove,
+				ExpectedGeneration: 3,
+			},
+			{
+				ResourceType:       "nat",
+				ResourceID:         "66666666-6666-4666-8666-666666666666",
+				Action:             cascadeauth.ActionNATDisable,
+				ExpectedGeneration: 5,
+			},
+			{
+				ResourceType:       "network",
+				ResourceID:         "88888888-8888-4888-8888-888888888888",
+				Action:             cascadeauth.ActionNetworkRemove,
+				ExpectedGeneration: 4,
+			},
+		}
+		plan, err := BuildOrchestratorDeletePlan(DeleteOrchestratorRequest{
+			OperationID:  "99999999-9999-4999-8999-999999999999",
+			Orchestrator: record, Cascade: true, Children: children,
+			ExpectedGeneration: record.DesiredGeneration,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[cascadeauth.Action]string{}
+		for _, item := range plan.Authority.Items {
+			action, err := cascadeauth.Parse(item.Action)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cascadeauth.ValidateScope(item.ResourceType, action); err != nil {
+				t.Fatal(err)
+			}
+			got[action] = item.ResourceType
+		}
+		for _, action := range []cascadeauth.Action{
+			cascadeauth.ActionRelayRetire,
+			cascadeauth.ActionRelayRemove,
+			cascadeauth.ActionNATDisable,
+			cascadeauth.ActionNATReconcile,
+			cascadeauth.ActionGuestRemove,
+			cascadeauth.ActionGuestReleaseResources,
+			cascadeauth.ActionGuestDeleteExact,
+			cascadeauth.ActionAdapterMetadataReconcile,
+			cascadeauth.ActionAdapterRemove,
+			cascadeauth.ActionPrivateSwitchDelete,
+			cascadeauth.ActionNetworkRemove,
+			cascadeauth.ActionNetworkMetadataCleanup,
+			cascadeauth.ActionOrchestratorMetadataClean,
+			cascadeauth.ActionOrchestratorVMDelete,
+		} {
+			if _, ok := got[action]; !ok {
+				t.Errorf("missing canonical cascade action %q", action)
+			}
+		}
+	})
 	if err := ValidateCascadeResume(plan, operationA, "wrong", children); ErrorCode(err) != "CASCADE_REVISION_MISMATCH" {
 		t.Fatalf("revision error = %v", err)
 	}

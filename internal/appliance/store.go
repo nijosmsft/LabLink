@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	_ "modernc.org/sqlite"
 )
 
@@ -68,10 +69,6 @@ func Open(path string) (*Store, error) {
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
-	}
-	if _, err := s.NormalizeDrainingNAT(context.Background()); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("appliance: normalize draining NAT: %w", err)
 	}
 	return s, nil
 }
@@ -166,6 +163,64 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		version = 1
 	}
+	if version < 2 {
+		for _, statement := range []string{
+			`ALTER TABLE appliance_authority ADD COLUMN cascade_operation_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE appliance_authority ADD COLUMN cascade_plan_revision TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE appliance_authority ADD COLUMN cascade_plan_hash TEXT NOT NULL DEFAULT ''`,
+		} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("appliance: apply schema migration 2: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE appliance_meta SET value='2' WHERE key='schema_version'
+		`); err != nil {
+			return fmt.Errorf("appliance: record schema migration 2: %w", err)
+		}
+		version = 2
+	}
+	if version < 3 {
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE apply_intents ADD COLUMN system_transition INTEGER NOT NULL DEFAULT 0
+				CHECK (system_transition IN (0, 1))`,
+		); err != nil {
+			return fmt.Errorf("appliance: apply schema migration 3: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE appliance_meta SET value = '3' WHERE key = 'schema_version'`,
+		); err != nil {
+			return fmt.Errorf("appliance: record schema migration 3: %w", err)
+		}
+		version = 3
+	}
+	if version < 4 {
+		for _, statement := range []string{
+			`ALTER TABLE apply_intents ADD COLUMN cascade_operation_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE apply_intents ADD COLUMN cascade_plan_revision TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE apply_intents ADD COLUMN cascade_plan_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE apply_intents ADD COLUMN cascade_item_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE apply_intents ADD COLUMN cascade_resource_kind TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE apply_intents ADD COLUMN cascade_action TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE cascade_authority_items (
+				item_id TEXT PRIMARY KEY,
+				resource_kind TEXT NOT NULL,
+				resource_id TEXT NOT NULL,
+				action TEXT NOT NULL,
+				expected_generation INTEGER NOT NULL
+			)`,
+		} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("appliance: apply schema migration 4: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE appliance_meta SET value = '4' WHERE key = 'schema_version'`,
+		); err != nil {
+			return fmt.Errorf("appliance: record schema migration 4: %w", err)
+		}
+		version = 4
+	}
 	if version != CurrentSchemaVersion {
 		return &StoreError{
 			Code:    CodeUnsupportedSchema,
@@ -203,6 +258,48 @@ func (s *Store) Authority(ctx context.Context) (Authority, error) {
 	return readAuthority(ctx, s.db)
 }
 
+func (s *Store) BindNetworkInterface(ctx context.Context, networkID, interfaceName string) error {
+	networkID = strings.TrimSpace(networkID)
+	interfaceName = strings.TrimSpace(interfaceName)
+	if networkID == "" {
+		return storeError(CodeInvalidArgument, "network ID is required")
+	}
+	if err := validateInterfaceName(interfaceName); err != nil {
+		return storeError(CodeInvalidArgument, "network interface: %v", err)
+	}
+	s.externalApply.RLock()
+	defer s.externalApply.RUnlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE networks
+		SET interface_name = ?
+		WHERE id = ? AND COALESCE(interface_name, '') = '' AND retired_at_unix IS NULL`,
+		interfaceName, networkID)
+	if err != nil {
+		return fmt.Errorf("appliance: bind network interface: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed == 0 {
+		var existing string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT interface_name FROM networks WHERE id = ?`, networkID).Scan(&existing); err != nil {
+			return fmt.Errorf("appliance: read network interface binding: %w", err)
+		}
+		if existing != interfaceName {
+			return storeError(CodeGenerationConflict,
+				"network %s is already bound to interface %s", networkID, existing)
+		}
+		return tx.Commit()
+	}
+	if _, err := bumpInventoryGeneration(ctx, tx, s.now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) InstallAuthority(ctx context.Context, next Authority) error {
 	s.externalApply.Lock()
 	defer s.externalApply.Unlock()
@@ -226,16 +323,30 @@ func (s *Store) InstallAuthority(ctx context.Context, next Authority) error {
 		return storeError(CodeParentGeneration, "cannot reduce parent generation from %d to %d",
 			current.ParentGeneration, next.ParentGeneration)
 	}
+	if current.ParentState != "active" && next.ParentState == "active" {
+		return storeError(CodeParentFrozen,
+			"cannot reactivate parent state %s", current.ParentState)
+	}
 	if next.Fence == current.Fence && current.Fence != 0 {
-		if current.PhysicalHostID != "" && next.PhysicalHostID != current.PhysicalHostID {
+		if next.PhysicalHostID != current.PhysicalHostID {
 			return storeError(CodeFenceRejected, "same fence belongs to a different physical host")
 		}
-		if current.HostLeaseID != "" && next.HostLeaseID != current.HostLeaseID {
+		if next.HostLeaseID != current.HostLeaseID {
 			return storeError(CodeFenceRejected, "same fence belongs to a different host lease")
 		}
-		if current.HostLeaseSecretHash != "" && next.HostLeaseSecretHash != current.HostLeaseSecretHash {
+		if next.HostLeaseSecretHash != current.HostLeaseSecretHash {
 			return storeError(CodeFenceRejected, "same fence has a different lease secret hash")
 		}
+		if next.HostLeaseExpiresUnix != current.HostLeaseExpiresUnix {
+			return storeError(CodeFenceRejected, "same fence has a different lease expiry")
+		}
+	}
+	// Fence zero exists only for the initial unclaimed authority row. Every
+	// installed control-plane authority and handoff must be time bounded.
+	if next.Fence > current.Fence &&
+		next.HostLeaseExpiresUnix <= s.now().Unix() &&
+		!(current.Fence == 0 && next.HostLeaseExpiresUnix == 0) {
+		return storeError(CodeFenceRejected, "new host lease is missing a future expiry")
 	}
 	if !validParentState(next.ParentState) {
 		return storeError(CodeInvalidArgument, "invalid parent state %q", next.ParentState)
@@ -250,16 +361,205 @@ func (s *Store) InstallAuthority(ctx context.Context, next Authority) error {
 			fence = ?,
 			parent_generation = ?,
 			parent_state = ?,
+			cascade_operation_id = ?,
+			cascade_plan_revision = ?,
+			cascade_plan_hash = ?,
 			handoff_pending = ?,
 			updated_at_unix = ?
 		WHERE singleton = 1
 	`, next.PhysicalHostID, next.HostLeaseID, next.HostLeaseSecretHash,
 		next.HostLeaseExpiresUnix, next.Fence, next.ParentGeneration,
-		next.ParentState, boolInt(next.HandoffPending), next.UpdatedAtUnix)
+		next.ParentState, next.CascadeOperationID, next.CascadePlanRevision,
+		next.CascadePlanHash, boolInt(next.HandoffPending), next.UpdatedAtUnix)
 	if err != nil {
 		return fmt.Errorf("appliance: install authority: %w", err)
 	}
 	return tx.Commit()
+}
+
+func (s *Store) SetParentLifecycle(
+	ctx context.Context,
+	credentials Authority,
+	expectedGeneration, newGeneration uint64,
+	state, cascadeOperationID, cascadePlanRevision, cascadePlanHash string,
+	items []CascadeAuthorityItem,
+) (Authority, error) {
+	s.externalApply.Lock()
+	defer s.externalApply.Unlock()
+	if state != "frozen" && state != "deleting" {
+		return Authority{}, storeError(CodeInvalidArgument, "invalid parent lifecycle %q", state)
+	}
+	if newGeneration != expectedGeneration+1 {
+		return Authority{}, storeError(CodeParentGeneration,
+			"new parent generation must equal expected generation plus one")
+	}
+	cascadeOperationID = strings.TrimSpace(cascadeOperationID)
+	cascadePlanRevision = strings.TrimSpace(cascadePlanRevision)
+	cascadePlanHash = strings.TrimSpace(cascadePlanHash)
+	if cascadeOperationID == "" || cascadePlanRevision == "" || cascadePlanHash == "" {
+		return Authority{}, storeError(CodeInvalidArgument, "cascade authority identity is required")
+	}
+	if err := validateCascadeAuthorityItems(items); err != nil {
+		return Authority{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Authority{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if current.Fence != credentials.Fence ||
+		current.PhysicalHostID != credentials.PhysicalHostID ||
+		current.HostLeaseID != credentials.HostLeaseID ||
+		current.HostLeaseSecretHash != credentials.HostLeaseSecretHash ||
+		current.HostLeaseExpiresUnix != credentials.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected,
+			"physical host lease credentials do not match the current fence")
+	}
+	if current.HostLeaseExpiresUnix <= 0 ||
+		s.now().Unix() >= current.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected, "host lease expired")
+	}
+	if current.HandoffPending {
+		return Authority{}, storeError(CodeFenceRejected,
+			"authority handoff is pending")
+	}
+	if current.ParentGeneration == newGeneration && current.ParentState == state &&
+		current.CascadeOperationID == cascadeOperationID &&
+		current.CascadePlanRevision == cascadePlanRevision &&
+		current.CascadePlanHash == cascadePlanHash {
+		matches, err := cascadeAuthorityItemsMatch(ctx, tx, items)
+		if err != nil {
+			return Authority{}, err
+		}
+		if !matches {
+			return Authority{}, storeError(CodeResumeMismatch,
+				"cascade authority item enumeration changed")
+		}
+		if err := tx.Commit(); err != nil {
+			return Authority{}, err
+		}
+		return current, nil
+	}
+	if current.ParentState != "active" || current.ParentGeneration != expectedGeneration {
+		return Authority{}, storeError(CodeParentFrozen,
+			"parent is %s at generation %d; expected active generation %d",
+			current.ParentState, current.ParentGeneration, expectedGeneration)
+	}
+	now := s.now().Unix()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE appliance_authority
+		SET parent_generation=?, parent_state=?, cascade_operation_id=?,
+		    cascade_plan_revision=?, cascade_plan_hash=?, updated_at_unix=?
+		WHERE singleton=1 AND fence=? AND parent_generation=? AND parent_state='active'`,
+		newGeneration, state, cascadeOperationID, cascadePlanRevision,
+		cascadePlanHash, now, current.Fence, expectedGeneration,
+	)
+	if err != nil {
+		return Authority{}, fmt.Errorf("appliance: set parent lifecycle: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return Authority{}, storeError(CodeParentFrozen, "parent changed concurrently")
+	}
+	current.ParentGeneration = newGeneration
+	current.ParentState = state
+	current.CascadeOperationID = cascadeOperationID
+	current.CascadePlanRevision = cascadePlanRevision
+	current.CascadePlanHash = cascadePlanHash
+	current.UpdatedAtUnix = now
+	if err := replaceCascadeAuthorityItems(ctx, tx, items); err != nil {
+		return Authority{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Authority{}, err
+	}
+	return current, nil
+}
+
+func (s *Store) AuthenticateAuthority(
+	ctx context.Context,
+	credentials Authority,
+) (Authority, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Authority{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if current.Fence != credentials.Fence ||
+		current.PhysicalHostID != credentials.PhysicalHostID ||
+		current.HostLeaseID != credentials.HostLeaseID ||
+		current.HostLeaseSecretHash != credentials.HostLeaseSecretHash {
+		return Authority{}, storeError(CodeFenceRejected,
+			"physical host lease credentials do not match the current fence")
+	}
+	if current.HostLeaseExpiresUnix != credentials.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected,
+			"physical host lease expiry does not match the current fence")
+	}
+	if current.HostLeaseExpiresUnix > 0 &&
+		s.now().Unix() >= current.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected, "host lease expired")
+	}
+	if current.HandoffPending {
+		return Authority{}, storeError(CodeFenceRejected, "authority handoff is pending")
+	}
+	if err := tx.Commit(); err != nil {
+		return Authority{}, err
+	}
+	return current, nil
+}
+
+func (s *Store) ReleaseAuthority(
+	ctx context.Context,
+	credentials Authority,
+) (Authority, error) {
+	s.externalApply.Lock()
+	defer s.externalApply.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Authority{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if current.Fence != credentials.Fence ||
+		current.PhysicalHostID != credentials.PhysicalHostID ||
+		current.HostLeaseID != credentials.HostLeaseID ||
+		current.HostLeaseSecretHash != credentials.HostLeaseSecretHash {
+		return Authority{}, storeError(CodeFenceRejected,
+			"physical host lease credentials do not match the current fence")
+	}
+	if current.HandoffPending {
+		return current, nil
+	}
+	if current.HostLeaseExpiresUnix != credentials.HostLeaseExpiresUnix {
+		return Authority{}, storeError(CodeFenceRejected,
+			"physical host lease expiry does not match the current fence")
+	}
+	now := s.now().Unix()
+	current.HostLeaseExpiresUnix = now
+	current.HandoffPending = true
+	current.UpdatedAtUnix = now
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE appliance_authority
+		SET host_lease_expires_unix=?, handoff_pending=1, updated_at_unix=?
+		WHERE singleton=1
+	`, now, now); err != nil {
+		return Authority{}, fmt.Errorf("appliance: release authority: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Authority{}, err
+	}
+	return current, nil
 }
 
 func (s *Store) SetCapacityLimit(ctx context.Context, kind string, maxUnits int64) error {
@@ -544,10 +844,23 @@ func (s *Store) StageGuest(ctx context.Context, header MutationHeader, guest Gue
 	}
 	return s.stage(ctx, header, "guest", func(ctx context.Context, tx *sql.Tx) error {
 		guest.ID = header.ResourceID
-		if err := requireReservation(ctx, tx, "guest", guest.ID, `
-			AND network_id = ? AND ipv4 = ? AND mac = ?
-		`, guest.NetworkID, guest.IPv4, guest.MAC); err != nil {
-			return err
+		splitReservations := true
+		if err := requireReservation(ctx, tx, "guest_ip", guest.ID, `
+			AND network_id = ? AND ipv4 = ?
+		`, guest.NetworkID, guest.IPv4); err != nil {
+			if fallbackErr := requireReservation(ctx, tx, "guest", guest.ID, `
+				AND network_id = ? AND ipv4 = ? AND mac = ?
+			`, guest.NetworkID, guest.IPv4, guest.MAC); fallbackErr != nil {
+				return fallbackErr
+			}
+			splitReservations = false
+		}
+		if splitReservations {
+			if err := requireReservation(ctx, tx, "guest_mac", guest.ID, `
+				AND network_id = ? AND mac = ?
+			`, guest.NetworkID, guest.MAC); err != nil {
+				return err
+			}
 		}
 		guest.DesiredGeneration = header.NewGeneration
 		guest.ParentGeneration = header.ExpectedParentGeneration
@@ -684,10 +997,14 @@ func (s *Store) stageNAT(
 			return storeError(CodeInvalidArgument,
 				"invalid conntrack mark %d", nat.ConntrackMark)
 		}
-		if err := requireReservation(ctx, tx, "guest", nat.VMID, `
+		if err := requireReservation(ctx, tx, "conntrack_mark", nat.VMID, `
 			AND conntrack_mark = ?
 		`, nat.ConntrackMark); err != nil {
-			return err
+			if fallbackErr := requireReservation(ctx, tx, "guest", nat.VMID, `
+				AND conntrack_mark = ?
+			`, nat.ConntrackMark); fallbackErr != nil {
+				return fallbackErr
+			}
 		}
 		var currentState string
 		err := tx.QueryRowContext(ctx,
@@ -740,6 +1057,23 @@ func (s *Store) stage(
 ) (StageResult, error) {
 	s.externalApply.RLock()
 	defer s.externalApply.RUnlock()
+	return s.stageLocked(ctx, header, resourceKind,
+		false,
+		func(ctx context.Context, tx *sql.Tx, header MutationHeader) (Authority, error) {
+			return validateFence(ctx, tx, header, s.now())
+		},
+		writeDesired,
+	)
+}
+
+func (s *Store) stageLocked(
+	ctx context.Context,
+	header MutationHeader,
+	resourceKind string,
+	systemTransition bool,
+	validate func(context.Context, *sql.Tx, MutationHeader) (Authority, error),
+	writeDesired func(context.Context, *sql.Tx) error,
+) (StageResult, error) {
 	if err := validateMutationHeader(header, true); err != nil {
 		return StageResult{}, err
 	}
@@ -765,7 +1099,7 @@ func (s *Store) stage(
 		}
 		return StageResult{Intent: intent, Replay: true}, nil
 	}
-	authority, err := validateFence(ctx, tx, header, s.now())
+	authority, err := validate(ctx, tx, header)
 	if err != nil {
 		return StageResult{}, err
 	}
@@ -789,29 +1123,41 @@ func (s *Store) stage(
 	}
 	now := s.now().Unix()
 	intent := Intent{
-		MutationID:        header.MutationID,
-		ParentOperationID: header.ParentOperationID,
-		ResourceKind:      resourceKind,
-		ResourceID:        header.ResourceID,
-		ParentResourceID:  header.ParentResourceID,
-		DesiredGeneration: header.NewGeneration,
-		ParentGeneration:  header.ExpectedParentGeneration,
-		Fence:             header.HostFence,
-		SemanticHash:      header.SemanticHash,
-		Phase:             "pending",
-		CreatedAtUnix:     now,
-		UpdatedAtUnix:     now,
+		MutationID:          header.MutationID,
+		ParentOperationID:   header.ParentOperationID,
+		ResourceKind:        resourceKind,
+		ResourceID:          header.ResourceID,
+		ParentResourceID:    header.ParentResourceID,
+		DesiredGeneration:   header.NewGeneration,
+		ParentGeneration:    header.ExpectedParentGeneration,
+		Fence:               header.HostFence,
+		SemanticHash:        header.SemanticHash,
+		Phase:               "pending",
+		SystemTransition:    systemTransition,
+		CascadeOperationID:  header.CascadeOperationID,
+		CascadePlanRevision: header.CascadePlanRevision,
+		CascadePlanHash:     header.CascadePlanHash,
+		CascadeItemID:       header.CascadeItemID,
+		CascadeResourceKind: header.CascadeResourceKind,
+		CascadeAction:       header.CascadeAction,
+		CreatedAtUnix:       now,
+		UpdatedAtUnix:       now,
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO apply_intents (
 			mutation_id, parent_operation_id, resource_kind, resource_id,
 			parent_resource_id, desired_generation, parent_generation, fence,
 			semantic_hash, compiled_hash, phase, error_text, created_at_unix,
-			updated_at_unix
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', NULL, ?, ?)
+			updated_at_unix, system_transition, cascade_operation_id,
+			cascade_plan_revision, cascade_plan_hash, cascade_item_id,
+			cascade_resource_kind, cascade_action
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, intent.MutationID, intent.ParentOperationID, intent.ResourceKind,
 		intent.ResourceID, intent.ParentResourceID, intent.DesiredGeneration,
-		intent.ParentGeneration, intent.Fence, intent.SemanticHash, now, now)
+		intent.ParentGeneration, intent.Fence, intent.SemanticHash, now, now,
+		boolInt(systemTransition), intent.CascadeOperationID,
+		intent.CascadePlanRevision, intent.CascadePlanHash, intent.CascadeItemID,
+		intent.CascadeResourceKind, intent.CascadeAction)
 	if err != nil {
 		return StageResult{}, fmt.Errorf("appliance: insert apply intent: %w", err)
 	}
@@ -873,20 +1219,27 @@ func (s *Store) UpdateIntent(
 }
 
 func (s *Store) CommitIntent(ctx context.Context, req CommitIntentRequest) (AppliedOperation, error) {
-	return s.commitIntent(ctx, req, false)
+	return s.commitIntent(ctx, req, fenceValidationExternal)
 }
 
 func (s *Store) commitAdmittedIntent(
 	ctx context.Context,
 	req CommitIntentRequest,
 ) (AppliedOperation, error) {
-	return s.commitIntent(ctx, req, true)
+	return s.commitIntent(ctx, req, fenceValidationAdmitted)
+}
+
+func (s *Store) commitSystemIntent(
+	ctx context.Context,
+	req CommitIntentRequest,
+) (AppliedOperation, error) {
+	return s.commitIntent(ctx, req, fenceValidationSystem)
 }
 
 func (s *Store) commitIntent(
 	ctx context.Context,
 	req CommitIntentRequest,
-	allowPendingHandoff bool,
+	mode fenceValidationMode,
 ) (AppliedOperation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -912,17 +1265,32 @@ func (s *Store) commitIntent(
 	if intent.SemanticHash != req.SemanticHash {
 		return AppliedOperation{}, resumeMismatch(req.MutationID)
 	}
+	if mode == fenceValidationSystem && !intent.SystemTransition {
+		return AppliedOperation{}, storeError(CodeInvalidArgument,
+			"intent %q is not an internal system transition", req.MutationID)
+	}
 	header := MutationHeader{
 		MutationID:               intent.MutationID,
 		SemanticHash:             intent.SemanticHash,
+		ResourceID:               intent.ResourceID,
+		ExpectedGeneration:       intent.DesiredGeneration - 1,
 		ParentResourceID:         intent.ParentResourceID,
 		HostFence:                req.HostFence,
 		ExpectedParentGeneration: intent.ParentGeneration,
+		CascadeOperationID:       intent.CascadeOperationID,
+		CascadePlanRevision:      intent.CascadePlanRevision,
+		CascadePlanHash:          intent.CascadePlanHash,
+		CascadeItemID:            intent.CascadeItemID,
+		CascadeResourceKind:      intent.CascadeResourceKind,
+		CascadeAction:            intent.CascadeAction,
 	}
 	var authority Authority
-	if allowPendingHandoff {
+	switch mode {
+	case fenceValidationAdmitted:
 		authority, err = validateAdmittedFence(ctx, tx, header, s.now())
-	} else {
+	case fenceValidationSystem:
+		authority, err = validateSystemAuthority(ctx, tx)
+	default:
 		authority, err = validateFence(ctx, tx, header, s.now())
 	}
 	if err != nil {
@@ -1009,9 +1377,42 @@ func validateAdmittedFence(
 		return Authority{}, storeError(CodeFenceRejected, "host lease expired")
 	}
 	if authority.ParentState != "active" {
-		return Authority{}, storeError(CodeParentFrozen, "parent state is %s", authority.ParentState)
+		if err := validateCascadeAuthorityItem(ctx, tx, authority, header); err != nil {
+			return Authority{}, err
+		}
 	}
 	return authority, nil
+}
+
+type fenceValidationMode int
+
+const (
+	fenceValidationExternal fenceValidationMode = iota
+	fenceValidationAdmitted
+	fenceValidationSystem
+)
+
+func validateSystemAuthority(
+	ctx context.Context,
+	tx *sql.Tx,
+) (Authority, error) {
+	authority, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if strings.TrimSpace(authority.PhysicalHostID) == "" ||
+		authority.ParentGeneration == 0 ||
+		!validParentState(authority.ParentState) {
+		return Authority{}, storeError(CodeFenceRejected,
+			"managed authority identity is incomplete or corrupt")
+	}
+	switch authority.ParentState {
+	case "active", "frozen", "deleting":
+		return authority, nil
+	default:
+		return Authority{}, storeError(CodeParentFrozen,
+			"parent state is %s", authority.ParentState)
+	}
 }
 
 func (s *Store) Intent(ctx context.Context, mutationID string) (Intent, bool, error) {
@@ -1023,7 +1424,9 @@ func (s *Store) RecoveryIntents(ctx context.Context) ([]Intent, error) {
 		SELECT mutation_id, parent_operation_id, resource_kind, resource_id,
 			parent_resource_id, desired_generation, parent_generation, fence, semantic_hash,
 			COALESCE(compiled_hash, ''), phase, COALESCE(error_text, ''),
-			created_at_unix, updated_at_unix
+			created_at_unix, updated_at_unix, system_transition,
+			cascade_operation_id, cascade_plan_revision, cascade_plan_hash,
+			cascade_item_id, cascade_resource_kind, cascade_action
 		FROM apply_intents
 		WHERE phase <> 'complete'
 		ORDER BY created_at_unix, mutation_id
@@ -1041,37 +1444,6 @@ func (s *Store) RecoveryIntents(ctx context.Context) ([]Intent, error) {
 		intents = append(intents, intent)
 	}
 	return intents, rows.Err()
-}
-
-func (s *Store) NormalizeDrainingNAT(ctx context.Context) (int64, error) {
-	s.externalApply.RLock()
-	defer s.externalApply.RUnlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `
-		UPDATE nat_state
-		SET state = 'disabled', drain_started_unix = NULL
-		WHERE state = 'draining'
-	`)
-	if err != nil {
-		return 0, err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if affected > 0 {
-		if _, err := bumpInventoryGeneration(ctx, tx, s.now().Unix()); err != nil {
-			return 0, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return affected, nil
 }
 
 func (s *Store) Network(ctx context.Context, id string) (Network, bool, error) {
@@ -1168,10 +1540,53 @@ func (s *Store) ValidateRelay(
 	return relay, nil
 }
 
+func (s *Store) ValidateRelayCurrent(
+	ctx context.Context,
+	relayID string,
+	expectedGeneration uint64,
+) (Relay, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Relay{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := validateRuntimeAuthority(ctx, tx); err != nil {
+		return Relay{}, err
+	}
+	relay, err := readRelayForRuntime(ctx, tx, relayID)
+	if err != nil {
+		return Relay{}, err
+	}
+	if relay.DesiredGeneration != expectedGeneration {
+		return Relay{}, storeError(CodeGenerationConflict,
+			"relay %s generation is %d; expected %d",
+			relayID, relay.DesiredGeneration, expectedGeneration)
+	}
+	if relay.DesiredGeneration == 0 ||
+		relay.DesiredGeneration != relay.AppliedGeneration ||
+		relay.DesiredGeneration != relay.ObservedGeneration {
+		return Relay{}, storeError(CodeGenerationConflict,
+			"relay %s generation is not converged: desired=%d applied=%d observed=%d",
+			relayID, relay.DesiredGeneration, relay.AppliedGeneration,
+			relay.ObservedGeneration)
+	}
+	if relay.State == "retiring" || relay.State == "removing" ||
+		relay.State == "removed" || relay.RetiredAtUnix != nil {
+		return Relay{}, storeError(CodeNotFound, "relay %q is not accepting connections", relayID)
+	}
+	if err := validateRelayRuntimeState(ctx, tx, relay); err != nil {
+		return Relay{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Relay{}, err
+	}
+	return relay, nil
+}
+
 func (s *Store) SetRelayBindStatus(
 	ctx context.Context,
 	relayID string,
-	expectedGeneration, fence uint64,
+	expectedGeneration uint64,
 	boundMainIP, bindError, state string,
 ) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1179,7 +1594,7 @@ func (s *Store) SetRelayBindStatus(
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := validateFence(ctx, tx, MutationHeader{HostFence: fence}, s.now()); err != nil {
+	if _, err := validateRuntimeAuthority(ctx, tx); err != nil {
 		return err
 	}
 	relay, err := readRelayForRuntime(ctx, tx, relayID)
@@ -1395,12 +1810,15 @@ func readAuthority(ctx context.Context, q queryRower) (Authority, error) {
 	err := q.QueryRowContext(ctx, `
 		SELECT physical_host_id, host_lease_id, host_lease_secret_hash,
 			host_lease_expires_unix, fence, parent_generation, parent_state,
+			cascade_operation_id, cascade_plan_revision, cascade_plan_hash,
 			handoff_pending, updated_at_unix
 		FROM appliance_authority WHERE singleton = 1
 	`).Scan(&authority.PhysicalHostID, &authority.HostLeaseID,
 		&authority.HostLeaseSecretHash, &authority.HostLeaseExpiresUnix,
 		&authority.Fence, &authority.ParentGeneration,
-		&authority.ParentState, &handoff, &authority.UpdatedAtUnix)
+		&authority.ParentState, &authority.CascadeOperationID,
+		&authority.CascadePlanRevision, &authority.CascadePlanHash,
+		&handoff, &authority.UpdatedAtUnix)
 	authority.HandoffPending = handoff != 0
 	return authority, err
 }
@@ -1429,6 +1847,8 @@ func validateFence(
 	header MutationHeader,
 	now time.Time,
 ) (Authority, error) {
+	// External control-plane mutations must hold the current authenticated,
+	// nonexpired lease. Dataplane/runtime paths use validateRuntimeAuthority.
 	authority, err := readAuthority(ctx, tx)
 	if err != nil {
 		return Authority{}, err
@@ -1444,9 +1864,181 @@ func validateFence(
 		return Authority{}, storeError(CodeFenceRejected, "host lease expired")
 	}
 	if authority.ParentState != "active" {
-		return Authority{}, storeError(CodeParentFrozen, "parent state is %s", authority.ParentState)
+		if err := validateCascadeAuthorityItem(ctx, tx, authority, header); err != nil {
+			return Authority{}, err
+		}
 	}
 	return authority, nil
+}
+
+func validateRuntimeAuthority(
+	ctx context.Context,
+	tx *sql.Tx,
+) (Authority, error) {
+	// Durable dataplane state remains authoritative while no control-plane
+	// lease is active. Lease expiry and handoff_pending are intentionally not
+	// checked here; parent lifecycle and durable identity still fail closed.
+	authority, err := readAuthority(ctx, tx)
+	if err != nil {
+		return Authority{}, err
+	}
+	if err := validateRuntimeAuthorityValue(authority); err != nil {
+		return Authority{}, err
+	}
+	return authority, nil
+}
+
+func validateRuntimeAuthorityValue(authority Authority) error {
+	if strings.TrimSpace(authority.PhysicalHostID) == "" ||
+		authority.ParentGeneration == 0 ||
+		!validParentState(authority.ParentState) {
+		return storeError(CodeFenceRejected,
+			"managed authority identity is incomplete or corrupt")
+	}
+	if authority.ParentState != "active" {
+		return storeError(CodeParentFrozen, "parent state is %s", authority.ParentState)
+	}
+	return nil
+}
+
+func validateCascadeAuthorityItem(
+	ctx context.Context,
+	tx *sql.Tx,
+	authority Authority,
+	header MutationHeader,
+) error {
+	if authority.ParentState != "frozen" && authority.ParentState != "deleting" {
+		return storeError(CodeParentFrozen, "parent state is %s", authority.ParentState)
+	}
+	if strings.TrimSpace(header.CascadeOperationID) == "" ||
+		strings.TrimSpace(header.CascadePlanRevision) == "" ||
+		strings.TrimSpace(header.CascadePlanHash) == "" ||
+		strings.TrimSpace(header.CascadeItemID) == "" ||
+		strings.TrimSpace(header.CascadeResourceKind) == "" ||
+		strings.TrimSpace(header.CascadeAction) == "" ||
+		header.CascadeOperationID != authority.CascadeOperationID ||
+		header.CascadePlanRevision != authority.CascadePlanRevision ||
+		header.CascadePlanHash != authority.CascadePlanHash {
+		return storeError(CodeParentFrozen,
+			"cascade authority identity is missing or does not match the frozen parent")
+	}
+	var item CascadeAuthorityItem
+	err := tx.QueryRowContext(ctx, `
+		SELECT item_id, resource_kind, resource_id, action, expected_generation
+		FROM cascade_authority_items WHERE item_id = ?
+	`, header.CascadeItemID).Scan(&item.ItemID, &item.ResourceKind,
+		&item.ResourceID, &item.Action, &item.ExpectedGeneration)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storeError(CodeParentFrozen,
+			"cascade item %q is not approved", header.CascadeItemID)
+	}
+	if err != nil {
+		return err
+	}
+	if item.ResourceKind != header.CascadeResourceKind ||
+		item.ResourceID != header.ResourceID ||
+		item.Action != header.CascadeAction ||
+		item.ExpectedGeneration != header.ExpectedGeneration {
+		return storeError(CodeParentFrozen,
+			"cascade item %q does not authorize %s %s action %s generation %d",
+			header.CascadeItemID, header.CascadeResourceKind, header.ResourceID,
+			header.CascadeAction, header.ExpectedGeneration)
+	}
+	return nil
+}
+
+func validateCascadeAuthorityItems(items []CascadeAuthorityItem) error {
+	if len(items) == 0 {
+		return storeError(CodeInvalidArgument,
+			"cascade authority item enumeration is required")
+	}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item.ItemID = strings.TrimSpace(item.ItemID)
+		item.ResourceKind = strings.TrimSpace(item.ResourceKind)
+		item.ResourceID = strings.TrimSpace(item.ResourceID)
+		item.Action = strings.TrimSpace(item.Action)
+		if item.ItemID == "" || item.ResourceKind == "" ||
+			item.ResourceID == "" || item.Action == "" {
+			return storeError(CodeInvalidArgument,
+				"cascade authority item identity is incomplete")
+		}
+		if _, duplicate := seen[item.ItemID]; duplicate {
+			return storeError(CodeInvalidArgument,
+				"duplicate cascade authority item %q", item.ItemID)
+		}
+		seen[item.ItemID] = struct{}{}
+		action, err := cascadeauth.Parse(item.Action)
+		if err != nil {
+			return storeError(CodeInvalidArgument, "%v", err)
+		}
+		if err := cascadeauth.ValidateScope(item.ResourceKind, action); err != nil {
+			return storeError(CodeInvalidArgument, "%v", err)
+		}
+	}
+	return nil
+}
+
+func replaceCascadeAuthorityItems(
+	ctx context.Context,
+	tx *sql.Tx,
+	items []CascadeAuthorityItem,
+) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM cascade_authority_items`); err != nil {
+		return fmt.Errorf("appliance: clear cascade authority items: %w", err)
+	}
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO cascade_authority_items (
+				item_id, resource_kind, resource_id, action, expected_generation
+			) VALUES (?, ?, ?, ?, ?)
+		`, item.ItemID, item.ResourceKind, item.ResourceID, item.Action,
+			item.ExpectedGeneration); err != nil {
+			return fmt.Errorf("appliance: install cascade authority item %s: %w",
+				item.ItemID, err)
+		}
+	}
+	return nil
+}
+
+func cascadeAuthorityItemsMatch(
+	ctx context.Context,
+	tx *sql.Tx,
+	items []CascadeAuthorityItem,
+) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT item_id, resource_kind, resource_id, action, expected_generation
+		FROM cascade_authority_items ORDER BY item_id
+	`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	var current []CascadeAuthorityItem
+	for rows.Next() {
+		var item CascadeAuthorityItem
+		if err := rows.Scan(&item.ItemID, &item.ResourceKind, &item.ResourceID,
+			&item.Action, &item.ExpectedGeneration); err != nil {
+			return false, err
+		}
+		current = append(current, item)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	expected := append([]CascadeAuthorityItem(nil), items...)
+	sort.Slice(expected, func(i, j int) bool {
+		return expected[i].ItemID < expected[j].ItemID
+	})
+	if len(current) != len(expected) {
+		return false, nil
+	}
+	for i := range current {
+		if current[i] != expected[i] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func validateParentGeneration(
@@ -1914,7 +2506,9 @@ func lookupIntent(
 		SELECT mutation_id, parent_operation_id, resource_kind, resource_id,
 			parent_resource_id, desired_generation, parent_generation, fence, semantic_hash,
 			COALESCE(compiled_hash, ''), phase, COALESCE(error_text, ''),
-			created_at_unix, updated_at_unix
+			created_at_unix, updated_at_unix, system_transition,
+			cascade_operation_id, cascade_plan_revision, cascade_plan_hash,
+			cascade_item_id, cascade_resource_kind, cascade_action
 		FROM apply_intents WHERE mutation_id = ?
 	`, mutationID)
 	intent, err := scanIntent(row)
@@ -1933,11 +2527,16 @@ type scanner interface {
 
 func scanIntent(row scanner) (Intent, error) {
 	var intent Intent
+	var systemTransition int
 	err := row.Scan(&intent.MutationID, &intent.ParentOperationID,
 		&intent.ResourceKind, &intent.ResourceID, &intent.ParentResourceID,
 		&intent.DesiredGeneration, &intent.ParentGeneration, &intent.Fence, &intent.SemanticHash,
 		&intent.CompiledHash, &intent.Phase, &intent.Error,
-		&intent.CreatedAtUnix, &intent.UpdatedAtUnix)
+		&intent.CreatedAtUnix, &intent.UpdatedAtUnix, &systemTransition,
+		&intent.CascadeOperationID, &intent.CascadePlanRevision,
+		&intent.CascadePlanHash, &intent.CascadeItemID,
+		&intent.CascadeResourceKind, &intent.CascadeAction)
+	intent.SystemTransition = systemTransition != 0
 	return intent, err
 }
 
@@ -2081,6 +2680,7 @@ func validateRelayTarget(ctx context.Context, q queryRower, relay Relay) error {
 			"relay %s listen port %d is outside %d-%d",
 			relay.ID, relay.ListenPort, RelayPortMin, RelayPortMax)
 	}
+
 	if relay.TargetPort != RelayTargetPort {
 		return storeError(CodeInvalidArgument,
 			"relay %s target port is %d; expected %d",
@@ -2106,6 +2706,79 @@ func validateRelayTarget(ctx context.Context, q queryRower, relay Relay) error {
 		return storeError(CodeInvalidArgument,
 			"relay %s target %s does not match guest address %s",
 			relay.ID, relay.TargetIPv4, guestIPv4)
+	}
+	return nil
+}
+
+func validateRelayRuntimeState(ctx context.Context, q queryRower, relay Relay) error {
+	if err := validateRelayTarget(ctx, q, relay); err != nil {
+		return err
+	}
+	var (
+		networkID                                 string
+		guestIPv4, guestState                     string
+		guestDesired, guestApplied, guestObserved uint64
+		guestParent                               uint64
+		guestRetired                              sql.NullInt64
+	)
+	err := q.QueryRowContext(ctx, `
+		SELECT network_id, ipv4, state, desired_generation, applied_generation,
+			observed_generation, parent_generation, retired_at_unix
+		FROM guests WHERE id = ?
+	`, relay.VMID).Scan(&networkID, &guestIPv4, &guestState, &guestDesired,
+		&guestApplied, &guestObserved, &guestParent, &guestRetired)
+	if errors.Is(err, sql.ErrNoRows) || guestRetired.Valid {
+		return storeError(CodeNotFound, "relay %s guest %q is not live", relay.ID, relay.VMID)
+	}
+	if err != nil {
+		return err
+	}
+	if guestState == "retiring" || guestState == "removed" || guestState == "retired" ||
+		guestDesired == 0 || guestDesired != guestApplied || guestDesired != guestObserved {
+		return storeError(CodeGenerationConflict,
+			"relay %s guest %s is not a converged live mapping", relay.ID, relay.VMID)
+	}
+	if relay.ParentGeneration != guestDesired || guestIPv4 != relay.TargetIPv4 {
+		return storeError(CodeParentGeneration,
+			"relay %s parent mapping changed from guest generation %d to %d",
+			relay.ID, relay.ParentGeneration, guestDesired)
+	}
+	var (
+		networkState                                    string
+		networkDesired, networkApplied, networkObserved uint64
+		networkRetired                                  sql.NullInt64
+	)
+	err = q.QueryRowContext(ctx, `
+		SELECT state, desired_generation, applied_generation, observed_generation,
+			retired_at_unix
+		FROM networks WHERE id = ?
+	`, networkID).Scan(&networkState, &networkDesired, &networkApplied,
+		&networkObserved, &networkRetired)
+	if errors.Is(err, sql.ErrNoRows) || networkRetired.Valid {
+		return storeError(CodeNotFound, "relay %s network %q is not live", relay.ID, networkID)
+	}
+	if err != nil {
+		return err
+	}
+	if networkState == "retiring" || networkState == "removed" ||
+		networkState == "retired" || networkDesired == 0 ||
+		networkDesired != networkApplied || networkDesired != networkObserved ||
+		guestParent != networkDesired {
+		return storeError(CodeGenerationConflict,
+			"relay %s network %s is not a converged live parent", relay.ID, networkID)
+	}
+	var reservations int
+	if err := q.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM reservations
+		WHERE resource_id = ? AND listen_port = ? AND retired_at_unix IS NULL
+			AND resource_kind IN ('relay', 'relay_port')
+	`, relay.ID, relay.ListenPort).Scan(&reservations); err != nil {
+		return err
+	}
+	if reservations != 1 {
+		return storeError(CodeReservationLost,
+			"relay %s has %d live reservations for port %d",
+			relay.ID, reservations, relay.ListenPort)
 	}
 	return nil
 }

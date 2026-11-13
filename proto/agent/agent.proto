@@ -63,6 +63,13 @@ service NodeAgent {
   rpc ReleaseResources(ReleaseResourcesRequest)
       returns (ReleaseResourcesResponse);
 
+  // Revoke the current physical-host lease before releasing it on the host.
+  rpc ReleaseApplianceAuthority(MutationHeader) returns (FenceState);
+
+  // Atomically freeze the parent generation before an approved cascade.
+  rpc SetApplianceParentLifecycle(SetApplianceParentLifecycleRequest)
+      returns (FenceState);
+
   // Apply or retire a private network.
   rpc ApplyPrivateNetwork(ApplyPrivateNetworkRequest)
       returns (ApplyPrivateNetworkResponse);
@@ -327,6 +334,9 @@ message MutationHeader {
   string cascade_plan_revision = 14;
   string cascade_plan_hash = 15;
   string cascade_item_id = 16;
+  int64 host_lease_expires_unix = 17;
+  string cascade_resource_kind = 18;
+  string cascade_action = 19;
 }
 
 // GenerationState records desired, applied, and externally observed versions
@@ -349,6 +359,21 @@ message FenceState {
   bool frozen = 6;
   bool deleting = 7;
   bool lost = 8;
+}
+
+message SetApplianceParentLifecycleRequest {
+  MutationHeader header = 1;
+  string state = 2;
+  uint64 new_parent_generation = 3;
+  repeated CascadeAuthorityItem cascade_items = 4;
+}
+
+message CascadeAuthorityItem {
+  string item_id = 1;
+  string resource_kind = 2;
+  string resource_id = 3;
+  string action = 4;
+  uint64 expected_generation = 5;
 }
 
 // MutationResult describes the durable result of an appliance mutation.

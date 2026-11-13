@@ -37,13 +37,16 @@ func TestIsolatedVMClaimAndExactDeleteScripts(t *testing.T) {
 	}
 
 	deleteGuard := testGuard("vm", vmID, "delete_isolated_vm")
+	adapterID := "Microsoft:cccccccc-cccc-4ccc-8ccc-cccccccccccc\\dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 	deleteScript, err := BuildDeleteIsolatedVMScript(DeleteIsolatedVMParams{
 		Guard: deleteGuard, OrchestratorVMGUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		VMName: "isolated-vm-444444444444", ExpectedVMID: vmID,
 		ExpectedVMGUID:    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-		ExpectedAdapterID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		ExpectedAdapterID: adapterID,
 		ExpectedVHDPath:   `E:\VM\guest\guest.vhdx`, ExpectedVMPath: `E:\VM\guest`,
-		DeleteStorage: true,
+		ExpectedCIDATAPath: `E:\VM\guest\cidata.iso`,
+		ExpectedOwnership:  `E:\VM\guest\.lablink-linux-vm-ownership.json`,
+		DeleteStorage:      true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +54,8 @@ func TestIsolatedVMClaimAndExactDeleteScripts(t *testing.T) {
 	for _, wanted := range []string{
 		"exact VM GUID", "adapter_id", "VM_STORAGE_IDENTITY_MISMATCH",
 		"Remove-VM -VM $vm[0]", "VM_STORAGE_IN_USE", "Remove-Item -LiteralPath",
+		`E:\VM\guest\cidata.iso`, `.lablink-linux-vm-ownership.json`,
+		"$files.Count -eq 0", "$reparse.Count -eq 0",
 	} {
 		if !strings.Contains(deleteScript, wanted) {
 			t.Errorf("exact delete script missing %q", wanted)
@@ -58,5 +63,8 @@ func TestIsolatedVMClaimAndExactDeleteScripts(t *testing.T) {
 	}
 	if strings.Contains(deleteScript, "Remove-Item -LiteralPath $parent") {
 		t.Fatal("exact delete must not remove shared parent storage")
+	}
+	if !strings.Contains(strings.ToLower(deleteScript), strings.ToLower(adapterID)) {
+		t.Fatal("exact delete script omitted the provider-qualified Hyper-V adapter ID")
 	}
 }

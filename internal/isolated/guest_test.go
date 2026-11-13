@@ -78,8 +78,46 @@ func TestStaticGuestNetworkRendering(t *testing.T) {
 			t.Errorf("Linux static network config missing %q", wanted)
 		}
 	}
+	if !strings.Contains(linux, `macaddress: "02:15:5d:01:02:04"`) ||
+		strings.Contains(linux, `macaddress: "02155d010204"`) {
+		t.Fatalf("Linux static network config did not canonicalize the MAC:\n%s", linux)
+	}
 	if strings.Contains(linux, "dhcp4: true") {
 		t.Fatal("isolated Linux config must not use DHCP")
+	}
+	bootstrap, err := LinuxStaticNetworkBootstrapScript(
+		"192.168.240.11", 26, "192.168.240.1", "02155D010204", []string{"10.0.0.53"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"MACAddress=02:15:5d:01:02:04", "Address=192.168.240.11/26",
+		"Gateway=192.168.240.1", "DNS=10.0.0.53",
+		"ip address add 192.168.240.11/26", "ISOLATED_STATIC_IPV4_VERIFY_FAILED",
+	} {
+		if !strings.Contains(bootstrap, wanted) {
+			t.Errorf("Linux static network bootstrap missing %q", wanted)
+		}
+	}
+	windowsDNS, err := WindowsDNSUpdateScript("02155D010203", []string{"10.0.0.53", "10.0.0.54"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(windowsDNS, "Set-DnsClientServerAddress") ||
+		!strings.Contains(windowsDNS, "'10.0.0.53','10.0.0.54'") {
+		t.Fatalf("Windows DNS update script is incomplete:\n%s", windowsDNS)
+	}
+	linuxDNS, err := LinuxDNSUpdateScript("02155D010204", []string{"10.0.0.53", "10.0.0.54"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{
+		"expected_mac=\"02:15:5d:01:02:04\"", "DNS=10.0.0.53",
+		"DNS=10.0.0.54", `resolvectl dns "$interface" 10.0.0.53 10.0.0.54`,
+	} {
+		if !strings.Contains(linuxDNS, wanted) {
+			t.Errorf("Linux DNS update script missing %q", wanted)
+		}
 	}
 }
 

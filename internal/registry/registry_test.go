@@ -98,3 +98,42 @@ func TestNodeJSONOmitsEmptyOptionalFields(t *testing.T) {
 		t.Fatalf("empty optional fields were serialized:\n%s", data)
 	}
 }
+
+func TestSetNodePreservesLabelsWhenUpdateOmitsThem(t *testing.T) {
+	reg := Load(filepath.Join(t.TempDir(), "nodes.json"))
+	if err := reg.SetNode(&Node{
+		Name: "orchestrator", Address: "192.0.2.10:9091",
+		Labels: map[string]string{"lablink.orchestrator_id": "orch-id"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SetNode(&Node{Name: "orchestrator", Address: "192.0.2.11:9091"}); err != nil {
+		t.Fatal(err)
+	}
+	node, ok := reg.GetNode("orchestrator")
+	if !ok || node.Address != "192.0.2.11:9091" ||
+		node.Labels["lablink.orchestrator_id"] != "orch-id" {
+		t.Fatalf("updated node lost labels: %+v", node)
+	}
+}
+
+func TestGetNodeReturnsIndependentRoleAndLabels(t *testing.T) {
+	reg := Load(filepath.Join(t.TempDir(), "nodes.json"))
+	if err := reg.SetNode(&Node{
+		Name: "orchestrator", Role: "isolated-orchestrator",
+		Labels: map[string]string{"lablink.kind": "isolated-orchestrator"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node, ok := reg.GetNode("orchestrator")
+	if !ok {
+		t.Fatal("node missing")
+	}
+	node.Role = "mutated"
+	node.Labels["lablink.kind"] = "mutated"
+	persisted, ok := reg.GetNode("orchestrator")
+	if !ok || persisted.Role != "isolated-orchestrator" ||
+		persisted.Labels["lablink.kind"] != "isolated-orchestrator" {
+		t.Fatalf("caller mutated registry-owned node: %+v", persisted)
+	}
+}

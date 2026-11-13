@@ -1,6 +1,7 @@
 package orchestratorseed
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/nijosmsft/lablink/internal/appliance"
 )
 
 const (
@@ -214,6 +217,7 @@ func Files(config Config) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	dependencyData = normalizeLinuxTextAsset(dependencyData)
 	var dependencies dependencyManifest
 	if err := json.Unmarshal(dependencyData, &dependencies); err != nil {
 		return nil, fmt.Errorf("parse embedded dependency manifest: %w", err)
@@ -242,7 +246,7 @@ func Files(config Config) (map[string][]byte, error) {
 		DependencySHA256: hex.EncodeToString(dependencySum[:]),
 		PreserveMainDHCP: true,
 		NetworkManager:   "systemd-networkd",
-		ConflictPolicy:   "detect_only_runtime_apply",
+		ConflictPolicy:   "auto_disable_known_firewall_managers",
 		MaxNetworks:      config.MaxNetworks,
 		MaxVMs:           config.MaxVMs,
 		RelayPortMin:     config.RelayPortMin,
@@ -250,6 +254,7 @@ func Files(config Config) (map[string][]byte, error) {
 		SubnetPool:       config.SubnetPool,
 		SubnetPrefix:     config.SubnetPrefix,
 		ServiceOrder: []string{
+			"lablink-disable-conflicting-firewalls.service",
 			"lablink-appliance-firewall.service",
 			"systemd-networkd.service",
 			"network-online.target",
@@ -269,6 +274,7 @@ func Files(config Config) (map[string][]byte, error) {
 	}
 	for _, name := range []string{
 		"emergency.nft",
+		"lablink-disable-conflicting-firewalls.service",
 		"lablink-appliance-firewall.service",
 		"lablink-appliance-watchdog.service",
 		"lablink-agent-appliance.conf",
@@ -277,7 +283,7 @@ func Files(config Config) (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		files["orchestrator/"+name] = data
+		files["orchestrator/"+name] = normalizeLinuxTextAsset(data)
 	}
 	files["orchestrator/install-orchestrator.sh"] = renderInstaller(config, dependencies)
 	return files, nil
@@ -297,9 +303,13 @@ func AssetFiles() (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		files[entry.Name()] = data
+		files[entry.Name()] = normalizeLinuxTextAsset(data)
 	}
 	return files, nil
+}
+
+func normalizeLinuxTextAsset(data []byte) []byte {
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 func renderInstaller(config Config, dependencies dependencyManifest) []byte {
@@ -313,6 +323,11 @@ func renderInstaller(config Config, dependencies dependencyManifest) []byte {
 	}
 	sort.Strings(specs)
 	sort.Strings(checks)
+	managerServices := appliance.AutomaticallyNeutralizedFirewallManagerServices()
+	managerServiceArgs := make([]string, 0, len(managerServices))
+	for _, service := range managerServices {
+		managerServiceArgs = append(managerServiceArgs, shellQuote(service))
+	}
 
 	bundlePath := ""
 	bundleManifestSHA := ""
@@ -418,6 +433,7 @@ install -d -o root -g root -m 0700 /var/lib/lablink-agent/appliance
 install -m 0644 "$src/emergency.nft" /opt/lablink/orchestrator/emergency.nft
 install -m 0644 "$src/dependency-manifest.json" /opt/lablink/orchestrator/dependency-manifest.json
 install -m 0644 "$src/customization-manifest.json" /var/lib/lablink-agent/appliance/version-manifest.json
+install -m 0644 "$src/lablink-disable-conflicting-firewalls.service" /etc/systemd/system/lablink-disable-conflicting-firewalls.service
 install -m 0644 "$src/lablink-appliance-firewall.service" /etc/systemd/system/lablink-appliance-firewall.service
 install -m 0644 "$src/lablink-appliance-watchdog.service" /etc/systemd/system/lablink-appliance-watchdog.service
 install -m 0644 "$src/lablink-agent-appliance.conf" /etc/systemd/system/lablink-agent.service.d/20-appliance.conf
@@ -428,21 +444,76 @@ set -Eeuo pipefail
 printf '0\n' > /proc/sys/net/ipv4/ip_forward
 exec /usr/sbin/nft -f /opt/lablink/orchestrator/emergency.nft
 EOF
+cat > /opt/lablink/orchestrator/disable-conflicting-firewalls.sh <<'EOF'
+#!/bin/bash
+set -Eeuo pipefail
+
+if command -v ufw >/dev/null && test -f /etc/ufw/ufw.conf; then
+  ufw --force disable
+  if grep -Eiq '^[[:space:]]*ENABLED[[:space:]]*=[[:space:]]*yes[[:space:]]*$' /etc/ufw/ufw.conf; then
+    echo "UFW configuration remains enabled after disable" >&2
+    exit 1
+  fi
+fi
+
+services=(%s)
+for service in "${services[@]}"; do
+  load_state="$(systemctl show --property=LoadState --value "$service" 2>/dev/null || true)"
+  if test -z "$load_state" || test "$load_state" = "not-found"; then
+    continue
+  fi
+  systemctl stop "$service"
+  enabled_state="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+  if test "$enabled_state" != "masked"; then
+    systemctl disable "$service"
+    systemctl mask "$service"
+  fi
+  if systemctl is-active --quiet "$service"; then
+    echo "$service remains active after neutralization" >&2
+    exit 1
+  fi
+  enabled_state="$(systemctl is-enabled "$service" 2>/dev/null || true)"
+  if test "$enabled_state" != "masked"; then
+    echo "$service enablement state is $enabled_state, expected masked" >&2
+    exit 1
+  fi
+done
+EOF
 cat > /opt/lablink/orchestrator/verify-appliance-policy.sh <<'EOF'
 #!/bin/bash
 set -Eeuo pipefail
 test -s /var/lib/lablink-agent/appliance/version-manifest.json
 /usr/sbin/nft list table inet lablink | grep -q 'policy drop'
 EOF
-chmod 0755 /opt/lablink/orchestrator/load-emergency-policy.sh /opt/lablink/orchestrator/verify-appliance-policy.sh
+chmod 0755 /opt/lablink/orchestrator/disable-conflicting-firewalls.sh /opt/lablink/orchestrator/load-emergency-policy.sh /opt/lablink/orchestrator/verify-appliance-policy.sh
 
-# Runtime apply owns network-manager conflict handling and future private-NIC
-# files. Seed customization deliberately leaves the existing main DHCP policy
-# and all /etc/netplan files untouched.
+# Seed customization neutralizes known firewall managers before LabLink takes
+# ownership. Runtime conflict scanning fails readiness if any manager or
+# unmanaged rules remain. The existing main DHCP policy and all /etc/netplan
+# files remain untouched.
 systemctl daemon-reload
+systemctl enable lablink-disable-conflicting-firewalls.service
 systemctl enable --now lablink-appliance-firewall.service
 systemctl enable lablink-appliance-watchdog.service
-systemctl restart lablink-agent.service
+transition_ok=false
+if systemctl restart lablink-agent.service; then
+  for _ in $(seq 1 15); do
+    if systemctl is-active --quiet lablink-agent.service &&
+       timeout 1 bash -c '</dev/tcp/127.0.0.1/9091' 2>/dev/null; then
+      transition_ok=true
+      break
+    fi
+    sleep 1
+  done
+fi
+if ! $transition_ok; then
+  journalctl --no-pager -u lablink-appliance-firewall.service -u lablink-agent.service -n 200 \
+    > /var/log/lablink-agent-appliance-transition.log 2>&1 || true
+  rm -f /etc/systemd/system/lablink-agent.service.d/20-appliance.conf
+  systemctl daemon-reload
+  systemctl restart lablink-agent.service
+  false
+fi
 systemctl is-active --quiet lablink-appliance-firewall.service
 systemctl is-active --quiet lablink-agent.service
 ip -4 route show default | grep -q "dev $main_iface"
@@ -455,6 +526,7 @@ logger -t lablink-orchestrator-install "customization complete"
 		shellQuote(config.PackageSource),
 		shellQuote(bundlePath), bundlePath,
 		strings.Join(checks, "\n"),
+		strings.Join(managerServiceArgs, " "),
 		config.ApplianceVersion,
 	)
 	return []byte(script)

@@ -126,6 +126,11 @@ func TestFullPolicyPrivateICMPAndRelayOrdering(t *testing.T) {
 	if !forwarding {
 		t.Fatal("forwarding = false, want true")
 	}
+	for _, line := range strings.Split(ruleset, "\n") {
+		if strings.Contains(line, ApplianceRuleSignature) && len(strings.TrimSpace(line)) > 128 {
+			t.Fatalf("nftables ownership comment exceeds 128 characters: %q", line)
+		}
+	}
 	privateAccept := strings.Index(ruleset,
 		`iifname "eth1" ip daddr 10.80.0.1 icmp type`)
 	privateDrop := strings.Index(ruleset,
@@ -257,7 +262,7 @@ func TestNATPolicyGatesNewAndEstablishedFlowsByExactVMState(t *testing.T) {
 	}
 }
 
-func TestConflictScannerProducesApprovalPlanWithoutDisablingServices(t *testing.T) {
+func TestConflictScannerReportsBootstrapFailurePlanWithoutDisablingServices(t *testing.T) {
 	executor := &scriptedExecutor{
 		run: func(name string, args ...string) (CommandResult, error) {
 			command := name + " " + strings.Join(args, " ")
@@ -287,7 +292,7 @@ func TestConflictScannerProducesApprovalPlanWithoutDisablingServices(t *testing.
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if !plan.ApprovalRequired || plan.Revision == "" || len(plan.Conflicts) != 3 {
+	if plan.Revision == "" || len(plan.Conflicts) != 3 {
 		t.Fatalf("conflict plan = %+v", plan)
 	}
 	for _, command := range executor.commands {

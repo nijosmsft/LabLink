@@ -213,12 +213,12 @@ func TestIsolatedAPIAndRendering(t *testing.T) {
 					string(isolated.CapabilityStatsV1),
 					string(isolated.CapabilityApplianceV1),
 				},
-				ProtocolVersion: 1, Ready: true, ApplianceGeneration: 9,
+				ProtocolVersion: isolated.MaximumProtocolVersion, Ready: true, ApplianceGeneration: 9,
 			},
 		},
 		snapshots: map[string]isolated.ApplianceSnapshot{
 			"orch-a": {
-				SchemaVersion: 1, ProtocolVersion: 1, Ready: true,
+				SchemaVersion: isolated.MaximumApplianceSchema, ProtocolVersion: isolated.MaximumProtocolVersion, Ready: true,
 				ApplianceGeneration: 9, InventoryGeneration: 8,
 				MainIPv4: "10.40.0.2", PolicyVerified: true, IPv4Forwarding: true,
 				Desired: appliance.DesiredSnapshot{

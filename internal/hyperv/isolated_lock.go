@@ -93,17 +93,18 @@ type IsolatedMutationGuard struct {
 }
 
 type IsolatedHostLeaseResult struct {
-	Status            string `json:"status"`
-	Acquired          bool   `json:"acquired"`
-	Renewed           bool   `json:"renewed"`
-	Reclaimed         bool   `json:"reclaimed"`
-	Released          bool   `json:"released"`
-	LeaseID           string `json:"lease_id"`
-	Fence             int64  `json:"fence"`
-	ExpiresUTC        string `json:"expires_utc"`
-	CurrentLeaseID    string `json:"current_lease_id,omitempty"`
-	CurrentFence      int64  `json:"current_fence,omitempty"`
-	CurrentExpiresUTC string `json:"current_expires_utc,omitempty"`
+	Status             string `json:"status"`
+	Acquired           bool   `json:"acquired"`
+	Renewed            bool   `json:"renewed"`
+	Reclaimed          bool   `json:"reclaimed"`
+	Released           bool   `json:"released"`
+	LeaseID            string `json:"lease_id"`
+	Fence              int64  `json:"fence"`
+	ExpiresUTC         string `json:"expires_utc"`
+	CurrentLeaseID     string `json:"current_lease_id,omitempty"`
+	CurrentOperationID string `json:"current_operation_id,omitempty"`
+	CurrentFence       int64  `json:"current_fence,omitempty"`
+	CurrentExpiresUTC  string `json:"current_expires_utc,omitempty"`
 }
 
 var leaseSecretRE = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
@@ -125,7 +126,28 @@ $durationSeconds = %d
 $paths = Get-LabLinkIsolatedLockPaths $physicalHostID
 New-Item -ItemType Directory -Force -Path $paths.root | Out-Null
 Protect-LabLinkLockPath $paths.root $true
-$admission = Open-LabLinkExclusiveFile $paths.admission 30000
+$currentBeforeWait = Read-LabLinkJSON $paths.current
+$nowBeforeWait = [DateTime]::UtcNow
+if ($currentBeforeWait -and [string]$currentBeforeWait.state -ceq 'active' -and
+    (Convert-LabLinkUtc ([string]$currentBeforeWait.expires_utc)) -gt $nowBeforeWait -and
+    [string]$currentBeforeWait.lease_id -cne $leaseID) {
+    [pscustomobject]@{
+        status='lock_busy'; acquired=$false; renewed=$false; reclaimed=$false
+        lease_id=$leaseID; fence=0; expires_utc=$null
+        current_lease_id=[string]$currentBeforeWait.lease_id
+        current_operation_id=[string]$currentBeforeWait.operation_id
+        current_fence=[int64]$currentBeforeWait.fence
+        current_expires_utc=[string]$currentBeforeWait.expires_utc
+    } | ConvertTo-Json -Compress
+    return
+}
+$admission = $null
+try {
+    $admission = Open-LabLinkExclusiveFile $paths.admission 30000
+} catch {
+    $owner = Read-LabLinkJSON $paths.current
+    throw "HOST_LOCK_ADMISSION_TIMEOUT: owner_operation=$([string]$owner.operation_id) owner_lease=$([string]$owner.lease_id) owner_fence=$([int64]$owner.fence) owner_expires=$([string]$owner.expires_utc)"
+}
 $external = $null
 try {
     Assert-LabLinkPhysicalHostID $physicalHostID
@@ -142,6 +164,7 @@ try {
             status='lock_busy'; acquired=$false; renewed=$false; reclaimed=$false
             lease_id=$leaseID; fence=0; expires_utc=$null
             current_lease_id=[string]$current.lease_id
+            current_operation_id=[string]$current.operation_id
             current_fence=[int64]$current.fence
             current_expires_utc=[string]$current.expires_utc
         } | ConvertTo-Json -Compress
@@ -172,7 +195,12 @@ try {
         operation_id=$operationID; published_utc=$now.ToString('o')
     }
     Write-LabLinkJSONAtomic $paths.handoff $pending
-    $external = Open-LabLinkExclusiveFile $paths.external 30000
+    try {
+        $external = Open-LabLinkExclusiveFile $paths.external 30000
+    } catch {
+        $owner = Read-LabLinkJSON $paths.current
+        throw "HOST_LOCK_EXTERNAL_TIMEOUT: owner_operation=$([string]$owner.operation_id) owner_lease=$([string]$owner.lease_id) owner_fence=$([int64]$owner.fence) owner_expires=$([string]$owner.expires_utc)"
+    }
     $latest = Read-LabLinkJSON $paths.current
     if ($latest -and [string]$latest.state -ceq 'active' -and
         (Convert-LabLinkUtc ([string]$latest.expires_utc)) -gt [DateTime]::UtcNow) {
@@ -196,7 +224,7 @@ try {
     } | ConvertTo-Json -Compress
 } finally {
     if ($external) { $external.Dispose() }
-    $admission.Dispose()
+    if ($admission) { $admission.Dispose() }
 }
 `, PSLit(p.PhysicalHostID), PSLit(p.LeaseID), PSLit(strings.ToLower(p.LeaseSecret)),
 		PSLit(p.HolderIdentity), PSLit(p.OperationID), p.DurationSeconds)
@@ -327,12 +355,14 @@ func validateMutationGuard(g IsolatedMutationGuard) error {
 		"lease":        g.LeaseID,
 		"orchestrator": g.OrchestratorID,
 		"operation":    g.OperationID,
-		"mutation":     g.MutationID,
 		"resource":     g.ResourceID,
 	} {
 		if err := validateIsolatedID(kind, value); err != nil {
 			return err
 		}
+	}
+	if err := validateMutationID(g.MutationID); err != nil {
+		return err
 	}
 	if !leaseSecretRE.MatchString(g.LeaseSecret) {
 		return fmt.Errorf("lease secret must be a 256-bit hexadecimal value")

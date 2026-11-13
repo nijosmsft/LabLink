@@ -16,7 +16,7 @@ func TestBuildDeleteVMScriptSafeguards(t *testing.T) {
 	for _, want := range []string{
 		"VM_RUNNING",
 		"UNSAFE_STORAGE_PATH",
-		"Stop-VM -Name $name -TurnOff -Force",
+		"Stop-VM -VM $vm -TurnOff -Force",
 		"Remove-VMSnapshot",
 		"parent_path is informational only",
 		"Test-PathAtOrWithin $diskPath $vmStoragePath",
@@ -35,7 +35,7 @@ func TestBuildDeleteVMScriptSafeguards(t *testing.T) {
 	}
 	parentCheck := strings.Index(script, `throw "VM_PARENT_MISMATCH`)
 	storageCheck := strings.Index(script, `throw "UNSAFE_STORAGE_PATH`)
-	stop := strings.Index(script, "Stop-VM -Name $name")
+	stop := strings.Index(script, "Stop-VM -VM $vm")
 	if parentCheck < 0 || storageCheck < 0 || stop < 0 || parentCheck > stop || storageCheck > stop {
 		t.Fatal("managed identity/storage validation must complete before a running VM is stopped")
 	}

@@ -23,8 +23,8 @@ type conflictingService struct {
 }
 
 var conflictingServices = []conflictingService{
-	{"ufw.service", "UFW owns firewall policy"},
-	{"firewalld.service", "firewalld owns dynamic firewall policy"},
+	{UFWServiceName, "UFW owns firewall policy"},
+	{FirewalldServiceName, "firewalld owns dynamic firewall policy"},
 	{"docker.service", "Docker may manage nftables or iptables NAT policy"},
 	{"docker.socket", "Docker socket activation may start Docker firewall management"},
 	{"podman.service", "Podman may manage nftables or iptables NAT policy"},
@@ -75,7 +75,7 @@ func (s *ConflictScanner) Scan(ctx context.Context) (ConflictPlan, error) {
 			Action:  "systemctl disable --now " + service.Name,
 		})
 	}
-	if !foundService["ufw.service"] {
+	if !foundService[UFWServiceName] {
 		exists, err := s.files.Exists("/etc/ufw/ufw.conf")
 		if err != nil {
 			return ConflictPlan{}, fmt.Errorf("appliance: inspect UFW configuration: %w", err)
@@ -132,9 +132,8 @@ func (s *ConflictScanner) Scan(ctx context.Context) (ConflictPlan, error) {
 		return actions[i].Service < actions[j].Service
 	})
 	plan := ConflictPlan{
-		ApprovalRequired: len(conflicts) != 0,
-		Conflicts:        conflicts,
-		Actions:          actions,
+		Conflicts: conflicts,
+		Actions:   actions,
 	}
 	plan.Revision = conflictRevision(plan)
 	return plan, nil

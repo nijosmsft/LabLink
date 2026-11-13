@@ -12,10 +12,13 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/appliance"
+	"github.com/nijosmsft/lablink/internal/cascadeauth"
 	"github.com/nijosmsft/lablink/internal/hyperv"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
+	"github.com/nijosmsft/lablink/internal/registry"
 )
 
 func RegisterIsolatedVMTools(s *server.MCPServer, deps *isolatedLifecycleDeps) {
@@ -103,17 +106,29 @@ func (r productionIsolatedGuestRuntime) Provision(
 		if _, err := r.deps.credentials.Get(plan.AdminPasswordCredential); err != nil {
 			return vm, hyperv.IsolatedVMMutationResult{}, err
 		}
-		result, runErr := executeWindowsVMPlan(ctx, plan, r.deps.registry, r.deps.pool,
-			r.deps.credentials, r.deps.secrets, r.deps.audit, r.deps.enrollment)
-		if runErr != nil || result == nil || result.IsError {
-			if runErr != nil {
-				return vm, hyperv.IsolatedVMMutationResult{}, runErr
+		resumable, inspectErr := inspectResumableWindowsIsolatedGuest(
+			ctx, plan, target, r.deps.registry, r.deps.pool)
+		if inspectErr != nil {
+			return vm, hyperv.IsolatedVMMutationResult{}, inspectErr
+		}
+		if !resumable {
+			result, runErr := executeWindowsVMPlan(ctx, plan, r.deps.registry, r.deps.pool,
+				r.deps.credentials, r.deps.secrets, r.deps.audit, r.deps.enrollment)
+			if runErr != nil || result == nil || result.IsError {
+				if runErr != nil {
+					return vm, hyperv.IsolatedVMMutationResult{}, runErr
+				}
+				return vm, hyperv.IsolatedVMMutationResult{}, fmt.Errorf("provision Windows guest: %s", toolResultText(result))
 			}
-			return vm, hyperv.IsolatedVMMutationResult{}, fmt.Errorf("provision Windows guest: %s", toolResultText(result))
 		}
 		vm.StorageRoot, vm.VMPath, vm.VHDPath = plan.VMRoot, plan.VMLocation, plan.VHDPath
 	case isolatedstate.GuestLinux:
 		networkConfig, err := isolated.LinuxStaticNetworkConfig(vm.IPv4, vm.PrefixLength, vm.GatewayIPv4, vm.MAC, dns)
+		if err != nil {
+			return vm, hyperv.IsolatedVMMutationResult{}, err
+		}
+		networkBootstrap, err := isolated.LinuxStaticNetworkBootstrapScript(
+			vm.IPv4, vm.PrefixLength, vm.GatewayIPv4, vm.MAC, dns)
 		if err != nil {
 			return vm, hyperv.IsolatedVMMutationResult{}, err
 		}
@@ -129,6 +144,7 @@ func (r productionIsolatedGuestRuntime) Provision(
 			return vm, hyperv.IsolatedVMMutationResult{}, err
 		}
 		plan.DeferBoot = true
+		plan.NetworkBootstrapScript = networkBootstrap
 		result, runErr := executeLinuxVMPlan(ctx, req, plan, resolvedTarget, r.deps.registry,
 			r.deps.pool, r.deps.defaults, r.deps.credentials, r.deps.audit,
 			r.deps.enrollment, r.deps.lease, progress)
@@ -145,6 +161,52 @@ func (r productionIsolatedGuestRuntime) Provision(
 	return r.claim(ctx, vm, network, orchestrator, target, hostLease, operationID)
 }
 
+func inspectResumableWindowsIsolatedGuest(
+	ctx context.Context,
+	plan windowsVMPlan,
+	target Target,
+	reg *registry.Registry,
+	pool *agentclient.Pool,
+) (bool, error) {
+	script := fmt.Sprintf(`
+$name = %s
+$expectedVHD = [IO.Path]::GetFullPath(%s)
+$expectedParent = [IO.Path]::GetFullPath(%s)
+$vm = Get-VM -Name $name -ErrorAction SilentlyContinue
+if (-not $vm) {
+    [pscustomobject]@{ exists=$false } | ConvertTo-Json -Compress
+    return
+}
+if ([string]$vm.State -cne 'Off') { throw 'ISOLATED_VM_MUST_BE_OFF: partial Windows guest is running' }
+$notes = [string]$vm.Notes
+if ($notes -and -not $notes.StartsWith(%s,[StringComparison]::Ordinal)) {
+    throw 'VM_REUSE_UNSAFE: existing Windows guest has foreign ownership metadata'
+}
+$disks = @(Get-VMHardDiskDrive -VM $vm -ErrorAction Stop)
+if ($disks.Count -ne 1 -or [IO.Path]::GetFullPath([string]$disks[0].Path) -cne $expectedVHD) {
+    throw 'VM_REUSE_UNSAFE: existing Windows guest disk identity differs'
+}
+$vhd = Get-VHD -Path $expectedVHD -ErrorAction Stop
+if ([IO.Path]::GetFullPath([string]$vhd.ParentPath) -cne $expectedParent) {
+    throw 'VM_REUSE_UNSAFE: existing Windows guest parent VHD differs'
+}
+[pscustomobject]@{ exists=$true; safe=$true } | ConvertTo-Json -Compress
+`, hyperv.PSLit(plan.Name), hyperv.PSLit(plan.VHDPath), hyperv.PSLit(plan.BaseVHD),
+		hyperv.PSLit(hyperv.IsolatedVMMetadataPrefix))
+	out, _, err := runPS(ctx, reg, pool, target, script, vmDefaultTimeoutSec)
+	if err != nil {
+		return false, err
+	}
+	var result struct {
+		Exists bool `json:"exists"`
+		Safe   bool `json:"safe"`
+	}
+	if err := json.Unmarshal([]byte(jsonExtract(out)), &result); err != nil {
+		return false, err
+	}
+	return result.Exists && result.Safe, nil
+}
+
 func (r productionIsolatedGuestRuntime) claim(
 	ctx context.Context,
 	vm isolatedstate.IsolatedVM,
@@ -159,7 +221,7 @@ func (r productionIsolatedGuestRuntime) claim(
 		return vm, hyperv.IsolatedVMMutationResult{}, err
 	}
 	names, _ := isolated.VMNames(isolated.VMID(vm.ID))
-	guard := guestHostGuard(orchestrator, hostLease, operationID, vm.ID, "claim_isolated_vm", "host_claim")
+	guard := guestHostGuard(ctx, orchestrator, hostLease, operationID, vm.ID, "claim_isolated_vm", "host_claim")
 	script, err := hyperv.BuildClaimIsolatedVMScript(hyperv.ClaimIsolatedVMParams{
 		Guard: guard, OrchestratorVMGUID: valueOrEmpty(orchestrator.HyperVVMID),
 		VMName: vm.HyperVName, SwitchGUID: valueOrEmpty(network.HyperVSwitchGUID),
@@ -293,12 +355,19 @@ func (r productionIsolatedGuestRuntime) Delete(
 	ctx context.Context, vm isolatedstate.IsolatedVM, orchestrator isolatedstate.Orchestrator,
 	target Target, lease isolated.HostFenceLease, operationID string, deleteStorage bool,
 ) (hyperv.IsolatedVMMutationResult, error) {
+	var cidataPath, ownershipPath string
+	if vm.GuestOS == isolatedstate.GuestLinux {
+		cidataPath = filepath.Join(vm.VMPath, "cidata.iso")
+		ownershipPath = filepath.Join(vm.VMPath, hyperv.LinuxVMOwnershipFile)
+	}
 	script, err := hyperv.BuildDeleteIsolatedVMScript(hyperv.DeleteIsolatedVMParams{
-		Guard:              guestHostGuard(orchestrator, lease, operationID, vm.ID, "delete_isolated_vm", "host_delete"),
+		Guard:              guestHostGuard(ctx, orchestrator, lease, operationID, vm.ID, "delete_isolated_vm", "host_delete"),
 		OrchestratorVMGUID: valueOrEmpty(orchestrator.HyperVVMID),
 		VMName:             vm.HyperVName, ExpectedVMID: vm.ID,
 		ExpectedVMGUID: valueOrEmpty(vm.HyperVVMID), ExpectedAdapterID: valueOrEmpty(vm.HyperVAdapterID),
-		ExpectedVHDPath: vm.VHDPath, ExpectedVMPath: vm.VMPath, DeleteStorage: deleteStorage,
+		ExpectedVHDPath: vm.VHDPath, ExpectedVMPath: vm.VMPath,
+		ExpectedCIDATAPath: cidataPath, ExpectedOwnership: ownershipPath,
+		DeleteStorage: deleteStorage,
 	})
 	if err != nil {
 		return hyperv.IsolatedVMMutationResult{}, err
@@ -310,13 +379,14 @@ func (r productionIsolatedGuestRuntime) Delete(
 	return hyperv.ParseIsolatedVMMutationResult(jsonExtract(out))
 }
 
-func guestHostGuard(orchestrator isolatedstate.Orchestrator, lease isolated.HostFenceLease, operationID, vmID, action, phase string) hyperv.IsolatedMutationGuard {
+func guestHostGuard(ctx context.Context, orchestrator isolatedstate.Orchestrator, lease isolated.HostFenceLease, operationID, vmID, action, phase string) hyperv.IsolatedMutationGuard {
 	return hyperv.IsolatedMutationGuard{
 		PhysicalHostID: orchestrator.PhysicalHostID, LeaseID: lease.LeaseID,
 		LeaseSecret: lease.LeaseSecret, Fence: lease.Fence,
 		OrchestratorID: orchestrator.ID, OperationID: operationID,
 		MutationID:   isolatedstate.StableMutationID(operationID, vmID, action, phase),
 		ResourceType: "vm", ResourceID: vmID, Action: action,
+		CascadeAuthority: cascadeAuthorityFromContext(ctx),
 	}
 }
 
@@ -362,7 +432,7 @@ func parseReachableServices(req mcp.CallToolRequest) ([]isolated.ReachableServic
 var netSplitHostPort = net.SplitHostPort
 
 func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		networkID, err := isolated.ParseNetworkID(req.GetString("network_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -374,6 +444,15 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 		orchestrator, err := deps.state.GetOrchestrator(ctx, network.OrchestratorID)
 		if err != nil {
 			return isolatedError(err)
+		}
+		if snapshot, inspectErr := deps.appliance.InspectApplianceState(ctx, orchestrator.ID); inspectErr == nil &&
+			strings.TrimSpace(snapshot.MainIPv4) != "" &&
+			(orchestrator.MainIP == nil || *orchestrator.MainIP != snapshot.MainIPv4) {
+			orchestrator.MainIP = optionalTrimmed(snapshot.MainIPv4)
+			orchestrator.UpdatedAt = isolatedNow()
+			if err := deps.state.PutOrchestrator(ctx, orchestrator); err != nil {
+				return isolatedError(err)
+			}
 		}
 		target, err := resolvePlanTarget(orchestrator.HostNode, deps.registry)
 		if err != nil {
@@ -449,15 +528,20 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 			return isolatedError(err)
 		}
 		defer deps.locks.Release(context.Background(), localLease)
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease,
+			"vm", vmID.String(), "create",
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		var plan isolated.GuestPlan
 		err = workflow.phase(ctx, 0, "allocate_identity", "appliance-authoritative IP, MAC, relay port, and conntrack reservation", func() (any, error) {
 			var planErr error
@@ -470,6 +554,9 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 				KnownNetworkBootstrap:       knownNetworkBootstrap,
 				DomainJoin:                  domainJoin != nil, ReachableServices: services,
 				ExpectedParentGeneration: expected, HostFence: hostLease.Fence,
+				HostLeaseID:          hostLease.LeaseID,
+				HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+				HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 			})
 			if planErr == nil {
 				plan.VM.CreatedAt, plan.VM.UpdatedAt = isolatedNow(), isolatedNow()
@@ -506,7 +593,8 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 					ExpectedParentGeneration: plan.ResultingParentGeneration,
 				},
 				PhysicalHostID: orchestrator.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
-				HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+				HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+				HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 			}
 		}
 		err = workflow.phase(ctx, 1, "appliance_register_guest", "registering exact guest allocation with appliance", func() (any, error) {
@@ -542,6 +630,11 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 		if err != nil {
 			return isolatedError(err)
 		}
+		if persistedVM, getErr := deps.state.GetVM(ctx, plan.VM.ID); getErr == nil {
+			plan.VM = persistedVM
+		} else {
+			return isolatedError(getErr)
+		}
 		err = workflow.phase(ctx, 4, "host_time_sync", "verifying Hyper-V host time synchronization is enabled", func() (any, error) {
 			observation, inspectErr := deps.guests.Inspect(ctx, plan.VM, target)
 			if inspectErr == nil && !observation.TimeSyncEnabled {
@@ -555,7 +648,7 @@ func createIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 		natDesired := string(plan.NAT.DesiredState)
 		err = workflow.phase(ctx, 5, "nat_apply_and_verify_preboot", "applying and verifying NAT state before first boot", func() (any, error) {
 			result, applyErr := deps.appliance.SetNATState(ctx, orchestrator.ID, isolated.NATInput{
-				Header:        envelope(plan.VM.ID, network.ID, "set_nat", "nat_apply_and_verify_preboot"),
+				Header:        envelope(plan.VM.ID, plan.VM.ID, "set_nat", "nat_apply_and_verify_preboot"),
 				ReservationID: reservation("conntrack_mark").ID, NetworkID: network.ID,
 				DesiredState: natDesired, ConntrackMark: uint32(plan.NAT.ConntrackMark),
 			})
@@ -670,8 +763,114 @@ func isolatedNow() isolatedstate.UnixSeconds {
 	return isolatedstate.UnixSeconds(time.Now().Unix())
 }
 
+func exactActiveReservation(snapshot appliance.DesiredSnapshot, kind, resourceID string) (appliance.Reservation, error) {
+	var match appliance.Reservation
+	for _, reservation := range snapshot.Reservations {
+		if reservation.RetiredAtUnix != nil ||
+			reservation.ResourceKind != kind ||
+			reservation.ResourceID != resourceID {
+			continue
+		}
+		if match.ID != "" {
+			return appliance.Reservation{}, fmt.Errorf(
+				"RESERVATION_IDENTITY_CONFLICT: multiple active %s reservations exist for %s",
+				kind, resourceID)
+		}
+		match = reservation
+	}
+	if match.ID == "" {
+		return appliance.Reservation{}, fmt.Errorf(
+			"RESERVATION_NOT_FOUND: active %s reservation for %s was not found",
+			kind, resourceID)
+	}
+	return match, nil
+}
+
+func exactLiveNAT(snapshot appliance.DesiredSnapshot, vmID string) (appliance.NATState, error) {
+	var match appliance.NATState
+	for _, value := range snapshot.NAT {
+		if value.VMID != vmID {
+			continue
+		}
+		if match.VMID != "" {
+			return appliance.NATState{}, fmt.Errorf(
+				"NAT_IDENTITY_CONFLICT: multiple live NAT rows exist for %s", vmID)
+		}
+		match = value
+	}
+	if match.VMID == "" {
+		return appliance.NATState{}, fmt.Errorf(
+			"NAT_NOT_FOUND: appliance NAT state for %s was not found", vmID)
+	}
+	return match, nil
+}
+
+func exactLiveGuest(snapshot appliance.DesiredSnapshot, vmID string) (appliance.Guest, error) {
+	var match appliance.Guest
+	for _, value := range snapshot.Guests {
+		if value.ID != vmID {
+			continue
+		}
+		if match.ID != "" {
+			return appliance.Guest{}, fmt.Errorf(
+				"GUEST_IDENTITY_CONFLICT: multiple appliance guests exist for %s", vmID)
+		}
+		match = value
+	}
+	if match.ID == "" {
+		return appliance.Guest{}, fmt.Errorf(
+			"GUEST_NOT_FOUND: appliance guest %s was not found", vmID)
+	}
+	return match, nil
+}
+
+func exactLiveRelay(snapshot appliance.DesiredSnapshot, relayID string) (appliance.Relay, error) {
+	var match appliance.Relay
+	for _, value := range snapshot.Relays {
+		if value.ID != relayID {
+			continue
+		}
+		if match.ID != "" {
+			return appliance.Relay{}, fmt.Errorf(
+				"RELAY_IDENTITY_CONFLICT: multiple appliance relays exist for %s", relayID)
+		}
+		match = value
+	}
+	if match.ID == "" {
+		return appliance.Relay{}, fmt.Errorf(
+			"RELAY_NOT_FOUND: appliance relay %s was not found", relayID)
+	}
+	return match, nil
+}
+
+func persistDeleteNATTruth(
+	ctx context.Context,
+	state isolatedState,
+	local isolatedstate.NATAllocation,
+	live appliance.NATState,
+) error {
+	if live.ConntrackMark != local.ConntrackMark {
+		return fmt.Errorf(
+			"NAT_IDENTITY_CONFLICT: VM %s conntrack mark is %d locally and %d on appliance",
+			local.VMID, local.ConntrackMark, live.ConntrackMark)
+	}
+	local.DesiredState = isolatedstate.NATDesiredDisabled
+	local.ObservedState = isolatedstate.NATObservedState(live.State)
+	local.DesiredGeneration = isolatedstate.Generation(live.DesiredGeneration)
+	local.AppliedGeneration = isolatedstate.Generation(live.AppliedGeneration)
+	local.ObservedGeneration = isolatedstate.Generation(live.ObservedGeneration)
+	local.UpdatedAt = isolatedNow()
+	if live.DrainStartedUnix == nil {
+		local.DrainStartedAt = nil
+	} else {
+		started := isolatedstate.UnixSeconds(*live.DrainStartedUnix)
+		local.DrainStartedAt = &started
+	}
+	return state.PutNAT(ctx, local)
+}
+
 func deleteIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		id, err := isolated.ParseVMID(req.GetString("isolated_vm_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -689,7 +888,13 @@ func deleteIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 	}
 }
 
-func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID, operationID string, deleteStorage, resume bool, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func deleteIsolatedVMCore(
+	ctx context.Context,
+	deps *isolatedLifecycleDeps,
+	vmID, operationID string,
+	deleteStorage, resume bool,
+	req mcp.CallToolRequest,
+) (result *mcp.CallToolResult, callErr error) {
 	vm, err := deps.state.GetVM(ctx, vmID)
 	if err != nil {
 		return isolatedError(err)
@@ -712,20 +917,43 @@ func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID
 	if err != nil {
 		return isolatedError(err)
 	}
-	lockKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-	hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-		PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-		OperationID: operationID, LockKey: lockKey,
-	})
+	hostLease, err := acquireCompatibleOrchestratorFence(
+		ctx, deps, target, orchestrator, operationID)
 	if err != nil {
 		return isolatedError(err)
 	}
-	defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+	orchestrator, err = admitChildMutationAfterFence(
+		ctx, deps, target, orchestrator, hostLease,
+		"vm", vm.ID, string(cascadeauth.ActionGuestDeleteExact),
+	)
+	if err != nil {
+		return isolatedError(err)
+	}
+	defer deferOrchestratorFenceRelease(
+		deps, target, orchestrator, hostLease, &result, &callErr)
 	relay, relayErr := deps.state.GetRelayForVM(ctx, vm.ID)
 	nat, natErr := deps.state.GetNAT(ctx, vm.ID)
+	if relayErr == nil {
+		if execution, ok := cascadeExecutionFromContext(ctx); ok {
+			if err := validateApprovedCascadeChild(
+				ctx, deps.state, execution.Plan.Plan, "relay", relay.ID,
+			); err != nil {
+				return isolatedError(err)
+			}
+		}
+		if natErr == nil {
+			if execution, ok := cascadeExecutionFromContext(ctx); ok {
+				if err := validateApprovedCascadeChild(
+					ctx, deps.state, execution.Plan.Plan, "nat", vm.ID,
+				); err != nil {
+					return isolatedError(err)
+				}
+			}
+		}
+	}
 	semantic, _ := isolatedstate.SemanticHash(map[string]any{"vm_id": vm.ID, "delete_storage": deleteStorage})
 	envelope := func(resourceID, parentID, action, phase string, generation isolatedstate.Generation) isolated.MutationEnvelope {
-		return isolated.MutationEnvelope{
+		result := isolated.MutationEnvelope{
 			Header: appliance.MutationHeader{
 				ParentOperationID: operationID,
 				MutationID:        isolatedstate.StableMutationID(operationID, resourceID, action, phase),
@@ -735,16 +963,52 @@ func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID
 				ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
 			},
 			PhysicalHostID: orchestrator.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
-			HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+			HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+			HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 		}
+		if cascadeAction, parseErr := cascadeauth.Parse(action); parseErr == nil {
+			applyCascadeEnvelope(ctx, &result, cascadeAction)
+		}
+		return result
 	}
 	if natErr == nil {
 		err = workflow.phase(ctx, 0, "retire_nat", "disabling and retiring conntrack ownership", func() (any, error) {
+			snapshot, snapErr := deps.appliance.GetApplianceState(ctx, orchestrator.ID)
+			if snapErr != nil {
+				return nil, snapErr
+			}
+			liveNAT, liveErr := exactLiveNAT(snapshot, vm.ID)
+			if liveErr != nil {
+				return nil, liveErr
+			}
+			if liveNAT.State == string(isolatedstate.NATObservedDisabled) {
+				if err := persistDeleteNATTruth(ctx, deps.state, nat, liveNAT); err != nil {
+					return nil, err
+				}
+				return map[string]any{
+					"already_disabled": true,
+					"generation":       liveNAT.DesiredGeneration,
+				}, nil
+			}
+			if liveNAT.State == string(isolatedstate.NATObservedDraining) {
+				if err := persistDeleteNATTruth(ctx, deps.state, nat, liveNAT); err != nil {
+					return nil, err
+				}
+				return liveNAT, fmt.Errorf("NAT_DRAINING: conntrack retirement is not complete; resume deletion")
+			}
+			conntrackReservation, reservationErr := exactActiveReservation(snapshot, "conntrack_mark", vm.ID)
+			if reservationErr != nil {
+				return nil, reservationErr
+			}
 			result, runErr := deps.appliance.SetNATState(ctx, orchestrator.ID, isolated.NATInput{
-				Header:    envelope(vm.ID, vm.NetworkID, "disable_nat", "retire_nat", nat.DesiredGeneration),
-				NetworkID: vm.NetworkID, DesiredState: string(isolatedstate.NATDesiredDisabled),
-				ConntrackMark: uint32(nat.ConntrackMark),
+				Header:        envelope(vm.ID, vm.ID, "disable_nat", "retire_nat", isolatedstate.Generation(liveNAT.DesiredGeneration)),
+				ReservationID: conntrackReservation.ID,
+				NetworkID:     vm.NetworkID, DesiredState: string(isolatedstate.NATDesiredDisabled),
+				ConntrackMark: uint32(liveNAT.ConntrackMark),
 			})
+			if runErr == nil {
+				runErr = persistDeleteNATTruth(ctx, deps.state, nat, result.NAT)
+			}
 			if runErr == nil && result.NAT.State == string(isolatedstate.NATObservedDraining) {
 				runErr = fmt.Errorf("NAT_DRAINING: conntrack retirement is not complete; resume deletion")
 			}
@@ -755,18 +1019,75 @@ func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID
 		}
 	}
 	if relayErr == nil {
+		if deps.registry != nil {
+			nodeName := caseCorrectRegistryNodeName(deps.registry, vm.NodeName)
+			if node, ok := deps.registry.GetNode(nodeName); ok {
+				if deps.pool != nil {
+					deps.pool.ResetEndpoint(agentclient.Endpoint{
+						Address: node.Address, TLSServerName: node.TLSServerName,
+					})
+				}
+				if err := deps.registry.RemoveNode(nodeName); err != nil {
+					return isolatedError(err)
+				}
+			}
+		}
 		err = workflow.phase(ctx, 1, "retire_relay", "retiring relay through accept/dial/drain barrier", func() (any, error) {
-			return deps.appliance.RemoveRelay(ctx, orchestrator.ID,
-				envelope(relay.ID, vm.ID, "remove_relay", "retire_relay", relay.DesiredGeneration),
-				vm.ID, vm.NetworkID)
+			snapshot, snapErr := deps.appliance.GetApplianceState(ctx, orchestrator.ID)
+			if snapErr != nil {
+				return nil, snapErr
+			}
+			liveRelay, liveErr := exactLiveRelay(snapshot, relay.ID)
+			if liveErr != nil {
+				return nil, liveErr
+			}
+			if liveRelay.State == "removed" || liveRelay.RetiredAtUnix != nil {
+				return map[string]any{
+					"already_removed": true,
+					"generation":      liveRelay.DesiredGeneration,
+				}, nil
+			}
+			return boundedRelayRetirement(ctx, func(retireCtx context.Context) (isolated.RelayMutationResult, error) {
+				return deps.appliance.RemoveRelay(retireCtx, orchestrator.ID,
+					envelope(relay.ID, vm.ID, "remove_relay", "retire_relay", isolatedstate.Generation(liveRelay.DesiredGeneration)),
+					vm.ID, vm.NetworkID)
+			})
 		})
 		if err != nil {
 			return isolatedError(err)
 		}
+		var mirrorErr error
+		for _, kind := range []string{"relay", "relay_port"} {
+			_, mirrorErr = deps.state.ReleaseAllocation(ctx, isolatedstate.ReleaseAllocationRequest{
+				Kind: kind, ScopeID: orchestrator.ID, Value: fmt.Sprint(relay.ListenPort),
+				ResourceID: relay.ID, ReleaseOperationID: operationID,
+			})
+			if mirrorErr == nil {
+				break
+			}
+			if !errors.Is(mirrorErr, isolatedstate.ErrAllocationNotFound) {
+				return isolatedError(mirrorErr)
+			}
+		}
 	}
 	err = workflow.phase(ctx, 2, "remove_guest", "retiring appliance guest allocation", func() (any, error) {
+		snapshot, snapErr := deps.appliance.GetApplianceState(ctx, orchestrator.ID)
+		if snapErr != nil {
+			return nil, snapErr
+		}
+		liveGuest, liveErr := exactLiveGuest(snapshot, vm.ID)
+		if liveErr != nil {
+			return nil, liveErr
+		}
+		if liveGuest.State == "retiring" || liveGuest.State == "removed" ||
+			liveGuest.RetiredAtUnix != nil {
+			return map[string]any{
+				"already_retired": true,
+				"generation":      liveGuest.DesiredGeneration,
+			}, nil
+		}
 		return deps.appliance.RemoveIsolatedGuest(ctx, orchestrator.ID,
-			envelope(vm.ID, vm.NetworkID, "remove_guest", "remove_guest", vm.DesiredGeneration),
+			envelope(vm.ID, vm.NetworkID, "remove_guest", "remove_guest", isolatedstate.Generation(liveGuest.DesiredGeneration)),
 			vm.NetworkID)
 	})
 	if err != nil {
@@ -795,16 +1116,27 @@ func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID
 		}
 		var ids []string
 		for _, value := range snapshot.Reservations {
-			if value.RetiredAtUnix == nil && (value.ResourceID == vm.ID || (relayErr == nil && value.ResourceID == relay.ID)) {
+			if value.RetiredAtUnix == nil && value.ResourceID == vm.ID &&
+				(value.ResourceKind == "guest_ip" ||
+					value.ResourceKind == "guest_mac" ||
+					value.ResourceKind == "conntrack_mark") {
 				ids = append(ids, value.ID)
 			}
 		}
 		if len(ids) == 0 {
 			return map[string]any{"already_released": true}, nil
 		}
+		releaseHeader := envelope(
+			vm.ID, vm.NetworkID,
+			string(cascadeauth.ActionGuestReleaseResources),
+			"release_allocations", 0,
+		).Header
+		releaseHeader.ExpectedGeneration = 0
+		releaseHeader.NewGeneration = 0
 		released, releaseErr := deps.appliance.ReleaseResources(ctx, orchestrator.ID, appliance.ReleaseRequest{
-			Header:         envelope(vm.ID, vm.NetworkID, "release_guest", "release_allocations", vm.DesiredGeneration).Header,
-			ReservationIDs: ids,
+			Header: releaseHeader, PhysicalHostID: orchestrator.PhysicalHostID,
+			HostLeaseID: hostLease.LeaseID, HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+			HostLeaseExpiresUnix: hostLease.ExpiresAtUnix, ReservationIDs: ids,
 		})
 		if releaseErr != nil {
 			return released, releaseErr
@@ -852,7 +1184,7 @@ func deleteIsolatedVMCore(ctx context.Context, deps *isolatedLifecycleDeps, vmID
 }
 
 func listIsolatedVMsHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		values, err := deps.state.ListVMs(ctx, req.GetString("orchestrator_id", ""), req.GetString("network_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -909,7 +1241,7 @@ func getIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
 }
 
 func repairIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, callErr error) {
 		id, err := isolated.ParseVMID(req.GetString("isolated_vm_id", ""))
 		if err != nil {
 			return isolatedError(err)
@@ -943,15 +1275,19 @@ func repairIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 		if err != nil {
 			return isolatedError(err)
 		}
-		hostKey, _ := hyperv.HostOrchestratorCreateLockKey(orchestrator.PhysicalHostID)
-		hostLease, err := deps.host.AcquireFence(ctx, target, isolated.HostCreateFenceRequest{
-			PhysicalHostID: orchestrator.PhysicalHostID, HostNode: orchestrator.HostNode,
-			OperationID: operationID, LockKey: hostKey,
-		})
+		hostLease, err := acquireCompatibleOrchestratorFence(
+			ctx, deps, target, orchestrator, operationID)
 		if err != nil {
 			return isolatedError(err)
 		}
-		defer deps.host.ReleaseFence(context.Background(), target, hostLease)
+		orchestrator, err = admitChildMutationAfterFence(
+			ctx, deps, target, orchestrator, hostLease, "vm", vm.ID, "repair",
+		)
+		if err != nil {
+			return isolatedError(err)
+		}
+		defer deferOrchestratorFenceRelease(
+			deps, target, orchestrator, hostLease, &result, &callErr)
 		var reconcileErr error
 		err = workflow.phaseAlways(ctx, 0, "reconcile", "attempting non-destructive host identity, NIC, time, relay, NAT, and registry repair", func() (any, error) {
 			result, runErr := deps.guests.Reconcile(ctx, vm, network, orchestrator, target, hostLease, operationID)
@@ -972,9 +1308,10 @@ func repairIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 								HostFence:                uint64(hostLease.Fence),
 								ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
 							},
-							PhysicalHostID:  orchestrator.PhysicalHostID,
-							HostLeaseID:     hostLease.LeaseID,
-							HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+							PhysicalHostID:       orchestrator.PhysicalHostID,
+							HostLeaseID:          hostLease.LeaseID,
+							HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+							HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 						})
 						if rebindErr != nil {
 							runErr = fmt.Errorf("relay validation and rebind failed: %v; %w", validateErr, rebindErr)
@@ -996,7 +1333,8 @@ func repairIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 							ExpectedParentGeneration: uint64(orchestrator.DesiredGeneration),
 						},
 						PhysicalHostID: orchestrator.PhysicalHostID, HostLeaseID: hostLease.LeaseID,
-						HostLeaseSecret: mustDecodeHex(hostLease.LeaseSecret),
+						HostLeaseSecret:      mustDecodeHex(hostLease.LeaseSecret),
+						HostLeaseExpiresUnix: hostLease.ExpiresAtUnix,
 					}, network.ID)
 					if natRepairErr != nil || natResult.NAT.State != string(nat.DesiredState) {
 						runErr = fmt.Errorf("NAT reconciliation failed: %v", natRepairErr)
@@ -1062,6 +1400,9 @@ func repairIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc
 			var result hyperv.IsolatedVMMutationResult
 			var runErr error
 			vm, result, runErr = deps.guests.Provision(ctx, vm, network, orchestrator, target, hostLease, operationID, NewMCPProgressState(30*time.Minute, "repair", "recreate"))
+			if runErr == nil {
+				runErr = deps.state.PutVM(ctx, vm)
+			}
 			return map[string]any{"result": result, "deleted_old_vhd": oldVHD, "incarnation": vm.Incarnation}, runErr
 		})
 		if err != nil {

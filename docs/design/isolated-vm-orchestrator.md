@@ -857,7 +857,17 @@ isolated.network.v1
 isolated.relay.v1
 isolated.nat.v1
 isolated.stats.v1
+isolated.authority-release.v1
+isolated.parent-lifecycle.v1
 ```
+
+The isolated-appliance protocol version is **2**. Protocol v2 makes
+`ReleaseApplianceAuthority` and `SetApplianceParentLifecycle` mandatory.
+Servers reject protocol v1 appliances with an explicit upgrade-required
+compatibility error before acquiring a physical-host fence.
+Ordinary non-appliance agents remain on the ordinary LabLink contract; only
+isolated-orchestrator workflows require protocol v2 and the complete capability
+set.
 
 The server requires the complete set for an orchestrator. An existing node
 with missing capabilities is not partially used. The tool returns
@@ -876,6 +886,7 @@ rpc ReserveResources(ReserveResourcesRequest)
     returns (ReserveResourcesResponse);
 rpc ReleaseResources(ReleaseResourcesRequest)
     returns (ReleaseResourcesResponse);
+rpc ReleaseApplianceAuthority(MutationHeader) returns (FenceState);
 rpc ApplyPrivateNetwork(ApplyPrivateNetworkRequest)
     returns (ApplyPrivateNetworkResponse);
 rpc RemovePrivateNetwork(RemovePrivateNetworkRequest)
@@ -916,12 +927,29 @@ message MutationHeader {
   string cascade_plan_revision = 14;
   string cascade_plan_hash = 15;
   string cascade_item_id = 16;
+  int64 host_lease_expires_unix = 17;
 }
 ```
 
 `host_lease_secret` is transport-only concurrency material. It is never
 persisted by the server, hashed into operation semantics, logged, audited, or
 returned by tools. Host and appliance persist only its cryptographic hash.
+The appliance persists the exact host lease expiry, rejects expired leases,
+and requires physical host ID, lease ID, secret hash, and expiry to match on
+equal-fence requests. Before releasing a physical-host lease, the server calls
+`ReleaseApplianceAuthority`; successful revocation blocks the old fence until
+a strictly newer authenticated fence is installed. A zero expiry is accepted
+only while bootstrapping the initial unclaimed authority row.
+
+Lease state is exclusively a control-plane mutation-admission concern.
+Expiry, release, or handoff causes no relay, NAT, VM, network, drain, retire,
+freeze, or other lifecycle transition. After an explicit configuration command
+commits, the appliance keeps running that static durable configuration without
+an AI/MCP/server lease. Relay listeners, NAT forwarding, established conntrack
+draining, statistics, and reboot restoration do not inspect lease presence.
+Configuration changes occur only through a later authenticated explicit
+mutation; repair/reconcile runs only when explicitly requested, apart from
+startup restoration of the same persisted configuration.
 
 `ApplyRelayRequest` contains `vm_id`, `network_id`, `listen_port`,
 `target_ipv4`, and no target-port input. The implementation always uses 9091.
@@ -945,8 +973,10 @@ In `cmd/lablink-agent/main.go`, Linux startup becomes:
 2. Before enabling IPv4 forwarding, load the built-in emergency nftables
    policy that drops all forwarded traffic.
 3. If appliance mode is configured, open and migrate appliance SQLite.
-4. Convert any persisted `draining` NAT rows to `disabled`; delete matching
-   conntrack entries so an agent-only restart cannot preserve draining flows.
+4. Preserve persisted `draining` NAT rows and their marked conntrack flows.
+   The background appliance system transition completes them to `disabled`
+   only after exact guest/network/generation/mark validation and a zero
+   conntrack count; no external host lease is impersonated.
 5. Recover incomplete apply intents using the protocol in Section 7.4.
 6. Reconcile private NIC networkd files and interface addresses.
 7. Rebuild, validate, and atomically load the complete nftables ruleset.
@@ -966,9 +996,11 @@ Every network, NAT, listener, or interface mutation uses this crash protocol:
 
 1. **Intent transaction.** Under `BEGIN IMMEDIATE`, validate mutation ID,
    semantic hash, host fence, parent state/generation, resource generation,
-   reservation, and any cascade authority. A frozen/deleting/lost parent is
-   valid only for its exact approved cleanup item. Write desired rows and an
-   `apply_intents` row. Commit.
+   reservation, and any cascade authority. A frozen/deleting parent is valid
+   only when the installed approved item exactly matches item ID, resource
+   kind/ID, action, and expected generation. Those cascade fields are persisted
+   in `apply_intents` and survive recovery. Write desired rows and the intent,
+   then commit.
 2. **Compile.** Under the appliance ruleset mutex, read one consistent SQLite
    snapshot containing the complete desired topology. Compile networkd files,
    nftables text, listener delta, and a `compiled_hash` over the snapshot
@@ -1063,8 +1095,10 @@ guest mTLS remains end to end through the byte relay.
 
 ### 8.4 Main IP changes
 
-The orchestrator monitors its main NIC. When the main IP changes, it rebinds
-all relay listeners automatically and records the new bind generation.
+Relay listeners bind to the main NIC address observed when the appliance
+starts. There is no runtime address watcher. A changed DHCP address takes
+effect after an appliance restart or an explicit `rebind_isolated_relays`
+operation.
 
 The LabLink server does not silently rewrite registry addresses. The operator
 invokes `reconcile_isolated_orchestrator`, which:
@@ -1110,9 +1144,10 @@ The relay manager is integrated into the Linux agent. It is not a separate
 daemon. Each relay has one persistent port in `20000-39999`.
 
 Listeners bind to the current unicast IPv4 address of the main interface, not
-to a private interface. A main-interface address watcher performs bind-new
-then close-old for every listener. If bind-new fails, the old listener remains
-active and health reports the failure.
+to a private interface. Startup restores every persisted listener on the
+address observed at that time. Explicit rebind performs bind-new then
+close-old; if bind-new fails, the old listener remains active and health
+reports the failure.
 
 The orchestrator firewall opens TCP 20000-39999 on the main interface. Only
 ports with active listeners accept connections.
@@ -1194,9 +1229,10 @@ listener/port allocation:
 3. Reset every matching local `agentclient.Pool` connection after the registry
    entry is removed or made unavailable. Other trusted servers see
    `retiring` from appliance discovery and must also stop dialing.
-4. Allow already accepted relay connections to half-close and drain
-   naturally. There is no forced idle timeout. The port remains reserved while
-   active connection count is nonzero.
+4. Allow already accepted relay connections to half-close and drain during a
+   bounded grace period. When the grace period expires, close both copies of
+   each remaining connection and wait for the copy loops to terminate. The
+   port remains reserved until active connection count reaches zero.
 5. Verify zero active relay connections, no listener, and no in-progress dial.
 6. Tombstone the relay mapping, move only the relay-port allocation to
    history, and make that port reusable.
@@ -1216,8 +1252,10 @@ complete. It removes the orchestrator interface and exact private switch, then
 releases the subnet and orchestrator-private-NIC MAC. Orchestrator cascade
 deletion applies these barriers in child-to-parent order.
 
-If a connection never drains, deletion remains in `retirement_draining`; the
-accepted no-timeout behavior is preserved and the relay port is not reused.
+Cancellation closes remaining relay copies promptly but leaves the durable
+relay and port in `retiring`; exact resume completes the tombstone and release.
+An uncancelled deletion force-closes connections after the grace period and
+continues once zero active copies are verified.
 
 ## 10. Linux networking, nftables, NAT, draining, and DNS
 
@@ -1308,16 +1346,17 @@ other dynamic rule owners.
 Both emergency and full policy files begin with `flush ruleset`; no unmanaged
 table is assumed to remain.
 
-Before taking ownership, customization detects:
+Before taking ownership, customization automatically stops, disables, and
+masks UFW and firewalld, verifies that each installed service is inactive and
+masked, and then detects:
 
-- Enabled or active UFW.
-- Enabled or active firewalld.
 - Docker or another known daemon managing nftables/iptables rules.
 - Unknown non-empty rules not carrying the LabLink appliance signature.
 
-Disabling a conflicting manager requires an approval bound to a revisioned
-plan naming each service and exact action. Without approval, the operation
-pauses and preserves the orchestrator.
+The neutralization step is an unconditional, idempotent bootstrap dependency
+of both the appliance firewall and agent. Missing packages are ignored.
+Failure to neutralize an installed manager, or any conflict found afterward,
+fails bootstrap/readiness explicitly; it is not an approval request.
 
 The normative IPv4 policy is one atomically loaded `inet lablink` table:
 
@@ -1430,10 +1469,10 @@ no valid policy.
 
 On explicit disable, the state becomes `draining` while flows in that VM's
 exact persisted conntrack mark exist and becomes `disabled` when none remain.
-On orchestrator reboot,
-conntrack state is gone. On agent-only restart, startup deletes conntrack
-entries for persisted draining VMs and records them as disabled. Therefore
-draining never resumes after a restart.
+On an agent-only restart, draining state and its established-flow rules are
+restored before monitoring resumes. On an orchestrator reboot, conntrack state
+is gone, so the exact internal system transition observes zero matching flows
+and advances the NAT generation to `disabled`.
 
 Persisted `enabled` state survives agent and orchestrator restart, but it is
 restored only as part of a verified full ruleset after the emergency drop
@@ -1536,6 +1575,15 @@ host-side metadata record under:
 The record is atomically replaced and ACL-restricted to SYSTEM and
 Administrators. Deletion requires exact agreement among SQLite, Hyper-V, and
 the host metadata record.
+
+After exact NIC and switch deletion succeeds, the deletion workflow removes
+only the matching adapter and network metadata files by literal path. After
+the orchestrator VM is deleted, it removes the exact orchestrator metadata
+root only when no files or unexpected entries remain. Legacy metadata for a
+durably deleted/lost orchestrator may be reconciled during a later fenced
+create only when the exact VM, switch, and adapter identities are all absent
+and every record's physical host, orchestrator ID, resource ID, owner marker,
+and file name agree. Any ambiguity or surviving Hyper-V object fails closed.
 
 Every mutating PowerShell script receives expected physical host ID, fence,
 resource IDs, switch GUID, VM GUID, adapter ID/MAC, and generation. The script
@@ -1688,20 +1736,28 @@ Creation phases:
 
 1. Resolve target, profile, main vSwitch, names, and immutable IDs.
 2. Acquire the shared host creation lock.
-3. Recheck for a reusable orchestrator under the lock.
-4. Run host memory, storage, switch, and capacity preflight.
-5. Persist the revisioned plan and obtain approval.
-6. Recheck the plan revision and host state.
-7. Create through the existing Linux VM flow.
-8. Verify exact VM identity, storage, main NIC, and mTLS registration.
-9. Probe required appliance capabilities.
-10. Install permitted packages from the existing main internet connection, or
+3. Reconcile exact stale metadata for durably deleted/lost orchestrators.
+4. Recheck for a reusable orchestrator under the lock.
+5. Run bounded host memory, storage, switch, and capacity preflight.
+6. Persist the revisioned plan, release the planning fence, and return
+   `approval_required`.
+7. On an exact approved retry, reacquire the fence and recheck the same plan
+   revision and host state.
+8. Create through the existing Linux VM flow.
+9. Verify exact VM identity, storage, main NIC, and mTLS registration.
+10. Probe required appliance capabilities.
+11. Install permitted packages from the existing main internet connection, or
     use the optional offline bundle.
-11. Detect conflicting firewall/NAT managers. Pause for a separate exact
-    approval if disabling is required.
-12. Configure appliance mode and persist its identity.
-13. Restore the base nftables ruleset and relay firewall range.
-14. Mark ready only after `appliance_ready=true`.
+12. Automatically neutralize known firewall managers, then fail bootstrap if
+    the conflict scan still finds a firewall/NAT manager or unmanaged rules.
+13. Configure appliance mode and persist its identity.
+14. Restore the base nftables ruleset and relay firewall range.
+15. Mark ready only after `appliance_ready=true`.
+
+Post-fence stale-metadata reconciliation, reusable selection, and resource
+preflight share a 60-second bound. Progress distinguishes
+`host_fence_acquired`, `stale_metadata_reconcile`, `capacity_discovery`, and
+`capacity_preflight`; timeout errors include the operation and fence.
 
 Online package install is allowed because the orchestrator retains main
 internet access.
@@ -1725,10 +1781,16 @@ Deletion with cascade:
    appliance. All child create/update/repair/NAT/relay mutations then return
    `PARENT_FROZEN`.
 4. Rechecks host and state under the new fence.
-5. Deletes guests using exact storage ownership and retirement barriers.
-6. Removes relay and NAT state.
-7. Removes private networks and orchestrator private NICs.
-8. Deletes the orchestrator VM and exact owned storage.
+5. In deterministic guest-ID order, disables each guest NAT mapping, retires
+   and drains its relay, retires the guest allocation, then deletes the exact
+   VM and owned storage.
+6. Removes private networks and orchestrator private NICs in deterministic
+   network-ID order. Execution ordering does not rewrite the already approved
+   child enumeration or plan revision.
+7. Verifies that no guest, relay, NAT, or network children remain.
+8. Deletes the orchestrator VM by persisted Hyper-V GUID after exact ownership
+   metadata/cascade validation, treating an already-absent GUID as replay
+   success and cleaning only its exact managed storage path.
 9. Removes registry entries and tombstones allocations.
 
 Freeze installs a narrow `cascade_authority` record on the server, host, and,
@@ -1905,11 +1967,37 @@ SHA-256("lablink-isolated-mutation-v1" ||
 The same parent workflow therefore generates the same mutation ID after
 process loss, while different phases cannot alias.
 
+When a parent workflow starts a nested durable operation, such as a cascade
+guest or network deletion, it derives a separate deterministic canonical UUID
+from the same parent/resource/action/phase tuple. The UUID has the required
+version and variant bits, remains stable for exact resume, and is still
+validated by the normal strict operation-ID validator.
+
 The semantic hash is computed from canonical resolved inputs: physical host
 ID, immutable parent/resource IDs, resolved profile values, exact paths,
 accepted allocation values, desired state, and semantic action. Maps are
 key-sorted, paths and IDs use canonical casing/format, numbers use one JSON
 representation, and omitted defaults are expanded before hashing.
+
+Deletion reads each appliance guest, relay, and NAT generation immediately
+before its appliance mutation. Host-only repair/incarnation generations remain
+local to Hyper-V lifecycle state and are never used as appliance generation
+guards. Interrupted deletion imports already-advanced appliance state before
+continuing.
+
+Adapter ownership is persisted both in the per-adapter host record and the
+parent VM's `private_adapters` references. Parent fence re-claims preserve
+those references. If the per-adapter record is missing, deletion may recreate
+it only after exact network ownership, VM GUID, switch GUID/name, adapter
+ID/name/static MAC, generation, and owner marker all agree with an
+unambiguous Hyper-V observation; any mismatch fails closed before removal.
+The persisted `mutation_id` remains creation/adoption provenance; a later
+delete mutation is authorized independently by its guard and does not rewrite
+or compare itself to that provenance.
+
+After CIDATA cleanup is complete, empty optional CIDATA/ownership metadata
+paths are valid. Inspect, resume, and delete scripts guard emptiness before
+calling path cmdlets; immutable VM and VHD identity remains mandatory.
 
 The semantic hash excludes retry and approval envelope fields:
 
@@ -1950,8 +2038,8 @@ Results contain one final fenced JSON object with:
 - Behavior: discover/reuse oldest compatible orchestrator unless an exact ID
   is requested. If creation is needed, return or elicit an approval-bound
   plan. Defaults to 4 vCPU, 8 GB static memory.
-- Approval: required only when a new orchestrator VM will be created and,
-  separately, when conflicting managers must be disabled.
+- Approval: required only when a new orchestrator VM will be created.
+  Firewall-manager neutralization is an unconditional bootstrap step.
 
 `list_isolated_orchestrators`
 
@@ -2106,8 +2194,11 @@ Results contain one final fenced JSON object with:
 
 ### 14.7 Approval behavior
 
-Approvals use the existing MCP elicitation support demonstrated by
-`elicitVMFields` in `internal/mcptools/vm_orchestrator.go`.
+Destructive approvals may use the existing MCP elicitation support
+demonstrated by `elicitVMFields` in
+`internal/mcptools/vm_orchestrator.go`. Orchestrator creation always returns a
+non-blocking `approval_required` result so it never holds a host fence while
+waiting for user input.
 
 The approval schema contains:
 
@@ -2163,8 +2254,8 @@ planned
   -> verify_mtls
   -> verify_capabilities
   -> install_appliance_dependencies
+  -> neutralize_known_firewall_managers
   -> conflict_scan
-  -> conflict_approval_required (only if needed)
   -> configure_appliance
   -> restore_firewall_and_relays
   -> ready
@@ -2298,6 +2389,11 @@ checked to avoid PID reuse; inability to prove the process dead keeps the lock
 conservatively held. A different developer host cannot prove local process
 liveness and must rely on the remote lease/fence protocol below.
 
+Each server startup sweeps only locks that normal acquisition could reclaim:
+expired leases, or same-host leases whose exact PID and creation time are
+proven dead. The monotonic fence history is retained. Unproven same-host locks
+remain conservatively held.
+
 ### 16.3 Host-side lock
 
 SQLite coordinates processes sharing one developer box, but not a second
@@ -2325,6 +2421,11 @@ directory:
   mutation.
 - An expired lease may be reclaimed by another server without proving the
   remote process dead; reclamation atomically increments `fence`.
+- Immediately after every deletion-path fence acquisition, the server
+  re-claims the orchestrator VM, stamps that exact fence into parent Hyper-V
+  metadata, and persists the resulting VM identity/fence before any child
+  NIC, switch, or VM mutation. No second fence is acquired between that stamp
+  and the guarded child mutation.
 - The old holder cannot mutate after reclamation because every PowerShell
   mutation validates the current fence inside the mutation script.
 - Host scripts validate lease ID, fence, unexpired lease, and secret inside
@@ -2537,7 +2638,7 @@ unavailable for selection.
 | Orchestrator VM lost | Host exact ID absent | Mark lost; only approved cascade deletion may release children. |
 | Orchestrator host mismatch | Persisted host differs from request | Fail; no migration. |
 | Appliance DB unavailable | `appliance_ready=false` | Repair database/filesystem; do not select for new work. |
-| Conflicting firewall manager | Service/rules scan | Pause for exact approval to disable. |
+| Conflicting firewall manager | Bootstrap neutralization plus service/rules scan | Fail bootstrap/readiness if an installed manager cannot be neutralized or a conflict remains. |
 | nftables load fails | Check/apply/observe error | Keep the last verified policy, or emergency drop policy on first activation; disable forwarding if policy signature cannot be verified. |
 | Crash after external apply before SQLite commit | Pending apply intent plus observation | Commit exact observed generation or reapply the same intent. |
 | Slow compile races newer desired state | Compiled-hash and generation pre-apply check | Discard stale compilation and rebuild. |
@@ -2549,14 +2650,14 @@ unavailable for selection.
 | Guest create partially succeeds | Operation phase and VM Notes | Preserve allocation and exact-resume. |
 | Relay bind port busy | Bind health and allocation check | Mark degraded; do not silently select a new persistent port. |
 | Relay target unavailable | Dial failure telemetry | Guest repair; listener stays active. |
-| Relay removal has active connections | Retirement state and connection count | Stop accepts/dials and wait without releasing the port until connections drain. |
-| Main IP changes | Address watcher | Rebind listeners automatically; registry update remains manual. |
+| Relay removal has active connections | Retirement state and connection count | Stop accepts/dials, allow bounded drain, then close remaining copies without releasing the port before zero active connections. |
+| Main IP changes | Startup observation or explicit rebind | Rebind listeners on restart or explicit request; registry update remains manual. |
 | Guest certificate mismatch | Existing TLS identity validation | Permanent failure; never register/adopt wrong guest. |
 | Guest static network broken | Relay probe and host KVP | Repair, then automatic recreate if repair fails. |
 | Guest repair fails | Repair state machine | Delete exact old VHD and recreate with same identity/allocation. |
 | NAT enable response lost | Operation replay and generation | Read live state; replay idempotently. |
 | NAT disable has long flows | Conntrack count | Remain draining indefinitely; no forced timeout. |
-| Agent restarts while draining | Startup normalization | Delete matching conntrack entries and mark disabled. |
+| Agent restarts while draining | Durable static restore | Restore draining rules and let the exact internal zero-conntrack transition complete. |
 | DNS resolvers change | Explicit refresh reconcile | Update all reachable guests; mark offline guests pending. |
 | No usable upstream resolver | Link-specific extraction rejects stub/loopback | Persist empty DNS state; reject DNS-dependent bootstrap. |
 | YAML registry import loses TLS name | Round-trip validation | Reject import/test failure; never derive guest TLS name from relay address. |
@@ -2581,7 +2682,8 @@ unavailable for selection.
   listeners expose a service.
 - Appliance package installation uses main internet only during approved
   customization and may instead use a verified offline bundle.
-- Firewall-manager disabling is approval-gated and revision-bound.
+- UFW and firewalld are stopped, disabled, and masked automatically before
+  the appliance firewall and agent start; remaining conflicts fail closed.
 - Domain join requires explicit service declaration and reachability
   preflight.
 - Arbitrary network-dependent bootstrap must declare how dependencies are
@@ -2700,7 +2802,7 @@ Tests:
 - Complete atomic ruleset generation.
 - Intent/apply crash recovery and stale compilation rejection.
 - Fail-closed first activation, boot, service failure, and ruleset failure.
-- Conflict detection and approval pause.
+- Automatic firewall-manager neutralization and fail-closed conflict detection.
 - Restart readiness and draining normalization.
 
 ### Phase 3: private networks and relays
@@ -2792,7 +2894,8 @@ Tests:
 
 - NAT enable/disable/draining.
 - No forced drain timeout.
-- Restart converts draining to disabled.
+- Restart preserves draining state; exact background completion advances it
+  only after zero matching conntrack entries.
 - NAT does not affect relay.
 - Cross-network forwarding remains blocked.
 - Portal is read-only and loopback/key protected.
@@ -2864,13 +2967,14 @@ Release validation must cover both modes:
 | Alias changes to another machine | `HOST_IDENTITY_CHANGED`; no retarget. |
 | Main NIC | Existing vSwitch and normal internet retained. |
 | Default profile | Ubuntu 24.04 amd64, 4 vCPU, 8 GB static. |
-| UFW/firewalld/Docker conflict | Pause for revision-bound approval. |
+| UFW/firewalld conflict | Bootstrap stops, disables, masks, and verifies the installed manager before firewall startup. |
+| Docker or remaining firewall conflict | Bootstrap/readiness failure; no approval pause. |
 | Create fails after VM creation | Partial VM retained and resumable. |
 | Unsupported Windows/Hyper-V version | Compatibility failure before mutation. |
 | Effective NIC budget below 16 | Capacity reflects main plus private adapters. |
 | Network limit reached, existing network has IPs | Guest creation on existing network remains valid. |
 | Explicit unhealthy orchestrator | Precise failure; no automatic substitution. |
-| Main IP changes | Relays rebind; server addresses change only on reconcile. |
+| Main IP changes | Relays rebind on restart or explicit request; server addresses change only on reconcile. |
 | Lost orchestrator delete without cascade | Refused. |
 | Lost orchestrator cascade | Exact approved child plan executed from host state. |
 | Frozen parent receives unrelated child repair/NAT/rebind | `PARENT_FROZEN`; no effect. |
@@ -2912,7 +3016,7 @@ Release validation must cover both modes:
 | First boot with corrupt appliance DB | Emergency forward-drop policy active and IP forwarding off. |
 | Agent/ruleset failure while running | Watchdog restores emergency policy before disabling forwarding. |
 | Port conflict | Degraded, persistent port not silently changed. |
-| Remove relay with active connection | Listener/dials stop; port remains reserved until natural drain. |
+| Remove relay with active connection | Listener/dials stop; bounded drain or cancellation closes remaining copies; port stays reserved until zero active connections. |
 | Remove relay from live VM after drain | Relay/port retire; VM, IP, MAC, mark, NAT, and subnet remain live. |
 | Relay-only remove with active NAT flow | NAT conntrack is untouched and does not block relay-port release. |
 | VM delete after relay retirement | VM absence and marked-flow retirement gate IP/MAC/mark release. |
@@ -2976,7 +3080,7 @@ Release validation must cover both modes:
 | Plan changes after approval | Approval invalidated. |
 | Orchestrator delete | Approval required. |
 | Cascade contents change | New revision and approval required. |
-| Conflict-manager disable | Separate exact approval required. |
+| Conflict-manager disable | Automatic bootstrap action; failure blocks readiness. |
 | MCP disconnect | Durable operation remains resumable. |
 | Portal | Read-only topology/status/operation views. |
 

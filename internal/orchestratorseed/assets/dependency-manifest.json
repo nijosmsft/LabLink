@@ -4,8 +4,8 @@
   "release": "24.04",
   "architecture": "amd64",
   "snapshot": {
-    "identity": "ubuntu-noble-2025-02-01",
-    "base_url": "https://snapshot.ubuntu.com/ubuntu/20250201T000000Z",
+    "identity": "ubuntu-noble-2026-11-01",
+    "base_url": "https://snapshot.ubuntu.com/ubuntu/20261101T000000Z",
     "suites": [
       "noble",
       "noble-updates",
@@ -20,7 +20,7 @@
   "packages": [
     {
       "name": "nftables",
-      "version": "1.0.9-1build1",
+      "version": "1.0.9-1ubuntu0.1",
       "facilities": [
         "nft"
       ]
@@ -34,7 +34,7 @@
     },
     {
       "name": "iproute2",
-      "version": "6.1.0-1ubuntu6",
+      "version": "6.1.0-1ubuntu6.4",
       "facilities": [
         "ip",
         "ss"
@@ -42,7 +42,7 @@
     },
     {
       "name": "systemd",
-      "version": "255.4-1ubuntu8",
+      "version": "255.4-1ubuntu8.18",
       "facilities": [
         "networkctl",
         "systemd-networkd"
@@ -50,14 +50,14 @@
     },
     {
       "name": "systemd-resolved",
-      "version": "255.4-1ubuntu8",
+      "version": "255.4-1ubuntu8.18",
       "facilities": [
         "resolvectl"
       ]
     },
     {
       "name": "ca-certificates",
-      "version": "20240203",
+      "version": "20260816ubuntu0.24.04.1",
       "facilities": [
         "signed-repository-metadata"
       ]

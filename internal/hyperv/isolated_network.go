@@ -49,6 +49,55 @@ type RemoveIsolatedNICParams struct {
 	ExpectedGeneration int64
 }
 
+type ReconcileIsolatedAdapterMetadataParams struct {
+	Guard              IsolatedMutationGuard
+	NetworkID          string
+	ResourceType       string
+	ResourceID         string
+	OrchestratorVMGUID string
+	VMGUID             string
+	AdapterName        string
+	ExpectedAdapterID  string
+	SwitchName         string
+	ExpectedSwitchGUID string
+	ExpectedMAC        string
+	ExpectedGeneration int64
+}
+
+type CleanupIsolatedNetworkMetadataParams struct {
+	Guard              IsolatedMutationGuard
+	OrchestratorVMGUID string
+	NetworkID          string
+	AdapterID          string
+	AdapterName        string
+	SwitchGUID         string
+	SwitchName         string
+	MAC                string
+	Generation         int64
+}
+
+type CleanupIsolatedOrchestratorMetadataParams struct {
+	Guard              IsolatedMutationGuard
+	OrchestratorVMGUID string
+	HyperVName         string
+}
+
+type ReconcileStaleIsolatedMetadataParams struct {
+	Guard              IsolatedMutationGuard
+	OrchestratorVMGUID string
+	HyperVName         string
+	LifecycleState     string
+}
+
+type IsolatedMetadataCleanupResult struct {
+	Action          string `json:"action"`
+	OrchestratorID  string `json:"orchestrator_id"`
+	NetworkID       string `json:"network_id,omitempty"`
+	FilesRemoved    int    `json:"files_removed"`
+	RootRemoved     bool   `json:"root_removed"`
+	MetadataExisted bool   `json:"metadata_existed"`
+}
+
 type SetIsolatedParentLifecycleParams struct {
 	Guard              IsolatedMutationGuard
 	OrchestratorVMGUID string
@@ -153,7 +202,7 @@ try {
     if ([string]$switch.SwitchType -cne 'Private') { throw 'PRIVATE_SWITCH_REQUIRED: isolated network switch is not Private' }
     $hostNICs = @(Get-VMNetworkAdapter -ManagementOS -SwitchName $switch.Name -ErrorAction SilentlyContinue)
     if ($hostNICs.Count -ne 0) { throw 'HOST_ADAPTER_PRESENT: a private isolated switch must not expose a management OS adapter' }
-    $expected.switch_guid = [string]$switch.Id
+    $expected | Add-Member -NotePropertyName switch_guid -NotePropertyValue ([string]$switch.Id) -Force
     $expected.state = 'ready'
     Write-LabLinkOwnedMetadata $recordPath $expected
     [pscustomobject]@{
@@ -270,7 +319,7 @@ func BuildAttachIsolatedNICScript(p AttachIsolatedNICParams) (string, error) {
 		ResourceID: p.ResourceID, ResourceType: p.ResourceType, OwnerMarker: owner,
 		HostFence: p.Guard.Fence, MutationID: p.Guard.MutationID, Generation: p.Generation,
 		State: "attaching", VMGUID: strings.ToLower(strings.Trim(p.VMGUID, "{}")),
-		AdapterName: p.AdapterName, AdapterID: normalizedGUIDOrEmpty(p.ExpectedAdapterID),
+		AdapterName: p.AdapterName, AdapterID: strings.TrimSpace(p.ExpectedAdapterID),
 		MAC: normalizeMAC(p.MAC), SwitchGUID: strings.ToLower(strings.Trim(p.SwitchGUID, "{}")),
 	}
 	metadataJSON, err := MarshalIsolatedAdapterMetadata(metadata)
@@ -313,8 +362,7 @@ try {
             throw 'ADAPTER_IDENTITY_MISMATCH: owned adapter ID is absent; replacement by name is not authorized'
         }
         Write-LabLinkOwnedMetadata $recordPath $expected
-        $adapter = Add-VMNetworkAdapter -VM $vm -Name ([string]$expected.adapter_name) -SwitchName ([string]$switch[0].Name) -Passthru -ErrorAction Stop
-        $adapter | Set-VMNetworkAdapter -StaticMacAddress ([string]$expected.mac) -ErrorAction Stop
+        $adapter = Add-VMNetworkAdapter -VM $vm -Name ([string]$expected.adapter_name) -SwitchName ([string]$switch[0].Name) -StaticMacAddress ([string]$expected.mac) -Passthru -ErrorAction Stop
     } else {
         $adapter = $adapters[0]
         if ($expectedAdapterID -and [string]$adapter.Id -cne $expectedAdapterID) {
@@ -324,7 +372,11 @@ try {
             throw 'ADAPTER_IDENTITY_MISMATCH: adapter ID does not match its ownership record'
         }
         if (-not $record.adapter_id) {
-            $adapter | Set-VMNetworkAdapter -StaticMacAddress ([string]$expected.mac) -ErrorAction Stop
+            $actualMAC = ([string]$adapter.MacAddress).Replace('-','').ToUpperInvariant()
+            if ([bool]$adapter.DynamicMacAddressEnabled -or $actualMAC -cne ([string]$expected.mac).ToUpperInvariant()) {
+                Remove-VMNetworkAdapter -VMNetworkAdapter $adapter -ErrorAction Stop
+                $adapter = Add-VMNetworkAdapter -VM $vm -Name ([string]$expected.adapter_name) -SwitchName ([string]$switch[0].Name) -StaticMacAddress ([string]$expected.mac) -Passthru -ErrorAction Stop
+            }
             $action = 'reconciled'
         } else {
             $action = 'reused'
@@ -336,7 +388,7 @@ try {
         [bool]$adapter.DynamicMacAddressEnabled) {
         throw 'ADAPTER_IDENTITY_MISMATCH: adapter switch, static MAC, or identity verification failed'
     }
-    $expected.adapter_id = [string]$adapter.Id
+    $expected | Add-Member -NotePropertyName adapter_id -NotePropertyValue ([string]$adapter.Id) -Force
     $expected.state = 'attached'
     Write-LabLinkOwnedMetadata $recordPath $expected
     Set-LabLinkVMAdapterMetadata $vm $expected
@@ -349,7 +401,7 @@ try {
 } finally {
     $__isolatedGate.Dispose()
 }
-`, PSLit(metadataJSON), PSLit(normalizedGUIDOrEmpty(p.ExpectedAdapterID)),
+`, PSLit(metadataJSON), PSLit(strings.TrimSpace(p.ExpectedAdapterID)),
 		PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))),
 		PSLit(IsolatedOrchestratorMetadataPrefix))
 	return wrapTagged(body), nil
@@ -360,6 +412,11 @@ func BuildRemoveIsolatedNICScript(p RemoveIsolatedNICParams) (string, error) {
 		return "", err
 	}
 	guard, err := isolatedMutationGuardPowerShell(p.Guard)
+	if err != nil {
+		return "", err
+	}
+	owner, err := IsolatedOwnerMarker(
+		p.Guard.OrchestratorID, p.ResourceType, p.ResourceID)
 	if err != nil {
 		return "", err
 	}
@@ -374,6 +431,7 @@ try {
     $adapterID = %s
     $switchGUID = %s
     $mac = %s
+    $ownerMarker = %s
     $expectedGeneration = [int64]%d
     $parentVM = Get-VM -Id $orchestratorVMGUID -ErrorAction Stop
     $parentMetadata = Get-LabLinkIsolatedVMNotes $parentVM %s
@@ -399,7 +457,8 @@ try {
     if (-not $record -or [string]$record.physical_host_id -cne $guardPhysicalHostID -or
         [string]$record.orchestrator_id -cne $guardOrchestratorID -or
         [string]$record.network_id -cne $networkID -or [string]$record.resource_id -cne $resourceID -or
-        [string]$record.resource_type -cne $resourceType -or [string]$record.vm_guid -cne $vmGUID -or
+        [string]$record.resource_type -cne $resourceType -or
+        [string]$record.owner_marker -cne $ownerMarker -or [string]$record.vm_guid -cne $vmGUID -or
         [string]$record.adapter_name -cne $adapterName -or [string]$record.adapter_id -cne $adapterID -or
         [string]$record.switch_guid -cne $switchGUID -or
         ([string]$record.mac).ToUpperInvariant() -cne $mac -or
@@ -437,10 +496,448 @@ try {
 `, PSLit(p.NetworkID), PSLit(p.ResourceType), PSLit(p.ResourceID),
 		PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))),
 		PSLit(strings.ToLower(strings.Trim(p.VMGUID, "{}"))), PSLit(p.AdapterName),
-		PSLit(strings.ToLower(strings.Trim(p.ExpectedAdapterID, "{}"))),
+		PSLit(strings.TrimSpace(p.ExpectedAdapterID)),
 		PSLit(strings.ToLower(strings.Trim(p.ExpectedSwitchGUID, "{}"))),
-		PSLit(normalizeMAC(p.ExpectedMAC)), p.ExpectedGeneration,
+		PSLit(normalizeMAC(p.ExpectedMAC)), PSLit(owner), p.ExpectedGeneration,
 		PSLit(IsolatedOrchestratorMetadataPrefix))
+	return wrapTagged(body), nil
+}
+
+func BuildCleanupIsolatedNetworkMetadataScript(
+	p CleanupIsolatedNetworkMetadataParams,
+) (string, error) {
+	if err := validateMutationGuard(p.Guard); err != nil {
+		return "", err
+	}
+	if p.Guard.ResourceType != "network" || p.Guard.ResourceID != p.NetworkID ||
+		p.Guard.Action != "cleanup_network_metadata" {
+		return "", fmt.Errorf("mutation guard does not authorize network metadata cleanup")
+	}
+	if err := validateIsolatedID("network", p.NetworkID); err != nil {
+		return "", err
+	}
+	for kind, value := range map[string]string{
+		"orchestrator VM": p.OrchestratorVMGUID,
+		"switch":          p.SwitchGUID,
+	} {
+		if err := validateGUID(kind, value); err != nil {
+			return "", err
+		}
+	}
+	if err := validateAdapterID(p.AdapterID); err != nil {
+		return "", err
+	}
+	if p.Generation <= 0 || strings.TrimSpace(p.AdapterName) == "" ||
+		strings.TrimSpace(p.SwitchName) == "" || !macRE.MatchString(normalizeMAC(p.MAC)) {
+		return "", fmt.Errorf("incomplete network metadata cleanup parameters")
+	}
+	guard, err := isolatedMutationGuardPowerShell(p.Guard)
+	if err != nil {
+		return "", err
+	}
+	networkOwner, err := IsolatedOwnerMarker(p.Guard.OrchestratorID, "network", p.NetworkID)
+	if err != nil {
+		return "", err
+	}
+	body := PreflightScript() + isolatedHostMetadataPowerShell() + isolatedParentGuardPowerShell() + guard + fmt.Sprintf(`
+try {
+    $orchestratorVMGUID = %s
+    $networkID = %s
+    $adapterID = %s
+    $adapterName = %s
+    $switchGUID = %s
+    $switchName = %s
+    $mac = %s
+    $generation = [int64]%d
+    $networkOwner = %s
+    $parentVM = Get-VM -Id $orchestratorVMGUID -ErrorAction Stop
+    $parentMetadata = Get-LabLinkIsolatedVMNotes $parentVM %s
+    [void](Assert-LabLinkParentAllowsMutation $parentMetadata)
+
+    $switchByID = @(Get-VMSwitch -ErrorAction SilentlyContinue | Where-Object { [string]$_.Id -ceq $switchGUID })
+    $switchByName = @(Get-VMSwitch -Name $switchName -ErrorAction SilentlyContinue)
+    if ($switchByID.Count -ne 0 -or $switchByName.Count -ne 0) {
+        throw 'NETWORK_METADATA_CLEANUP_REJECTED: exact switch still exists'
+    }
+    $adapterByID = @(Get-VMNetworkAdapter -VM $parentVM -ErrorAction SilentlyContinue | Where-Object { [string]$_.Id -ceq $adapterID })
+    $adapterByName = @(Get-VMNetworkAdapter -VM $parentVM -ErrorAction SilentlyContinue | Where-Object { [string]$_.Name -ceq $adapterName })
+    if ($adapterByID.Count -ne 0 -or $adapterByName.Count -ne 0) {
+        throw 'NETWORK_METADATA_CLEANUP_REJECTED: exact adapter still exists'
+    }
+
+    $adapterPath = Get-LabLinkAdapterMetadataPath $guardOrchestratorID $networkID
+    $networkPath = Get-LabLinkNetworkMetadataPath $guardOrchestratorID $networkID
+    $adapterRecord = Read-LabLinkOwnedMetadata $adapterPath
+    if ($adapterRecord -and (
+        [string]$adapterRecord.physical_host_id -cne $guardPhysicalHostID -or
+        [string]$adapterRecord.orchestrator_id -cne $guardOrchestratorID -or
+        [string]$adapterRecord.network_id -cne $networkID -or
+        [string]$adapterRecord.resource_id -cne $networkID -or
+        [string]$adapterRecord.resource_type -cne 'network' -or
+        [string]$adapterRecord.owner_marker -cne $networkOwner -or
+        [string]$adapterRecord.vm_guid -cne $orchestratorVMGUID -or
+        [string]$adapterRecord.adapter_id -cne $adapterID -or
+        [string]$adapterRecord.adapter_name -cne $adapterName -or
+        [string]$adapterRecord.switch_guid -cne $switchGUID -or
+        ([string]$adapterRecord.mac).ToUpperInvariant() -cne $mac -or
+        [int64]$adapterRecord.generation -ne $generation -or
+        [string]$adapterRecord.state -cne 'deleted'
+    )) {
+        throw 'NETWORK_METADATA_CLEANUP_REJECTED: adapter ownership metadata is not the exact deleted resource'
+    }
+    $networkRecord = Read-LabLinkOwnedMetadata $networkPath
+    if ($networkRecord -and (
+        [string]$networkRecord.physical_host_id -cne $guardPhysicalHostID -or
+        [string]$networkRecord.orchestrator_id -cne $guardOrchestratorID -or
+        [string]$networkRecord.network_id -cne $networkID -or
+        [string]$networkRecord.owner_marker -cne $networkOwner -or
+        [string]$networkRecord.switch_guid -cne $switchGUID -or
+        [string]$networkRecord.switch_name -cne $switchName -or
+        [int64]$networkRecord.generation -ne $generation -or
+        [string]$networkRecord.state -cne 'deleted'
+    )) {
+        throw 'NETWORK_METADATA_CLEANUP_REJECTED: network ownership metadata is not the exact deleted resource'
+    }
+    $removed = 0
+    foreach ($path in @($adapterPath,$networkPath)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            $removed++
+        }
+    }
+    $root = Get-LabLinkIsolatedRoot $guardOrchestratorID
+    foreach ($name in @('adapters','networks')) {
+        $directory = Join-Path $root $name
+        if ((Test-Path -LiteralPath $directory -PathType Container) -and
+            @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop).Count -eq 0) {
+            Remove-Item -LiteralPath $directory -Force -ErrorAction Stop
+        }
+    }
+    [pscustomobject]@{
+        action='network_metadata_cleaned'; orchestrator_id=$guardOrchestratorID
+        network_id=$networkID; files_removed=$removed; root_removed=$false
+        metadata_existed=[bool]($adapterRecord -or $networkRecord)
+    } | ConvertTo-Json -Compress
+} finally {
+    $__isolatedGate.Dispose()
+}
+`, PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))), PSLit(p.NetworkID),
+		PSLit(strings.TrimSpace(p.AdapterID)), PSLit(p.AdapterName),
+		PSLit(strings.ToLower(strings.Trim(p.SwitchGUID, "{}"))), PSLit(p.SwitchName),
+		PSLit(normalizeMAC(p.MAC)), p.Generation, PSLit(networkOwner),
+		PSLit(IsolatedOrchestratorMetadataPrefix))
+	return wrapTagged(body), nil
+}
+
+func BuildCleanupIsolatedOrchestratorMetadataScript(
+	p CleanupIsolatedOrchestratorMetadataParams,
+) (string, error) {
+	if err := validateMutationGuard(p.Guard); err != nil {
+		return "", err
+	}
+	if p.Guard.ResourceType != "orchestrator" ||
+		p.Guard.ResourceID != p.Guard.OrchestratorID ||
+		p.Guard.Action != "cleanup_orchestrator_metadata" {
+		return "", fmt.Errorf("mutation guard does not authorize orchestrator metadata cleanup")
+	}
+	if err := validateGUID("orchestrator VM", p.OrchestratorVMGUID); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(p.HyperVName) == "" {
+		return "", fmt.Errorf("orchestrator Hyper-V name is required")
+	}
+	guard, err := isolatedMutationGuardPowerShell(p.Guard)
+	if err != nil {
+		return "", err
+	}
+	body := PreflightScript() + isolatedHostMetadataPowerShell() + guard + fmt.Sprintf(`
+try {
+    $orchestratorVMGUID = %s
+    $hyperVName = %s
+    if (@(Get-VM -Id $orchestratorVMGUID -ErrorAction SilentlyContinue).Count -ne 0 -or
+        @(Get-VM -Name $hyperVName -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw 'ORCHESTRATOR_METADATA_CLEANUP_REJECTED: exact orchestrator VM still exists'
+    }
+    $root = Get-LabLinkIsolatedRoot $guardOrchestratorID
+    $existed = Test-Path -LiteralPath $root -PathType Container
+    if ($existed) {
+        $files = @(Get-ChildItem -LiteralPath $root -File -Recurse -Force -ErrorAction Stop)
+        if ($files.Count -ne 0) {
+            throw "ORCHESTRATOR_METADATA_NOT_EMPTY: exact metadata root still contains $($files.Count) file(s)"
+        }
+        $directories = @(Get-ChildItem -LiteralPath $root -Directory -Recurse -Force -ErrorAction Stop |
+            Sort-Object { $_.FullName.Length } -Descending)
+        foreach ($directory in $directories) {
+            if (@(Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction Stop).Count -eq 0) {
+                Remove-Item -LiteralPath $directory.FullName -Force -ErrorAction Stop
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop).Count -ne 0) {
+            throw 'ORCHESTRATOR_METADATA_NOT_EMPTY: exact metadata root contains unexpected entries'
+        }
+        Remove-Item -LiteralPath $root -Force -ErrorAction Stop
+    }
+    [pscustomobject]@{
+        action='orchestrator_metadata_cleaned'; orchestrator_id=$guardOrchestratorID
+        files_removed=0; root_removed=$existed; metadata_existed=$existed
+    } | ConvertTo-Json -Compress
+} finally {
+    $__isolatedGate.Dispose()
+}
+`, PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))), PSLit(p.HyperVName))
+	return wrapTagged(body), nil
+}
+
+func BuildReconcileStaleIsolatedMetadataScript(
+	p ReconcileStaleIsolatedMetadataParams,
+) (string, error) {
+	if err := validateMutationGuard(p.Guard); err != nil {
+		return "", err
+	}
+	if p.Guard.ResourceType != "orchestrator" ||
+		p.Guard.ResourceID != p.Guard.OrchestratorID ||
+		p.Guard.Action != "reconcile_stale_orchestrator_metadata" {
+		return "", fmt.Errorf("mutation guard does not authorize stale orchestrator metadata reconciliation")
+	}
+	if err := validateGUID("orchestrator VM", p.OrchestratorVMGUID); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(p.HyperVName) == "" {
+		return "", fmt.Errorf("orchestrator Hyper-V name is required")
+	}
+	state := strings.ToLower(strings.TrimSpace(p.LifecycleState))
+	if state != "deleted" && state != "lost" {
+		return "", fmt.Errorf("stale metadata reconciliation requires deleted or lost lifecycle state")
+	}
+	guard, err := isolatedMutationGuardPowerShell(p.Guard)
+	if err != nil {
+		return "", err
+	}
+	body := PreflightScript() + isolatedHostMetadataPowerShell() + guard + fmt.Sprintf(`
+try {
+    $orchestratorVMGUID = %s
+    $hyperVName = %s
+    if (@(Get-VM -Id $orchestratorVMGUID -ErrorAction SilentlyContinue).Count -ne 0 -or
+        @(Get-VM -Name $hyperVName -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw 'STALE_METADATA_RESOURCE_PRESENT: deleted orchestrator VM identity still exists'
+    }
+    $root = Get-LabLinkIsolatedRoot $guardOrchestratorID
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        [pscustomobject]@{
+            action='stale_metadata_absent'; orchestrator_id=$guardOrchestratorID
+            files_removed=0; root_removed=$false; metadata_existed=$false
+        } | ConvertTo-Json -Compress
+        return
+    }
+    $networkDirectory = Join-Path $root 'networks'
+    $adapterDirectory = Join-Path $root 'adapters'
+    $uuidBody = '[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}'
+    $uuidPattern = '^' + $uuidBody + '$'
+    $adapterIDPattern = '^(' + $uuidBody + '|microsoft:' + $uuidBody + '\\' + $uuidBody + ')$'
+    $allFiles = @(Get-ChildItem -LiteralPath $root -File -Recurse -Force -ErrorAction Stop)
+    $validatedFiles = @()
+    foreach ($file in $allFiles) {
+        $parent = [IO.Path]::GetFullPath([string]$file.DirectoryName).TrimEnd('\')
+        $networkParent = [IO.Path]::GetFullPath($networkDirectory).TrimEnd('\')
+        $adapterParent = [IO.Path]::GetFullPath($adapterDirectory).TrimEnd('\')
+        if ([string]$file.Extension -cne '.json' -or ($parent -cne $networkParent -and $parent -cne $adapterParent)) {
+            throw "STALE_METADATA_AMBIGUOUS: unexpected metadata file $($file.FullName)"
+        }
+        $record = Get-Content -Raw -LiteralPath $file.FullName -ErrorAction Stop | ConvertFrom-Json
+        if ([string]$record.physical_host_id -cne $guardPhysicalHostID -or
+            [string]$record.orchestrator_id -cne $guardOrchestratorID) {
+            throw "STALE_METADATA_OWNERSHIP_MISMATCH: $($file.FullName)"
+        }
+        if ($parent -ceq $networkParent) {
+            $networkID = [string]$record.network_id
+            if ($networkID -cnotmatch $uuidPattern -or
+                [string]$record.switch_guid -cnotmatch $uuidPattern -or
+                [string]::IsNullOrWhiteSpace([string]$record.switch_name) -or
+                [string]$file.BaseName -cne $networkID -or
+                [string]$record.owner_marker -cne ('lablink-isolated/' + $guardOrchestratorID + '/network/' + $networkID)) {
+                throw "STALE_METADATA_OWNERSHIP_MISMATCH: $($file.FullName)"
+            }
+            if (@(Get-VMSwitch -ErrorAction SilentlyContinue | Where-Object {
+                [string]$_.Id -ceq [string]$record.switch_guid -or [string]$_.Name -ceq [string]$record.switch_name
+            }).Count -ne 0) {
+                throw "STALE_METADATA_RESOURCE_PRESENT: network $networkID still has a switch"
+            }
+        } else {
+            $resourceID = [string]$record.resource_id
+            $resourceType = [string]$record.resource_type
+            if ($resourceID -cnotmatch $uuidPattern -or
+                [string]$record.network_id -cnotmatch $uuidPattern -or
+                [string]$record.vm_guid -cnotmatch $uuidPattern -or
+                [string]$record.adapter_id -notmatch $adapterIDPattern -or
+                [string]$record.switch_guid -cnotmatch $uuidPattern -or
+                [string]::IsNullOrWhiteSpace([string]$record.adapter_name) -or
+                [string]$record.mac -notmatch '^[0-9A-Fa-f]{12}$' -or
+                [string]$file.BaseName -cne $resourceID -or
+                ($resourceType -cne 'network' -and $resourceType -cne 'vm') -or
+                [string]$record.owner_marker -cne ('lablink-isolated/' + $guardOrchestratorID + '/' + $resourceType + '/' + $resourceID)) {
+                throw "STALE_METADATA_OWNERSHIP_MISMATCH: $($file.FullName)"
+            }
+            if (@(Get-VM -Id ([string]$record.vm_guid) -ErrorAction SilentlyContinue).Count -ne 0) {
+                throw "STALE_METADATA_RESOURCE_PRESENT: adapter owner VM $([string]$record.vm_guid) still exists"
+            }
+            if (@(Get-VMSwitch -ErrorAction SilentlyContinue | Where-Object {
+                [string]$_.Id -ceq [string]$record.switch_guid
+            }).Count -ne 0) {
+                throw "STALE_METADATA_RESOURCE_PRESENT: adapter switch $([string]$record.switch_guid) still exists"
+            }
+        }
+        $validatedFiles += $file.FullName
+    }
+    foreach ($path in $validatedFiles) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    }
+    $directories = @(Get-ChildItem -LiteralPath $root -Directory -Recurse -Force -ErrorAction Stop |
+        Sort-Object { $_.FullName.Length } -Descending)
+    foreach ($directory in $directories) {
+        if (@(Get-ChildItem -LiteralPath $directory.FullName -Force -ErrorAction Stop).Count -eq 0) {
+            Remove-Item -LiteralPath $directory.FullName -Force -ErrorAction Stop
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop).Count -ne 0) {
+        throw 'STALE_METADATA_AMBIGUOUS: exact metadata root contains unexpected entries'
+    }
+    Remove-Item -LiteralPath $root -Force -ErrorAction Stop
+    [pscustomobject]@{
+        action='stale_metadata_cleaned'; orchestrator_id=$guardOrchestratorID
+        files_removed=$validatedFiles.Count; root_removed=$true; metadata_existed=$true
+    } | ConvertTo-Json -Compress
+} finally {
+    $__isolatedGate.Dispose()
+}
+`, PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))), PSLit(p.HyperVName))
+	return wrapTagged(body), nil
+}
+
+func BuildReconcileIsolatedAdapterMetadataScript(
+	p ReconcileIsolatedAdapterMetadataParams,
+) (string, error) {
+	if err := validateReconcileAdapterMetadataParams(p); err != nil {
+		return "", err
+	}
+	guard, err := isolatedMutationGuardPowerShell(p.Guard)
+	if err != nil {
+		return "", err
+	}
+	owner, err := IsolatedOwnerMarker(p.Guard.OrchestratorID, p.ResourceType, p.ResourceID)
+	if err != nil {
+		return "", err
+	}
+	metadata := IsolatedAdapterMetadata{
+		SchemaVersion: IsolatedMetadataSchema, PhysicalHostID: p.Guard.PhysicalHostID,
+		OrchestratorID: p.Guard.OrchestratorID, NetworkID: p.NetworkID,
+		ResourceID: p.ResourceID, ResourceType: p.ResourceType, OwnerMarker: owner,
+		HostFence: p.Guard.Fence, MutationID: p.Guard.MutationID,
+		Generation: p.ExpectedGeneration, State: "attached",
+		VMGUID:      strings.ToLower(strings.Trim(p.VMGUID, "{}")),
+		AdapterName: p.AdapterName, AdapterID: strings.TrimSpace(p.ExpectedAdapterID),
+		MAC:        normalizeMAC(p.ExpectedMAC),
+		SwitchGUID: strings.ToLower(strings.Trim(p.ExpectedSwitchGUID, "{}")),
+	}
+	metadataJSON, err := MarshalIsolatedAdapterMetadata(metadata)
+	if err != nil {
+		return "", err
+	}
+	body := PreflightScript() + isolatedHostMetadataPowerShell() + isolatedParentGuardPowerShell() + guard + fmt.Sprintf(`
+try {
+    $expected = %s | ConvertFrom-Json
+    $orchestratorVMGUID = %s
+    $switchName = %s
+    $parentVM = Get-VM -Id $orchestratorVMGUID -ErrorAction Stop
+    $parentMetadata = Get-LabLinkIsolatedVMNotes $parentVM %s
+    $cascadeItem = Assert-LabLinkParentAllowsMutation $parentMetadata
+    if ([string]$parentVM.Id -cne [string]$expected.vm_guid) {
+        throw 'VM_IDENTITY_MISMATCH: adapter target is not the exact orchestrator VM'
+    }
+
+    $networkPath = Get-LabLinkNetworkMetadataPath $guardOrchestratorID ([string]$expected.network_id)
+    $networkRecord = Read-LabLinkOwnedMetadata $networkPath
+    if (-not $networkRecord -or
+        [string]$networkRecord.physical_host_id -cne $guardPhysicalHostID -or
+        [string]$networkRecord.orchestrator_id -cne $guardOrchestratorID -or
+        [string]$networkRecord.network_id -cne [string]$expected.network_id -or
+        [string]$networkRecord.owner_marker -cne [string]$expected.owner_marker -or
+        [string]$networkRecord.switch_name -cne $switchName -or
+        [string]$networkRecord.switch_guid -cne [string]$expected.switch_guid -or
+        [string]$networkRecord.orchestrator_vm_guid -cne $orchestratorVMGUID -or
+        [int64]$networkRecord.generation -ne [int64]$expected.generation) {
+        throw 'ADAPTER_ADOPTION_REJECTED: exact network ownership record does not match'
+    }
+
+    $switch = @(Get-VMSwitch -ErrorAction SilentlyContinue | Where-Object {
+        [string]$_.Id -ceq [string]$expected.switch_guid
+    })
+    if ($switch.Count -ne 1 -or [string]$switch[0].Name -cne $switchName -or
+        [string]$switch[0].SwitchType -cne 'Private') {
+        throw 'ADAPTER_ADOPTION_REJECTED: exact private switch identity is missing or ambiguous'
+    }
+
+    $byID = @(Get-VMNetworkAdapter -VM $parentVM -ErrorAction SilentlyContinue | Where-Object {
+        [string]$_.Id -ceq [string]$expected.adapter_id
+    })
+    $byName = @(Get-VMNetworkAdapter -VM $parentVM -ErrorAction SilentlyContinue | Where-Object {
+        [string]$_.Name -ceq [string]$expected.adapter_name
+    })
+    $byMAC = @(Get-VMNetworkAdapter -VM $parentVM -ErrorAction SilentlyContinue | Where-Object {
+        ([string]$_.MacAddress).Replace('-','').ToUpperInvariant() -ceq ([string]$expected.mac).ToUpperInvariant()
+    })
+    if ($byID.Count -ne 1 -or $byName.Count -ne 1 -or $byMAC.Count -ne 1 -or
+        [string]$byName[0].Id -cne [string]$expected.adapter_id -or
+        [string]$byMAC[0].Id -cne [string]$expected.adapter_id) {
+        throw 'ADAPTER_ADOPTION_REJECTED: exact adapter ID/name/MAC is missing or ambiguous'
+    }
+    $adapter = $byID[0]
+    if ([string]$adapter.Name -cne [string]$expected.adapter_name -or
+        [string]$adapter.SwitchId -cne [string]$expected.switch_guid -or
+        ([string]$adapter.MacAddress).Replace('-','').ToUpperInvariant() -cne ([string]$expected.mac).ToUpperInvariant() -or
+        [bool]$adapter.DynamicMacAddressEnabled) {
+        throw 'ADAPTER_ADOPTION_REJECTED: adapter switch, static MAC, or immutable identity differs'
+    }
+
+    $refs = @($parentMetadata.private_adapters | Where-Object {
+        [string]$_.network_id -ceq [string]$expected.network_id
+    })
+    if ($refs.Count -gt 1) {
+        throw 'ADAPTER_ADOPTION_REJECTED: parent metadata has ambiguous network adapter references'
+    }
+    if ($refs.Count -eq 1 -and (
+        [string]$refs[0].adapter_id -cne [string]$expected.adapter_id -or
+        [string]$refs[0].switch_guid -cne [string]$expected.switch_guid -or
+        ([string]$refs[0].mac).ToUpperInvariant() -cne ([string]$expected.mac).ToUpperInvariant()
+    )) {
+        throw 'ADAPTER_ADOPTION_REJECTED: parent metadata has foreign adapter identity'
+    }
+
+    $recordPath = Get-LabLinkAdapterMetadataPath $guardOrchestratorID ([string]$expected.resource_id)
+    $record = Read-LabLinkOwnedMetadata $recordPath
+    $action = 'adopted'
+    if ($record) {
+        Assert-LabLinkAdapterIdentity $record $expected
+        if ([string]$record.adapter_id -cne [string]$expected.adapter_id -or
+            [string]$record.owner_marker -cne [string]$expected.owner_marker) {
+            throw 'ADAPTER_ADOPTION_REJECTED: existing adapter ownership record conflicts'
+        }
+        $action = 'reused'
+    } else {
+        Write-LabLinkOwnedMetadata $recordPath $expected
+    }
+    Set-LabLinkVMAdapterMetadata $parentVM $expected
+    [pscustomobject]@{
+        action=$action; resource_id=[string]$expected.resource_id
+        vm_guid=[string]$parentVM.Id; adapter_name=[string]$adapter.Name
+        adapter_id=[string]$adapter.Id; switch_guid=[string]$adapter.SwitchId
+        mac=([string]$adapter.MacAddress).Replace('-','').ToUpperInvariant()
+        generation=[int64]$expected.generation
+    } | ConvertTo-Json -Compress
+} finally {
+    $__isolatedGate.Dispose()
+}
+`, PSLit(metadataJSON), PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))),
+		PSLit(p.SwitchName), PSLit(IsolatedOrchestratorMetadataPrefix))
 	return wrapTagged(body), nil
 }
 
@@ -484,11 +981,23 @@ try {
     $vm = Get-VM -Id %s -ErrorAction Stop
     $metadata = Get-LabLinkIsolatedVMNotes $vm %s
     if ([string]$metadata.physical_host_id -cne $guardPhysicalHostID -or
-        [string]$metadata.orchestrator_id -cne $guardOrchestratorID -or
-        [int64]$metadata.host_fence -ne $guardFence -or
-        [int64]$metadata.generation -ne [int64]%d) {
-        throw 'PARENT_IDENTITY_MISMATCH: orchestrator identity, fence, or generation changed'
+        [string]$metadata.orchestrator_id -cne $guardOrchestratorID) {
+        throw 'PARENT_IDENTITY_MISMATCH: orchestrator identity changed'
     }
+    $fresh = [int64]$metadata.generation -eq [int64]%d -and
+        [string]$metadata.lifecycle_state -notin @('frozen','deleting','lost','deleted')
+    $replay = [int64]$metadata.generation -eq [int64]%d -and
+        [string]$metadata.lifecycle_state -eq %s -and
+        $metadata.cascade_authority -and
+        [string]$metadata.cascade_authority.plan_revision -ceq %s -and
+        [string]$metadata.cascade_authority.plan_hash -ceq %s
+    if (-not $fresh -and -not $replay) {
+        throw 'PARENT_IDENTITY_MISMATCH: orchestrator lifecycle or generation changed'
+    }
+    if ([int64]$metadata.host_fence -gt $guardFence) {
+        throw 'FENCE_REJECTED: parent metadata has a newer fence'
+    }
+    $metadata.host_fence = $guardFence
     $metadata.lifecycle_state = %s
     $metadata.generation = [int64]%d
     $metadata.cascade_authority = %s | ConvertFrom-Json
@@ -502,8 +1011,10 @@ try {
     $__isolatedGate.Dispose()
 }
 `, PSLit(strings.ToLower(strings.Trim(p.OrchestratorVMGUID, "{}"))),
-		PSLit(IsolatedOrchestratorMetadataPrefix), p.ExpectedGeneration, PSLit(p.NewState),
-		p.NewGeneration, PSLit(string(cascadeJSON)), PSLit(IsolatedOrchestratorMetadataPrefix))
+		PSLit(IsolatedOrchestratorMetadataPrefix), p.ExpectedGeneration,
+		p.NewGeneration, PSLit(p.NewState), PSLit(p.CascadeAuthority.PlanRevision),
+		PSLit(p.CascadeAuthority.PlanHash), PSLit(p.NewState), p.NewGeneration,
+		PSLit(string(cascadeJSON)), PSLit(IsolatedOrchestratorMetadataPrefix))
 	return wrapTagged(body), nil
 }
 
@@ -585,6 +1096,14 @@ func ParseIsolatedAdapterMutationResult(text string) (IsolatedAdapterMutationRes
 	return result, nil
 }
 
+func ParseIsolatedMetadataCleanupResult(text string) (IsolatedMetadataCleanupResult, error) {
+	var result IsolatedMetadataCleanupResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(extractJSON(text))), &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func validateAttachNICParams(p AttachIsolatedNICParams) error {
 	if err := validateMutationGuard(p.Guard); err != nil {
 		return err
@@ -608,7 +1127,7 @@ func validateAttachNICParams(p AttachIsolatedNICParams) error {
 		}
 	}
 	if p.ExpectedAdapterID != "" {
-		if err := validateGUID("adapter", p.ExpectedAdapterID); err != nil {
+		if err := validateAdapterID(p.ExpectedAdapterID); err != nil {
 			return err
 		}
 	}
@@ -633,15 +1152,57 @@ func validateRemoveNICParams(p RemoveIsolatedNICParams) error {
 	}
 	for kind, value := range map[string]string{
 		"orchestrator VM": p.OrchestratorVMGUID, "VM": p.VMGUID,
-		"adapter": p.ExpectedAdapterID, "switch": p.ExpectedSwitchGUID,
+		"switch": p.ExpectedSwitchGUID,
 	} {
 		if err := validateGUID(kind, value); err != nil {
 			return err
 		}
 	}
+	if err := validateAdapterID(p.ExpectedAdapterID); err != nil {
+		return err
+	}
 	if p.ExpectedGeneration <= 0 || strings.TrimSpace(p.AdapterName) == "" ||
 		!macRE.MatchString(normalizeMAC(p.ExpectedMAC)) {
 		return fmt.Errorf("incomplete isolated NIC removal parameters")
+	}
+	return nil
+}
+
+func validateReconcileAdapterMetadataParams(
+	p ReconcileIsolatedAdapterMetadataParams,
+) error {
+	if err := validateMutationGuard(p.Guard); err != nil {
+		return err
+	}
+	if p.Guard.ResourceType != p.ResourceType ||
+		p.Guard.ResourceID != p.ResourceID ||
+		p.Guard.Action != "reconcile_adapter_metadata" {
+		return fmt.Errorf("mutation guard does not authorize adapter metadata reconciliation")
+	}
+	for kind, value := range map[string]string{
+		"network": p.NetworkID, "resource": p.ResourceID,
+	} {
+		if err := validateIsolatedID(kind, value); err != nil {
+			return err
+		}
+	}
+	for kind, value := range map[string]string{
+		"orchestrator VM": p.OrchestratorVMGUID,
+		"VM":              p.VMGUID,
+		"switch":          p.ExpectedSwitchGUID,
+	} {
+		if err := validateGUID(kind, value); err != nil {
+			return err
+		}
+	}
+	if err := validateAdapterID(p.ExpectedAdapterID); err != nil {
+		return err
+	}
+	if p.ExpectedGeneration <= 0 ||
+		strings.TrimSpace(p.AdapterName) == "" ||
+		strings.TrimSpace(p.SwitchName) == "" ||
+		!macRE.MatchString(normalizeMAC(p.ExpectedMAC)) {
+		return fmt.Errorf("incomplete adapter metadata reconciliation parameters")
 	}
 	return nil
 }
@@ -710,22 +1271,42 @@ function Get-LabLinkIsolatedVMNotes($VM,[string]$RequiredPrefix) {
 function Assert-LabLinkNetworkRecord($Record,$Expected) {
     foreach ($property in @(
         'schema_version','physical_host_id','orchestrator_id','network_id','owner_marker',
-        'host_fence','mutation_id','generation','switch_name','orchestrator_vm_guid'
+        'mutation_id','generation','switch_name','orchestrator_vm_guid'
     )) {
         if ([string]$Record.$property -cne [string]$Expected.$property) {
             throw "SWITCH_OWNERSHIP_MISMATCH: network metadata property '$property' changed"
         }
     }
+    if ([int64]$Record.host_fence -gt [int64]$Expected.host_fence) {
+        throw "FENCE_REJECTED: network metadata fence is newer than the current fence"
+    }
 }
 function Assert-LabLinkAdapterRecord($Record,$Expected) {
     foreach ($property in @(
         'schema_version','physical_host_id','orchestrator_id','network_id','resource_id',
-        'resource_type','owner_marker','host_fence','mutation_id','generation','vm_guid',
+        'resource_type','owner_marker','mutation_id','generation','vm_guid',
         'adapter_name','mac','switch_guid'
     )) {
         if ([string]$Record.$property -cne [string]$Expected.$property) {
             throw "ADAPTER_OWNERSHIP_MISMATCH: adapter metadata property '$property' changed"
         }
+    }
+    if ([int64]$Record.host_fence -gt [int64]$Expected.host_fence) {
+        throw "FENCE_REJECTED: adapter metadata fence is newer than the current fence"
+    }
+}
+function Assert-LabLinkAdapterIdentity($Record,$Expected) {
+    foreach ($property in @(
+        'schema_version','physical_host_id','orchestrator_id','network_id','resource_id',
+        'resource_type','owner_marker','generation','vm_guid',
+        'adapter_name','mac','switch_guid'
+    )) {
+        if ([string]$Record.$property -cne [string]$Expected.$property) {
+            throw "ADAPTER_OWNERSHIP_MISMATCH: adapter metadata property '$property' changed"
+        }
+    }
+    if ([int64]$Record.host_fence -gt [int64]$Expected.host_fence) {
+        throw "FENCE_REJECTED: adapter metadata fence is newer than the current fence"
     }
 }
 function Set-LabLinkVMAdapterMetadata($VM,$AdapterRecord) {
@@ -745,9 +1326,9 @@ function Set-LabLinkVMAdapterMetadata($VM,$AdapterRecord) {
             [string]$metadata.network_id -cne [string]$AdapterRecord.network_id) {
             throw 'VM_IDENTITY_MISMATCH: guest metadata does not match adapter resource'
         }
-        $metadata.adapter_id = [string]$AdapterRecord.adapter_id
-        $metadata.switch_guid = [string]$AdapterRecord.switch_guid
-        $metadata.mac = [string]$AdapterRecord.mac
+        $metadata | Add-Member -NotePropertyName adapter_id -NotePropertyValue ([string]$AdapterRecord.adapter_id) -Force
+        $metadata | Add-Member -NotePropertyName switch_guid -NotePropertyValue ([string]$AdapterRecord.switch_guid) -Force
+        $metadata | Add-Member -NotePropertyName mac -NotePropertyValue ([string]$AdapterRecord.mac) -Force
         $metadata | Add-Member -NotePropertyName private_adapter_state -NotePropertyValue 'attached' -Force
     } else {
         $refs = @($metadata.private_adapters | Where-Object { [string]$_.network_id -cne [string]$AdapterRecord.network_id })
