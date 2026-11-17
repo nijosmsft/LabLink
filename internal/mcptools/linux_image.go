@@ -715,7 +715,9 @@ func resolveLinuxImagePlan(req mcp.CallToolRequest, reg *registry.Registry, defa
 	if builder.LabLinkPort <= 0 {
 		builder.LabLinkPort = 9091
 	}
-	derivePlanPaths(&builder)
+	if err := derivePlanPaths(&builder); err != nil {
+		return linuxImagePlan{}, Target{}, err
+	}
 	metadata, err := hyperv.LinuxImageBuilderManagedMetadata(hyperv.LinuxImageBuilderMetadata{
 		SchemaVersion: 1, Target: target.Name, Profile: resolvedBuilderName,
 		ProfileFingerprint: builderProfileFingerprint(builderProfile),

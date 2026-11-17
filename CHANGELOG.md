@@ -19,6 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   parsing, including on the supported Go 1.25 toolchain.
 - Cross-platform release checks preserve signed manifest fixture bytes on
   Windows checkout and use consistently formatted Go sources.
+- Windows VM and image-builder paths use Windows path semantics even when the
+  LabLink server runs on Linux.
 
 ## [0.9.0] - 2026-11-13
 

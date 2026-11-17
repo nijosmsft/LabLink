@@ -73,7 +73,7 @@ func TestContentAddressedCachePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if paths.CacheKey == "" || !strings.Contains(paths.ImagePath, filepath.Join("sha256", digest)) {
+	if paths.CacheKey == "" || !strings.Contains(paths.ImagePath, `\blobs\sha256\`+digest+`\`) {
 		t.Fatalf("paths are not content-addressed: %+v", paths)
 	}
 	if !strings.HasSuffix(paths.PreparedVHDXPath, SourceID+".vhdx") ||
@@ -81,7 +81,7 @@ func TestContentAddressedCachePaths(t *testing.T) {
 		!strings.HasSuffix(paths.StatePath, "state.json") {
 		t.Fatalf("unexpected paths: %+v", paths)
 	}
-	if !strings.Contains(paths.StatePath, filepath.Join("variants", "disk-64")) {
+	if !strings.Contains(paths.StatePath, `\variants\disk-64\`) {
 		t.Fatalf("state path is not disk-size-specific: %s", paths.StatePath)
 	}
 	other, _ := CacheKey(strings.Repeat("2", 64), 64)

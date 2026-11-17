@@ -216,25 +216,10 @@ func TestNATPolicyGatesNewAndEstablishedFlowsByExactVMState(t *testing.T) {
 	draining.NAT = []NATState{{
 		VMID: "guest-1", State: "draining", ConntrackMark: 101,
 	}}
-	ruleset, forwarding, err = compileFullRuleset(
+	_, _, err = compileFullRuleset(
 		draining, "eth0", "snapshot-hash", "compiled-hash")
-	if err != nil {
-		t.Fatalf("compile draining NAT: %v", err)
-	}
-	if !forwarding {
-		t.Fatal("draining NAT disabled forwarding before existing flows expired")
-	}
-	if strings.Contains(ruleset, "ct state new ct mark set") {
-		t.Fatalf("draining NAT still accepts new flows:\n%s", ruleset)
-	}
-	for _, want := range []string{
-		`ct state established,related ct direction original`,
-		`ct state established,related ct direction reply`,
-		`masquerade`,
-	} {
-		if !strings.Contains(ruleset, want) {
-			t.Fatalf("draining NAT lacks existing-flow rule %q:\n%s", want, ruleset)
-		}
+	if err == nil || !strings.Contains(err.Error(), `invalid state "draining"`) {
+		t.Fatalf("obsolete draining NAT state must be rejected: %v", err)
 	}
 
 	disabled := base

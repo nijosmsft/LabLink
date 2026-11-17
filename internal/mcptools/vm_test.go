@@ -293,6 +293,22 @@ func TestVMResultHasFencedJSON(t *testing.T) {
 	}
 }
 
+func TestDerivePlanPathsUsesWindowsPathsOnEveryHost(t *testing.T) {
+	for _, root := range []string{`E:\VM`, `\\host\share\VM`} {
+		plan := windowsVMPlan{Name: "guest", VMRoot: root}
+		if err := derivePlanPaths(&plan); err != nil {
+			t.Fatal(err)
+		}
+		if plan.VMLocation != root+`\guest` || plan.VHDPath != root+`\guest\guest.vhdx` {
+			t.Fatalf("unexpected Windows paths: %+v", plan)
+		}
+	}
+	invalid := windowsVMPlan{Name: "guest", VMRoot: "relative"}
+	if err := derivePlanPaths(&invalid); err == nil {
+		t.Fatal("relative VM root accepted")
+	}
+}
+
 func TestCreateWindowsVMProfileAndExplicitOverrideDryRun(t *testing.T) {
 	root := t.TempDir()
 	defaultsPath := filepath.Join(root, "vm-defaults.json")

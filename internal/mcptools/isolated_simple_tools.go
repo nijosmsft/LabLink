@@ -1222,7 +1222,9 @@ func createSimpleIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 				if err != nil {
 					return isolatedError(err)
 				}
-				derivePlanPaths(&plan)
+				if err := derivePlanPaths(&plan); err != nil {
+					return isolatedError(err)
+				}
 				result, err := executeWindowsVMPlan(
 					ctx, plan, deps.registry, deps.pool, deps.credentials,
 					deps.secrets, deps.audit, deps.enrollment)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
+	"github.com/nijosmsft/lablink/internal/winpath"
 )
 
 type windowsVMPlan struct {
@@ -161,7 +161,9 @@ func resolveWindowsVMPlan(
 		applyStringContent(&plan, content)
 	}
 
-	derivePlanPaths(&plan)
+	if err := derivePlanPaths(&plan); err != nil {
+		return windowsVMPlan{}, err
+	}
 	if strings.TrimSpace(plan.VSwitch) == "" {
 		target, err := resolvePlanTarget(plan.Target, reg)
 		if err != nil {
@@ -358,7 +360,7 @@ func missingPlanFields(plan windowsVMPlan, final bool) []string {
 	return missing
 }
 
-func derivePlanPaths(plan *windowsVMPlan) {
+func derivePlanPaths(plan *windowsVMPlan) error {
 	if plan.Hostname == "" {
 		plan.Hostname = windowsHostname(plan.Name)
 	}
@@ -381,14 +383,22 @@ func derivePlanPaths(plan *windowsVMPlan) {
 		root = plan.VMLocation
 	}
 	if root == "" || plan.Name == "" {
-		return
+		return nil
 	}
+	var err error
 	if plan.VMLocation == "" {
-		plan.VMLocation = filepath.Join(root, plan.Name)
+		plan.VMLocation, err = winpath.Join(root, plan.Name)
+		if err != nil {
+			return fmt.Errorf("derive VM location: %w", err)
+		}
 	}
 	if plan.VHDPath == "" {
-		plan.VHDPath = filepath.Join(plan.VMLocation, plan.Name+".vhdx")
+		plan.VHDPath, err = winpath.Join(plan.VMLocation, plan.Name+".vhdx")
+		if err != nil {
+			return fmt.Errorf("derive VM disk path: %w", err)
+		}
 	}
+	return nil
 }
 
 func windowsHostname(name string) string {
