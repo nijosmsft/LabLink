@@ -24,7 +24,7 @@ func RegisterSimpleIsolatedLifecycleTools(s *server.MCPServer, deps *isolatedLif
 		mcp.WithString("target", mcp.Description("localhost or a registered Windows Hyper-V host")),
 		mcp.WithString("orchestrator_id", mcp.Description("Optional exact orchestrator UUID")),
 		mcp.WithString("display_name", mcp.Description("Mutable display label")),
-		mcp.WithString("profile", mcp.Description("Isolated orchestrator profile")),
+		mcp.WithString("profile", mcp.Description("Ordinary Ubuntu Linux VM profile, or an optional isolated orchestrator override; defaults to the configured orchestrator or Linux profile")),
 		mcp.WithString("main_vswitch", mcp.Description("Existing main vSwitch override")),
 		mcp.WithBoolean("dry_run"),
 	), createSimpleIsolatedOrchestratorHandler(deps))
@@ -646,11 +646,15 @@ $adapter = @(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop | Select-Object -Fir
 
 func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		target, err := resolveTarget(req, deps.registry)
+		profile, profileName, err := resolveOrchestratorProfile(req, deps.defaults)
 		if err != nil {
 			return isolatedError(err)
 		}
-		profile, profileName, err := resolveOrchestratorProfile(req, deps.defaults)
+		targetName := strings.TrimSpace(req.GetString("target", ""))
+		if targetName == "" {
+			targetName = profile.LinuxVM.Target
+		}
+		target, err := resolvePlanTarget(targetName, deps.registry)
 		if err != nil {
 			return isolatedError(err)
 		}

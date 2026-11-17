@@ -2,7 +2,9 @@ package mcptools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,7 +14,61 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
+	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
+
+func TestOrchestratorDryRunInheritsOrdinaryLinuxProfileTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_linux_profile":"ubuntu",
+  "linux_target_defaults":{"node2":"ubuntu2"},
+  "profiles":{
+    "ubuntu":{"guest_os":"linux","target":"node1","distribution":"ubuntu","release":"24.04","architecture":"amd64","vswitch":"main"},
+    "ubuntu2":{"guest_os":"linux","target":"node2","distribution":"ubuntu","release":"24.04","architecture":"amd64","vswitch":"main2"}
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	deps := &isolatedLifecycleDeps{
+		defaults: vmconfig.Load(path),
+		registry: newRebootTestRegistry(t, map[string]string{
+			"node1": "127.0.0.1:1", "node2": "127.0.0.1:2",
+		}),
+	}
+	for _, tt := range []struct {
+		name, profile, target, mainSwitch, wantTarget, wantProfile, wantSwitch string
+	}{
+		{"inherited-target", "ubuntu", "", "", "node1", "ubuntu", "main"},
+		{"global-default", "", "", "", "node1", "ubuntu", "main"},
+		{"explicit-target", "ubuntu", "node2", "", "node2", "ubuntu", "main"},
+		{"target-default", "", "node2", "", "node2", "ubuntu2", "main2"},
+		{"switch-override", "ubuntu", "", "override", "node1", "ubuntu", "override"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := reqNoToken(map[string]any{
+				"profile": tt.profile, "target": tt.target,
+				"main_vswitch": tt.mainSwitch, "dry_run": true,
+			})
+			result, err := createSimpleIsolatedOrchestratorHandler(deps)(context.Background(), req)
+			if err != nil || result == nil || result.IsError {
+				t.Fatalf("dry run failed: %+v, %v", result, err)
+			}
+			var plan struct {
+				Target       string `json:"target"`
+				Profile      string `json:"profile"`
+				LinuxProfile string `json:"linux_profile"`
+				MainVSwitch  string `json:"main_vswitch"`
+			}
+			if err := json.Unmarshal([]byte(jsonExtract(result.Content[0].(mcp.TextContent).Text)), &plan); err != nil {
+				t.Fatal(err)
+			}
+			if plan.Target != tt.wantTarget || plan.Profile != tt.wantProfile ||
+				plan.LinuxProfile != tt.wantProfile || plan.MainVSwitch != tt.wantSwitch {
+				t.Fatalf("unexpected dry run: %+v", plan)
+			}
+		})
+	}
+}
 
 func TestSimpleIsolatedToolSurfaceMatchesNormalLifecycle(t *testing.T) {
 	s := server.NewMCPServer("test", "1.0")

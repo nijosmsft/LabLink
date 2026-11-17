@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-17
+
+### Fixed
+
+- `create_isolated_orchestrator` accepts ordinary Ubuntu Linux VM profiles and
+  uses normal Linux target/global defaults when no orchestrator default is
+  configured. It inherits the VM profile's target and sizing without requiring
+  a separate named orchestrator profile. Existing appliance-policy overrides
+  remain supported.
+
 ## [0.9.0] - 2026-11-13
 
 ### Added

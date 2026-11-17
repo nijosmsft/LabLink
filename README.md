@@ -482,6 +482,16 @@ directory. Isolation adds only private vSwitches, static `/26` addressing,
 relay-first mTLS enrollment, optional NAT, and a single persisted static
 appliance configuration on the Ubuntu orchestrator.
 
+`create_isolated_orchestrator` accepts the same ordinary Ubuntu 24.04 amd64
+profile as `create_linux_vm`, for example `profile:"ubuntu-lab"`. It inherits
+the profile's target, image, storage, credentials, main vSwitch, CPU count,
+and memory size, while using static memory and enabling appliance enrollment.
+No separate orchestrator profile or image is required. If `profile` is omitted,
+an explicitly configured `default_isolated_orchestrator_profile` still takes
+precedence; otherwise the normal `linux_target_defaults` and
+`default_linux_profile` select the Linux profile. Existing
+`isolated_orchestrator_profiles` remain optional appliance-policy overrides.
+
 | Tools | Purpose |
 |-------|---------|
 | `create/list/get/delete_isolated_orchestrator` | Create, inspect, or delete Ubuntu orchestrator appliances (`cascade=true` deletes child VMs and networks first). |

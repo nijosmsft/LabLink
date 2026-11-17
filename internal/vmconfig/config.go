@@ -265,7 +265,9 @@ func (s *Store) load() (Config, error) {
 		}
 	}
 	if selected := strings.TrimSpace(config.DefaultIsolatedOrchestratorProfile); selected != "" {
-		if _, ok := config.IsolatedOrchestratorProfiles[selected]; !ok {
+		_, override := config.IsolatedOrchestratorProfiles[selected]
+		_, ordinary := config.Profiles[selected]
+		if !override && !ordinary {
 			return config, fmt.Errorf("default_isolated_orchestrator_profile %q not found", selected)
 		}
 	}
@@ -383,9 +385,13 @@ func (s *Store) ResolveLinuxForTarget(name, target string) (Profile, string, err
 	return s.resolveForTarget(name, target, true, true)
 }
 
-// ResolveIsolatedOrchestrator selects an explicit profile or the configured
-// isolated-orchestrator default without changing ordinary Linux resolution.
+// ResolveIsolatedOrchestrator selects an ordinary Linux profile or an optional
+// isolated-orchestrator override.
 func (s *Store) ResolveIsolatedOrchestrator(name string) (ResolvedIsolatedOrchestratorProfile, string, error) {
+	return s.ResolveIsolatedOrchestratorForTarget(name, "")
+}
+
+func (s *Store) ResolveIsolatedOrchestratorForTarget(name, target string) (ResolvedIsolatedOrchestratorProfile, string, error) {
 	if s == nil {
 		return ResolvedIsolatedOrchestratorProfile{}, "", nil
 	}
@@ -399,12 +405,24 @@ func (s *Store) ResolveIsolatedOrchestrator(name string) (ResolvedIsolatedOrches
 	if selected == "" {
 		selected = strings.TrimSpace(config.DefaultIsolatedOrchestratorProfile)
 	}
-	if selected == "" {
-		return ResolvedIsolatedOrchestratorProfile{}, "", nil
+	if _, ok := config.IsolatedOrchestratorProfiles[selected]; ok {
+		resolved, err := config.resolveIsolatedOrchestratorProfile(selected)
+		if err != nil {
+			return ResolvedIsolatedOrchestratorProfile{}, "", fmt.Errorf("isolated orchestrator profile %q: %w", selected, err)
+		}
+		return resolved, selected, nil
 	}
-	resolved, err := config.resolveIsolatedOrchestratorProfile(selected)
+	linux, selected, err := config.resolveForTarget(selected, target, true, true, s.path)
+	if err != nil || selected == "" {
+		return ResolvedIsolatedOrchestratorProfile{}, "", err
+	}
+	resolved, err := config.resolveOrchestratorPolicy(IsolatedOrchestratorProfile{
+		LinuxProfile: selected,
+		CPUCount:     linux.CPUCount,
+		MemoryMB:     linux.MemoryMB,
+	})
 	if err != nil {
-		return ResolvedIsolatedOrchestratorProfile{}, "", fmt.Errorf("isolated orchestrator profile %q: %w", selected, err)
+		return ResolvedIsolatedOrchestratorProfile{}, "", fmt.Errorf("orchestrator Linux profile %q: %w", selected, err)
 	}
 	return resolved, selected, nil
 }
@@ -414,6 +432,10 @@ func (c Config) resolveIsolatedOrchestratorProfile(name string) (ResolvedIsolate
 	if !ok {
 		return ResolvedIsolatedOrchestratorProfile{}, fmt.Errorf("not found")
 	}
+	return c.resolveOrchestratorPolicy(profile)
+}
+
+func (c Config) resolveOrchestratorPolicy(profile IsolatedOrchestratorProfile) (ResolvedIsolatedOrchestratorProfile, error) {
 	profile = profile.withDefaults()
 	linuxName := strings.TrimSpace(profile.LinuxProfile)
 	if linuxName == "" {
@@ -589,6 +611,10 @@ func (s *Store) resolveForTarget(name, target string, linux, validateOS bool) (P
 	if err != nil {
 		return Profile{}, "", err
 	}
+	return config.resolveForTarget(name, target, linux, validateOS, s.path)
+}
+
+func (config Config) resolveForTarget(name, target string, linux, validateOS bool, path string) (Profile, string, error) {
 	selected := strings.TrimSpace(name)
 	if selected == "" && strings.TrimSpace(target) != "" {
 		defaults := config.TargetDefaults
@@ -614,7 +640,7 @@ func (s *Store) resolveForTarget(name, target string, linux, validateOS bool) (P
 	}
 	profile, ok := config.Profiles[selected]
 	if !ok {
-		return Profile{}, "", fmt.Errorf("VM defaults profile %q not found in %s", selected, s.path)
+		return Profile{}, "", fmt.Errorf("VM defaults profile %q not found in %s", selected, path)
 	}
 	if _, err := profile.EffectiveProfileUsage(); err != nil {
 		return Profile{}, "", fmt.Errorf("VM defaults profile %q: %w", selected, err)

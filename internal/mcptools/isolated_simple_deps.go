@@ -209,14 +209,14 @@ func resolveOrchestratorProfile(
 	req mcp.CallToolRequest,
 	defaults *vmconfig.Store,
 ) (vmconfig.ResolvedIsolatedOrchestratorProfile, string, error) {
-	resolved, profileName, err := defaults.ResolveIsolatedOrchestrator(
-		req.GetString("profile", ""))
+	resolved, profileName, err := defaults.ResolveIsolatedOrchestratorForTarget(
+		req.GetString("profile", ""), req.GetString("target", ""))
 	if err != nil {
 		return resolved, "", err
 	}
 	if profileName == "" {
 		return resolved, "", errors.New(
-			"isolated orchestrator profile is required; configure default_isolated_orchestrator_profile or pass profile")
+			"Linux VM profile is required; configure default_linux_profile/linux_target_defaults or pass profile")
 	}
 	mainSwitch := strings.TrimSpace(req.GetString("main_vswitch", ""))
 	if mainSwitch != "" {

@@ -331,6 +331,85 @@ func TestDomainJoinVerificationRequiresReboot(t *testing.T) {
 	}
 }
 
+func TestResolveIsolatedOrchestratorUsesOrdinaryLinuxProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vm-defaults.json")
+	if err := os.WriteFile(path, []byte(`{
+  "default_linux_profile":"ubuntu",
+  "linux_target_defaults":{"node2":"ubuntu2"},
+  "profiles":{
+    "ubuntu":{"guest_os":"linux","target":"node1","distribution":"ubuntu","release":"24.04","architecture":"amd64","vswitch":"main","cpu_count":3,"memory_mb":6144,"dynamic_memory":true},
+    "ubuntu2":{"guest_os":"linux","target":"node2","distribution":"ubuntu","release":"24.04","architecture":"amd64","vswitch":"main2","cpu_count":2,"memory_mb":4096}
+  }
+}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store := Load(path)
+	for _, tt := range []struct {
+		name, profile, target, wantProfile, wantSwitch string
+		cpus, memory                                   float64
+	}{
+		{"explicit", "ubuntu", "", "ubuntu", "main", 3, 6144},
+		{"global-default", "", "", "ubuntu", "main", 3, 6144},
+		{"target-default", "", "NODE2", "ubuntu2", "main2", 2, 4096},
+		{"explicit-over-target", "ubuntu", "node2", "ubuntu", "main", 3, 6144},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, selected, err := store.ResolveIsolatedOrchestratorForTarget(tt.profile, tt.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selected != tt.wantProfile || got.LinuxProfileName != tt.wantProfile ||
+				got.LinuxVM.VSwitch != tt.wantSwitch || got.LinuxVM.CPUCount != tt.cpus ||
+				got.LinuxVM.MemoryMB != tt.memory || got.LinuxVM.DynamicMemory {
+				t.Fatalf("unexpected resolved profile: %q %+v", selected, got)
+			}
+			if err := got.SeedConfig("v0.9.1", "orch-1234").Validate(); err != nil {
+				t.Fatalf("invalid appliance defaults: %v", err)
+			}
+		})
+	}
+	original, _, err := store.ResolveLinux("ubuntu")
+	if err != nil || !original.DynamicMemory || original.CPUCount != 3 || original.MemoryMB != 6144 {
+		t.Fatalf("ordinary profile changed: %+v, %v", original, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data), `"default_linux_profile":"ubuntu",`,
+		`"default_linux_profile":"ubuntu","default_isolated_orchestrator_profile":"ubuntu2",`, 1))
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, name, err := store.ResolveIsolatedOrchestrator("")
+	if err != nil || name != "ubuntu2" || got.LinuxProfileName != "ubuntu2" {
+		t.Fatalf("ordinary orchestrator default failed: %+v, %q, %v", got, name, err)
+	}
+}
+
+func TestResolveIsolatedOrchestratorRejectsInvalidOrdinaryProfiles(t *testing.T) {
+	for _, tt := range []struct{ name, profile, want string }{
+		{"windows", `"guest_os":"windows"`, `not "linux"`},
+		{"unsupported-ubuntu", `"guest_os":"linux","distribution":"ubuntu","release":"22.04","architecture":"amd64"`, "Ubuntu 24.04 amd64"},
+		{"unknown-profile", `"guest_os":"linux"`, "not found"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "vm-defaults.json")
+			if err := os.WriteFile(path, []byte(`{"profiles":{"profile":{`+tt.profile+`,"vswitch":"main"}}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			name := "profile"
+			if tt.name == "unknown-profile" {
+				name = "missing"
+			}
+			_, _, err := Load(path).ResolveIsolatedOrchestrator(name)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveDefaultIsolatedOrchestratorProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vm-defaults.json")
 	if err := os.WriteFile(path, []byte(`{
