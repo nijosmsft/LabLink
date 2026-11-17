@@ -42,3 +42,32 @@ func TestStaticNetworkScripts(t *testing.T) {
 		t.Fatalf("Linux network config: %v %s", err, linux)
 	}
 }
+
+func TestLinuxStaticNetworkMACFormats(t *testing.T) {
+	for _, mac := range []string{"02155D000003", "02:15:5d:00:00:03", "02-15-5D-00-00-03"} {
+		t.Run(mac, func(t *testing.T) {
+			config, err := LinuxStaticNetworkConfig(
+				"192.168.240.11", 26, "192.168.240.1", mac, nil)
+			if err != nil || !strings.Contains(config, `"02:15:5d:00:00:03"`) {
+				t.Fatalf("network config: %q, %v", config, err)
+			}
+			bootstrap, err := LinuxStaticNetworkBootstrapScript(
+				"192.168.240.11", 26, "192.168.240.1", mac, nil)
+			if err != nil || !strings.Contains(bootstrap, `expected_mac="02:15:5d:00:00:03"`) {
+				t.Fatalf("network bootstrap: %q, %v", bootstrap, err)
+			}
+		})
+	}
+	for _, mac := range []string{"", "02155Z000003", "02:15:5d:00:00:03:00:04"} {
+		if _, err := LinuxStaticNetworkConfig(
+			"192.168.240.11", 26, "192.168.240.1", mac, nil,
+		); err == nil {
+			t.Errorf("network config accepted invalid MAC %q", mac)
+		}
+		if _, err := LinuxStaticNetworkBootstrapScript(
+			"192.168.240.11", 26, "192.168.240.1", mac, nil,
+		); err == nil {
+			t.Errorf("network bootstrap accepted invalid MAC %q", mac)
+		}
+	}
+}

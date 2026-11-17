@@ -14,7 +14,7 @@ import (
 //  2. Platform default:
 //     - Windows: %ProgramData%\LabLink\agent
 //     - Linux/macOS: /var/lib/lablink-agent  (falls back to ~/.lablink/agent
-//       when the system path is not writable, e.g. unprivileged runs).
+//     when the system path is not writable, e.g. unprivileged runs).
 func agentDataDir() string {
 	if v := os.Getenv("LABLINK_AGENT_DATA"); v != "" {
 		return v

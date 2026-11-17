@@ -139,10 +139,10 @@ func (s *Server) handleJobsList(w http.ResponseWriter, r *http.Request) {
 		Error string `json:"error"`
 	}
 	var (
-		mu     sync.Mutex
-		jobs   []jobJSON
-		errs   []nodeErr
-		wg     sync.WaitGroup
+		mu   sync.Mutex
+		jobs []jobJSON
+		errs []nodeErr
+		wg   sync.WaitGroup
 	)
 	for _, n := range nodes {
 		wg.Add(1)

@@ -1,0 +1,4 @@
+*.go text eol=lf
+
+internal/linuximage/testdata/SHA256SUMS -text
+internal/linuximage/testdata/SHA256SUMS.gpg -text

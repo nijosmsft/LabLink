@@ -11,7 +11,7 @@ import (
 )
 
 func RegisterTopology(s *server.MCPServer, reg *registry.Registry) {
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("register_topology",
 			mcp.WithDescription("Define a named group of nodes with role assignments."),
 			mcp.WithString("name", mcp.Required(), mcp.Description("Topology name")),

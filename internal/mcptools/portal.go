@@ -35,7 +35,7 @@ func currentPortalURL() string {
 // RegisterPortal exposes get_portal_url so the AI client can hand the operator
 // a clickable link to the local operations portal without grepping logs.
 func RegisterPortal(s *server.MCPServer) {
-	addTool(s, 
+	addTool(s,
 		mcp.NewTool("get_portal_url",
 			mcp.WithDescription("Return the local LabLink portal URL; empty if portal is disabled."),
 		),

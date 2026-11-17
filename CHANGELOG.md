@@ -15,6 +15,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   configured. It inherits the VM profile's target and sizing without requiring
   a separate named orchestrator profile. Existing appliance-policy overrides
   remain supported.
+- Isolated Linux networking normalizes compact Hyper-V MAC addresses before
+  parsing, including on the supported Go 1.25 toolchain.
+- Cross-platform release checks preserve signed manifest fixture bytes on
+  Windows checkout and use consistently formatted Go sources.
 
 ## [0.9.0] - 2026-11-13
 

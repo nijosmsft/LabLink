@@ -68,4 +68,3 @@ func toolResultText(result *mcp.CallToolResult) string {
 	}
 	return ""
 }
-

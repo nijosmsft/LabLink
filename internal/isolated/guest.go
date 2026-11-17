@@ -138,6 +138,24 @@ Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @(%s) -Erro
 `, normalizedMAC, ip, prefixLength, gateway, strings.Join(dnsValues, ",")), nil
 }
 
+func parseGuestMAC(value string) (net.HardwareAddr, error) {
+	value = strings.TrimSpace(value)
+	if len(value) == 12 {
+		value = strings.Join([]string{
+			value[0:2], value[2:4], value[4:6],
+			value[6:8], value[8:10], value[10:12],
+		}, ":")
+	}
+	mac, err := net.ParseMAC(strings.ReplaceAll(value, "-", ":"))
+	if err != nil {
+		return nil, err
+	}
+	if len(mac) != 6 {
+		return nil, fmt.Errorf("expected a six-byte MAC address")
+	}
+	return mac, nil
+}
+
 func LinuxStaticNetworkConfig(
 	ip string,
 	prefixLength int,
@@ -148,8 +166,7 @@ func LinuxStaticNetworkConfig(
 		prefixLength != PrivateNetworkPrefixBits {
 		return "", fmt.Errorf("invalid isolated Linux static network")
 	}
-	parsedMAC, err := net.ParseMAC(
-		strings.ToLower(strings.ReplaceAll(mac, "-", ":")))
+	parsedMAC, err := parseGuestMAC(mac)
 	if err != nil {
 		return "", fmt.Errorf("invalid isolated Linux MAC %q", mac)
 	}
@@ -176,8 +193,7 @@ func LinuxStaticNetworkBootstrapScript(
 		prefixLength != PrivateNetworkPrefixBits {
 		return "", fmt.Errorf("invalid isolated Linux static network")
 	}
-	parsedMAC, err := net.ParseMAC(
-		strings.ToLower(strings.ReplaceAll(mac, "-", ":")))
+	parsedMAC, err := parseGuestMAC(mac)
 	if err != nil {
 		return "", fmt.Errorf("invalid isolated Linux MAC %q", mac)
 	}

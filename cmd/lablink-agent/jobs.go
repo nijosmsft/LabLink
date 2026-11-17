@@ -803,5 +803,3 @@ func startDetachedJob(command, shell, workingDir string, env map[string]string) 
 	}
 	return m.Start(command, shell, workingDir, env)
 }
-
-
