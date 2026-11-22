@@ -43,10 +43,18 @@ var (
 	versionFlag       = flag.Bool("version", false, "print version and exit")
 	applianceMode     = flag.Bool("appliance", false, "enable isolated appliance RPC mode (Linux only)")
 	applianceDBPath   = flag.String("appliance-db", "", "path to isolated appliance SQLite state")
+	hyperVOnly        = flag.Bool("hyperv-only", false, "expose only structured local Hyper-V management, never arbitrary execution")
+	hyperVPolicyPath  = flag.String("hyperv-policy", "", "administrator-installed restricted Hyper-V policy file")
 )
 
 func main() {
 	flag.Parse()
+	if *hyperVOnly && (*uninstall || *setToken != "" || *applianceMode) {
+		log.Fatal("use Install-LocalHyperV.ps1 for restricted-service removal; legacy service and appliance modes cannot be combined")
+	}
+	if *hyperVPolicyPath != "" && !*hyperVOnly {
+		log.Fatal("--hyperv-policy requires --hyperv-only")
+	}
 
 	if *versionFlag {
 		fmt.Printf("lablink-agent %s\n", agentVersion)
@@ -68,6 +76,12 @@ func main() {
 		return
 	}
 	if *install {
+		if *hyperVOnly {
+			if err := installHyperVService(); err != nil {
+				log.Fatalf("restricted service installation failed: %v", err)
+			}
+			return
+		}
 		port := 9091
 		// Parse port from listen address if provided.
 		if _, p, err := net.SplitHostPort(*listenAddr); err == nil {
@@ -200,13 +214,27 @@ func runServer() error {
 	} else {
 		log.Printf("WARNING: %v", security.InsecureTransportOptInError(true))
 	}
-	opts = append(opts,
-		grpc.UnaryInterceptor(security.UnaryServerInterceptor(token)),
-		grpc.StreamInterceptor(security.StreamServerInterceptor(token)),
-	)
+	unary := []grpc.UnaryServerInterceptor{security.UnaryServerInterceptor(token)}
+	streams := []grpc.StreamServerInterceptor{security.StreamServerInterceptor(token)}
+	if *hyperVOnly {
+		unary = append(unary, hyperVUnaryInterceptor)
+		streams = append(streams, hyperVStreamInterceptor)
+	}
+	opts = append(opts, grpc.ChainUnaryInterceptor(unary...), grpc.ChainStreamInterceptor(streams...))
 	log.Printf("authentication enabled (source: %s)", tokenSource)
 
 	srv := grpc.NewServer(opts...)
+	if *hyperVOnly {
+		agent, err := openHyperVAgent(token, transportCfg)
+		if err != nil {
+			lis.Close()
+			return err
+		}
+		defer agent.host.Close()
+		pb.RegisterNodeAgentServer(srv, agent)
+		log.Printf("restricted Hyper-V agent starting on %s", *listenAddr)
+		return srv.Serve(lis)
+	}
 	// Initialise the background-job manager before registering RPCs so the
 	// Execute detach path and the new Jobs RPCs see a ready manager.
 	jm, err := NewJobManager(jobsDir(), parseRetention(os.Getenv("LABLINK_JOB_RETENTION")))

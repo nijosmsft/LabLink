@@ -12,5 +12,8 @@ func PreflightScript() string {
 		"    throw 'HYPERV_NOT_AVAILABLE: Hyper-V PowerShell module/role not installed (Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All, then reboot)'\n" +
 		"}\n" +
 		"$__admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)\n" +
-		"if (-not $__admin) { throw 'NOT_ELEVATED: Hyper-V operations require Administrator (the agent service usually runs as LocalSystem)' }\n"
+		"if (-not $__admin) {\n" +
+		"    $__hyperv = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.SecurityIdentifier]::new('S-1-5-32-578'))\n" +
+		"    if ($env:LABLINK_HYPERV_RESTRICTED -ne '1' -or -not $__hyperv) { throw 'NOT_ELEVATED: Hyper-V operations require Administrator or the configured restricted Hyper-V service' }\n" +
+		"}\n"
 }

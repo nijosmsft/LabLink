@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0-beta.1] - 2026-11-21
+
+### Added
+
+- Opt-in local Hyper-V service running as `NT SERVICE\LabLinkHyperV`, with
+  explicitly assigned VM/disk-servicing privileges instead of LocalSystem or
+  Administrators membership. Elevated installation is required.
+- Loopback-only authenticated VM-management RPCs backed by the existing VM
+  handlers. The restricted endpoint denies generic execution, scripts, file
+  transfer, process control, forwarding, and background-job APIs.
+- Per-target MCP routing and guest enrollment synchronization, retaining full
+  functionality on ordinary remote machines and newly created guests.
+- `Install-LocalHyperV.ps1`, optional operator-installer local support,
+  protected storage/image/switch policy, and named local VM profiles.
+- Service-session VHD access and backup-mode Windows provisioning, with
+  request-scoped in-memory guest credentials and service-owned staging/locks.
+
 ## [0.9.1] - 2026-11-17
 
 ### Fixed

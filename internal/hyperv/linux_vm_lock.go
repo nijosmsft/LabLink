@@ -20,7 +20,7 @@ func BuildLinuxVMAcquireLockScript(p LinuxVMLockParams) (string, error) {
 		staleAfter = 7200
 	}
 	body := fmt.Sprintf(`
-$lockRoot = Join-Path $env:ProgramData 'LabLink\vm-locks'
+$lockRoot = `+ServiceStatePath("vm-locks")+`
 $lockPath = Join-Path $lockRoot (%s + '.lock')
 $ownerToken = %s
 $staleAfter = %d
@@ -76,7 +76,7 @@ func BuildLinuxVMReleaseLockScript(p LinuxVMLockParams) (string, error) {
 		return "", fmt.Errorf("Linux VM lock key and owner are required")
 	}
 	body := fmt.Sprintf(`
-$lockRoot = Join-Path $env:ProgramData 'LabLink\vm-locks'
+$lockRoot = `+ServiceStatePath("vm-locks")+`
 $lockPath = Join-Path $lockRoot (%s + '.lock')
 $ownerToken = %s
 $released = $false

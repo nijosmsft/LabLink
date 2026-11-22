@@ -102,3 +102,39 @@ func TestSetReferenceUsesExternallyPromptedEncryptedValue(t *testing.T) {
 		t.Fatalf("prompted profile = %#v, %v", profile, err)
 	}
 }
+
+func TestTransientCredentialsNeverUseDiskAndRejectMutations(t *testing.T) {
+	input := &Profile{Name: "guest", Username: "Administrator", Password: "request-only-test-secret"}
+	store, err := NewTransient([]*Profile{input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	store.filePath = filepath.Join(root, "credentials.json")
+	input.Password = "changed"
+	profile, err := store.Get("guest")
+	if err != nil || profile.Password != "request-only-test-secret" {
+		t.Fatal("request credentials were not copied independently")
+	}
+	profile.Password = "changed-again"
+	again, err := store.Get("guest")
+	if err != nil || again.Password != "request-only-test-secret" {
+		t.Fatal("caller mutated the request credential store")
+	}
+	if metadata := store.ListProfiles(); len(metadata) != 1 || metadata[0].Password != "" {
+		t.Fatal("credential metadata exposed a request password")
+	}
+	for _, mutate := range []func() error{
+		func() error { return store.Set(input) },
+		func() error { return store.SetReference("guest", "Administrator", "secret") },
+		func() error { return store.Delete("guest") },
+	} {
+		if err := mutate(); err == nil {
+			t.Fatal("request credential mutation succeeded")
+		}
+	}
+	files, err := os.ReadDir(root)
+	if err != nil || len(files) != 0 {
+		t.Fatal("request credential access wrote to disk")
+	}
+}

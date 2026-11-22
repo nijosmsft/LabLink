@@ -49,7 +49,11 @@ func (s *agentService) Execute(args []string, r <-chan svc.ChangeRequest, change
 		select {
 		case err := <-errCh:
 			if err != nil {
-				elog, _ := eventlog.Open(serviceName)
+				name := serviceName
+				if *hyperVOnly {
+					name = hyperVServiceName
+				}
+				elog, _ := eventlog.Open(name)
 				if elog != nil {
 					elog.Error(1, fmt.Sprintf("gRPC server failed: %v", err))
 					elog.Close()
@@ -86,12 +90,16 @@ func (w *eventlogWriter) Write(p []byte) (int, error) {
 }
 
 func runAsService() error {
-	elog, err := eventlog.Open(serviceName)
+	name := serviceName
+	if *hyperVOnly {
+		name = hyperVServiceName
+	}
+	elog, err := eventlog.Open(name)
 	if err == nil {
 		log.SetOutput(&eventlogWriter{elog: elog})
 		defer elog.Close()
 	}
-	return svc.Run(serviceName, &agentService{stopCh: make(chan struct{})})
+	return svc.Run(name, &agentService{stopCh: make(chan struct{})})
 }
 
 // installService registers the agent as a Windows service.

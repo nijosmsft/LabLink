@@ -88,6 +88,12 @@ function Set-LabLinkRestrictedAcl([string]$Path, [bool]$Container) {
     $adminGrant = if ($Container) { '*S-1-5-32-544:(OI)(CI)F' } else { '*S-1-5-32-544:F' }
     $grant = & icacls.exe $Path /grant:r $systemGrant $adminGrant 2>&1
     if ($LASTEXITCODE -ne 0) { throw "ACL_GRANT_FAILED: '$Path': $grant" }
+    if($env:LABLINK_HYPERV_RESTRICTED -eq '1') {
+        $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $serviceGrant=if($Container){"*$sid"+':(OI)(CI)F'}else{"*$sid"+':F'}
+        & icacls.exe $Path /grant:r $serviceGrant | Out-Null
+        if($LASTEXITCODE -ne 0){throw "SERVICE_ACL_FAILED: $Path"}
+    }
     Assert-LabLinkRestrictedAcl $Path @('S-1-5-18','S-1-5-32-544')
 }
 function Assert-LabLinkRestrictedAcl(
@@ -97,6 +103,9 @@ function Assert-LabLinkRestrictedAcl(
     [string[]]$OptionalInheritOnlySids=@(),
     [string[]]$OptionalSids=@()
 ) {
+    if($env:LABLINK_HYPERV_RESTRICTED -eq '1') {
+        $AllowedSids=@($AllowedSids)+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     if (-not $acl.AreAccessRulesProtected) { throw "ACL_INHERITANCE_VERIFY_FAILED: '$Path'" }
     $seen = @{}
@@ -372,7 +381,7 @@ public static class LabLinkISOFile {
 '@
 }
 %s
-$imapiLockRoot = Join-Path $env:ProgramData 'LabLink\locks'
+$imapiLockRoot = `+ServiceStatePath("locks")+`
 $imapiLockPath = Join-Path $imapiLockRoot 'cidata-imapi.lock'
 New-Item -ItemType Directory -Force -Path $imapiLockRoot | Out-Null
 $imapiLockHandle = $null

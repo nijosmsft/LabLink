@@ -476,6 +476,10 @@ identity cleanup.
 
 ### Isolated VM lifecycle
 
+For opt-in VM management on the operator's own Windows machine without a
+SYSTEM agent, see [Restricted local Hyper-V host](docs/local-hyperv.md).
+The same MCP server retains full functionality on remote and guest agents.
+
 The isolated lifecycle tools reuse the ordinary Windows and Linux VM create and
 delete flows, persisting inventory in `isolated.db` under the LabLink config
 directory. Isolation adds only private vSwitches, static `/26` addressing,

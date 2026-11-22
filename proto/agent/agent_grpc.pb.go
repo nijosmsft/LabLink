@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	NodeAgent_ManageVM_FullMethodName                   = "/agent.NodeAgent/ManageVM"
 	NodeAgent_Execute_FullMethodName                    = "/agent.NodeAgent/Execute"
 	NodeAgent_ExecuteScript_FullMethodName              = "/agent.NodeAgent/ExecuteScript"
 	NodeAgent_PushFile_FullMethodName                   = "/agent.NodeAgent/PushFile"
@@ -43,6 +44,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type NodeAgentClient interface {
+	// Restricted Hyper-V hosts expose this structured VM operation surface,
+	// not generic Execute/ExecuteScript or file-transfer RPCs.
+	ManageVM(ctx context.Context, in *ManageVMRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ManageVMResponse], error)
 	// Execute a command and stream stdout/stderr back in real-time.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecuteResponse], error)
 	// Execute an inline script (pushed as temp file, executed, cleaned up).
@@ -96,9 +100,28 @@ func NewNodeAgentClient(cc grpc.ClientConnInterface) NodeAgentClient {
 	return &nodeAgentClient{cc}
 }
 
+func (c *nodeAgentClient) ManageVM(ctx context.Context, in *ManageVMRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ManageVMResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[0], NodeAgent_ManageVM_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ManageVMRequest, ManageVMResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ManageVMClient = grpc.ServerStreamingClient[ManageVMResponse]
+
 func (c *nodeAgentClient) Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecuteResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[0], NodeAgent_Execute_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[1], NodeAgent_Execute_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +140,7 @@ type NodeAgent_ExecuteClient = grpc.ServerStreamingClient[ExecuteResponse]
 
 func (c *nodeAgentClient) ExecuteScript(ctx context.Context, in *ExecuteScriptRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ExecuteResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[1], NodeAgent_ExecuteScript_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[2], NodeAgent_ExecuteScript_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +159,7 @@ type NodeAgent_ExecuteScriptClient = grpc.ServerStreamingClient[ExecuteResponse]
 
 func (c *nodeAgentClient) PushFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PushFileRequest, PushFileResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[2], NodeAgent_PushFile_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[3], NodeAgent_PushFile_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +172,7 @@ type NodeAgent_PushFileClient = grpc.ClientStreamingClient[PushFileRequest, Push
 
 func (c *nodeAgentClient) PullFile(ctx context.Context, in *PullFileRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[PullFileResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[3], NodeAgent_PullFile_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[4], NodeAgent_PullFile_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +271,7 @@ func (c *nodeAgentClient) DeleteJob(ctx context.Context, in *DeleteJobRequest, o
 
 func (c *nodeAgentClient) WatchJobs(ctx context.Context, in *WatchJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JobEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[4], NodeAgent_WatchJobs_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[5], NodeAgent_WatchJobs_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +290,7 @@ type NodeAgent_WatchJobsClient = grpc.ServerStreamingClient[JobEvent]
 
 func (c *nodeAgentClient) Forward(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ForwardChunk, ForwardChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[5], NodeAgent_Forward_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &NodeAgent_ServiceDesc.Streams[6], NodeAgent_Forward_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +345,9 @@ func (c *nodeAgentClient) ValidateRelay(ctx context.Context, in *ValidateRelayRe
 // All implementations must embed UnimplementedNodeAgentServer
 // for forward compatibility.
 type NodeAgentServer interface {
+	// Restricted Hyper-V hosts expose this structured VM operation surface,
+	// not generic Execute/ExecuteScript or file-transfer RPCs.
+	ManageVM(*ManageVMRequest, grpc.ServerStreamingServer[ManageVMResponse]) error
 	// Execute a command and stream stdout/stderr back in real-time.
 	Execute(*ExecuteRequest, grpc.ServerStreamingServer[ExecuteResponse]) error
 	// Execute an inline script (pushed as temp file, executed, cleaned up).
@@ -375,6 +401,9 @@ type NodeAgentServer interface {
 // pointer dereference when methods are called.
 type UnimplementedNodeAgentServer struct{}
 
+func (UnimplementedNodeAgentServer) ManageVM(*ManageVMRequest, grpc.ServerStreamingServer[ManageVMResponse]) error {
+	return status.Error(codes.Unimplemented, "method ManageVM not implemented")
+}
 func (UnimplementedNodeAgentServer) Execute(*ExecuteRequest, grpc.ServerStreamingServer[ExecuteResponse]) error {
 	return status.Error(codes.Unimplemented, "method Execute not implemented")
 }
@@ -449,6 +478,17 @@ func RegisterNodeAgentServer(s grpc.ServiceRegistrar, srv NodeAgentServer) {
 	}
 	s.RegisterService(&NodeAgent_ServiceDesc, srv)
 }
+
+func _NodeAgent_ManageVM_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ManageVMRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(NodeAgentServer).ManageVM(m, &grpc.GenericServerStream[ManageVMRequest, ManageVMResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type NodeAgent_ManageVMServer = grpc.ServerStreamingServer[ManageVMResponse]
 
 func _NodeAgent_Execute_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(ExecuteRequest)
@@ -781,6 +821,11 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "ManageVM",
+			Handler:       _NodeAgent_ManageVM_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "Execute",
 			Handler:       _NodeAgent_Execute_Handler,

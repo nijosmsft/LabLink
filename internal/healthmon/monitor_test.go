@@ -1,6 +1,8 @@
 package healthmon
 
 import (
+	"context"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -8,7 +10,47 @@ import (
 	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/security"
+	pb "github.com/nijosmsft/lablink/proto/agent"
+	"google.golang.org/grpc"
 )
+
+type recoveryProbeAgent struct {
+	pb.UnimplementedNodeAgentServer
+}
+
+func (*recoveryProbeAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+	return &pb.GetInfoResponse{Hostname: "recovered"}, nil
+}
+
+func TestRecoveryKeepsTheSuccessfullyProbedConnectionUsable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterNodeAgentServer(server, &recoveryProbeAgent{})
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+	defer pool.Close()
+	monitor := New(registry.Load(filepath.Join(t.TempDir(), "nodes.json")), pool)
+	monitor.deadThreshold = 1
+	node := &registry.Node{Name: "recovering", Address: listener.Addr().String()}
+	monitor.recordFailure(node)
+	client, err := pool.GetClient(node.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.GetInfo(ctx, &pb.GetInfoRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	monitor.RecordAuthenticatedProbeSuccess(node)
+	if _, err := client.GetInfo(ctx, &pb.GetInfoRequest{}); err != nil {
+		t.Fatalf("health recovery discarded a proven-live connection: %v", err)
+	}
+}
 
 func TestRecordAuthenticatedProbeSuccessRevivesOfflineNode(t *testing.T) {
 	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))

@@ -70,11 +70,14 @@ func BuildMountInjectScript(p MountInjectParams) (string, error) {
 	fmt.Fprintf(&b, "$firstBootSrc = %s\n", hyperv.PSLit(p.FirstBootRemote))
 	fmt.Fprintf(&b, "$payloadSrc = %s\n", hyperv.PSLit(p.PayloadRemote))
 	fmt.Fprintf(&b, "$agentSrc = %s\n", hyperv.PSLit(p.AgentBinaryRemote))
+	b.WriteString("$restricted = $env:LABLINK_HYPERV_RESTRICTED -eq '1'\n")
+	b.WriteString("if($restricted) {\n" + hyperv.RestrictedDiskAccessScript() + "\n}\n")
 
 	b.WriteString(`
 $mountedByUs = $false
 $assignedLetters = @()
 $winDrive = $null
+$guestAlias = $null
 try {
     if (-not (Test-Path $unattendSrc)) { throw "UNATTEND_NOT_STAGED: '$unattendSrc' not found on target" }
 
@@ -97,6 +100,10 @@ try {
 
     # Locate the Windows volume by CONTENT, assigning temp drive letters when a
     # partition has none.
+    if($restricted) {
+        $guestAlias=Get-LabLinkGuestAlias $disk.Number
+        $winDrive=$guestAlias.Drive
+    } else {
     foreach ($part in (Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue)) {
         $letter = $part.DriveLetter
         if (-not $letter) {
@@ -112,9 +119,16 @@ try {
             $winDrive = "${letter}:"
             break
         }
+        }
     }
     if (-not $winDrive) { throw "WINDOWS_VOLUME_NOT_FOUND: no partition contains Windows\System32\Config\SYSTEM" }
 
+    if($restricted) {
+        Copy-LabLinkGuestItem $unattendSrc "$winDrive\Windows\Panther\unattend.xml" $false
+        if($firstBootSrc) { Copy-LabLinkGuestItem $firstBootSrc "$winDrive\Windows\Setup\Scripts\FirstBoot.ps1" $false }
+        if($payloadSrc) { Copy-LabLinkGuestItem $payloadSrc "$winDrive\Windows\Setup\Scripts\LabLinkPayload" $true }
+        if($agentSrc) { Copy-LabLinkGuestItem $agentSrc "$winDrive\LabLink\lablink-agent.exe" $false }
+    } else {
     New-Item -ItemType Directory -Force -Path "$winDrive\Windows\Panther" | Out-Null
     Copy-Item $unattendSrc "$winDrive\Windows\Panther\unattend.xml" -Force
     if ($firstBootSrc -and (Test-Path $firstBootSrc)) {
@@ -133,6 +147,7 @@ try {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $agentDst) | Out-Null
         Copy-Item -LiteralPath $agentSrc -Destination $agentDst -Force
     }
+    }
 
     [pscustomobject]@{
         injected_to    = "$winDrive\Windows\Panther\unattend.xml"
@@ -144,6 +159,12 @@ try {
     } | ConvertTo-Json -Depth 4
 }
 finally {
+    $aliasCleanupError = $null
+    if($guestAlias) {
+        if(-not [LabLinkGuestVolume]::DefineDosDevice(15,$guestAlias.Drive,$guestAlias.Target)) {
+            $aliasCleanupError=[ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+        }
+    }
     # Scrub the staged (cleartext-password) copies from the target host on ALL
     # paths. They must NOT survive a mid-injection failure: whether injection
     # succeeded or threw (VHD/volume not found, copy error, etc.), the on-host
@@ -159,8 +180,10 @@ finally {
     }
     # Dismount only if we mounted it.
     if ($mountedByUs) {
-        try { Dismount-VHD -Path $vhdPath -ErrorAction SilentlyContinue } catch {}
+        if($restricted) { Dismount-VHD -Path $vhdPath -ErrorAction Stop }
+        else { try { Dismount-VHD -Path $vhdPath -ErrorAction SilentlyContinue } catch {} }
     }
+    if($aliasCleanupError) { throw $aliasCleanupError }
 }
 `)
 	return hyperv.WrapTagged(b.String()), nil

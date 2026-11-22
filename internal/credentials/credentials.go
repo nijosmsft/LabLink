@@ -46,11 +46,40 @@ type storeData struct {
 
 // Store manages credential metadata and an encrypted password store.
 type Store struct {
-	mu       sync.RWMutex
-	profiles map[string]*Profile
-	filePath string
-	secrets  *secretstore.Store
-	loadErr  error
+	mu        sync.RWMutex
+	profiles  map[string]*Profile
+	filePath  string
+	secrets   *secretstore.Store
+	loadErr   error
+	transient bool
+}
+
+// NewTransient returns a read-only, request-scoped credential store. Passwords
+// received on an authenticated VM-management channel never reach disk.
+func NewTransient(profiles []*Profile) (*Store, error) {
+	s := &Store{profiles: make(map[string]*Profile), transient: true}
+	for _, profile := range profiles {
+		if profile == nil {
+			return nil, fmt.Errorf("credential profile is required")
+		}
+		name, err := ValidateName(profile.Name)
+		if err != nil {
+			return nil, err
+		}
+		if profile.Password == "" {
+			return nil, fmt.Errorf("credential %q has an empty password", name)
+		}
+		if profile.Username != "" {
+			if _, err := ValidateUsername(profile.Username); err != nil {
+				return nil, err
+			}
+		}
+		if _, exists := s.profiles[name]; exists {
+			return nil, fmt.Errorf("duplicate credential %q", name)
+		}
+		s.profiles[name] = &Profile{Name: name, Username: profile.Username, Password: profile.Password}
+	}
+	return s, nil
 }
 
 // LoadStore reads credential metadata from disk. Passwords are stored in a
@@ -207,6 +236,9 @@ func (s *Store) Err() error {
 
 // Set encrypts a password and adds or updates a credential profile.
 func (s *Store) Set(p *Profile) error {
+	if s.transient {
+		return fmt.Errorf("request-scoped credential store is read-only")
+	}
 	if p == nil {
 		return fmt.Errorf("credential profile is required")
 	}
@@ -234,6 +266,9 @@ func (s *Store) Set(p *Profile) error {
 // SetReference commits metadata for a password already written by the local
 // prompt helper. The referenced encrypted value must exist.
 func (s *Store) SetReference(name, username, secretName string) error {
+	if s.transient {
+		return fmt.Errorf("request-scoped credential store is read-only")
+	}
 	name, err := ValidateName(name)
 	if err != nil {
 		return err
@@ -290,6 +325,9 @@ func (s *Store) Get(name string) (*Profile, error) {
 	}
 	copy := *p
 	s.mu.RUnlock()
+	if s.transient {
+		return &copy, nil
+	}
 	if copy.RequiresResave || copy.PasswordSecret == "" {
 		return nil, fmt.Errorf("%w: credential profile %q is disabled; run save_credential with its name and username",
 			ErrLegacyPlaintext, name)
@@ -304,6 +342,9 @@ func (s *Store) Get(name string) (*Profile, error) {
 
 // Delete removes a credential profile and its encrypted password.
 func (s *Store) Delete(name string) error {
+	if s.transient {
+		return fmt.Errorf("request-scoped credential store is read-only")
+	}
 	name, err := ValidateName(name)
 	if err != nil {
 		return err

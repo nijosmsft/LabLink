@@ -30,6 +30,12 @@ import (
 var serverVersion = "v0.5.1"
 
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "--register-local-hyperv" || os.Args[1] == "--unregister-local-hyperv") {
+		if err := configureLocalHyperV(os.Args[2:], os.Args[1] == "--unregister-local-hyperv"); err != nil {
+			log.Fatalf("register local Hyper-V host: %v", err)
+		}
+		return
+	}
 	// Handle --version before any other startup work so the call is cheap and
 	// safe in automated post-install verification.
 	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -279,6 +285,18 @@ ANTI-PATTERNS — DO NOT do these things:
 		log.Fatalf("initialize isolated lifecycle tools: %v", err)
 	}
 	mcptools.RegisterIsolatedLifecycleTools(s, isolatedDeps)
+	localHyperV := strings.TrimSpace(os.Getenv("LABLINK_LOCAL_HYPERV_NODE"))
+	if localHyperV == "" {
+		for _, node := range reg.AllNodes() {
+			if node.Labels["lablink.local_hyperv"] == "true" {
+				if localHyperV != "" {
+					log.Fatal("multiple local Hyper-V hosts configured")
+				}
+				localHyperV = node.Name
+			}
+		}
+	}
+	mcptools.RegisterLocalVMProxy(s, reg, pool, vmDefaults, creds, isolatedStore, localHyperV)
 
 	// Run with stdio transport.
 	if err := server.ServeStdio(s); err != nil && !isExpectedStdioShutdownError(err) {

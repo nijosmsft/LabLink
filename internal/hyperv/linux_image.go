@@ -196,6 +196,17 @@ function Ensure-BitsDownload([string]$kind, [string]$url, [string]$destination) 
         })
         $trustedDestination = $trustedRecord.Count -eq 1
     }
+    if ($env:LABLINK_HYPERV_RESTRICTED -eq '1') {
+        # Virtual service accounts do not have the interactive logon BITS requires.
+        if (-not $trustedDestination) {
+            $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+            if (-not (Test-Path -LiteralPath $curl -PathType Leaf)) { throw 'RESTRICTED_DOWNLOAD_REQUIRES_INBOX_CURL' }
+            $output = & $curl --silent --show-error --fail --location --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 30 --continue-at - --output $destination -- $url 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "LINUX_IMAGE_DOWNLOAD_FAILED: $kind ($LASTEXITCODE): $output" }
+        }
+        $length = (Get-Item -LiteralPath $destination -ErrorAction Stop).Length
+        return [pscustomobject]@{ kind=$kind; url=$url; destination=$destination; state='Transferred'; bytes_transferred=$length; bytes_total=$length }
+    }
     $matchingJobs = @(Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue |
         Where-Object { $_.DisplayName -eq $displayName } | Sort-Object CreationTime -Descending)
     foreach ($candidate in $matchingJobs) {
@@ -1534,14 +1545,18 @@ try {
     & wsl.exe --mount $physicalPath --bare
     if ($LASTEXITCODE -ne 0) { throw "WSL_MOUNT_FAILED: exit $LASTEXITCODE" }
     $mounted = $true
-    $afterLSBLKText = & wsl.exe -d Ubuntu-24.04 --user root -- lsblk --json --bytes --output NAME,PATH,TYPE,PKNAME,FSTYPE,SIZE,MOUNTPOINT
-    if ($LASTEXITCODE -ne 0) { throw "WSL_POST_MOUNT_INVENTORY_FAILED: exit $LASTEXITCODE" }
-    try { $afterLSBLK = ($afterLSBLKText -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop } catch {
-        throw "WSL_POST_MOUNT_INVENTORY_INVALID: $($_.Exception.Message)"
+    for ($discoveryAttempt=0; $discoveryAttempt -lt 30; $discoveryAttempt++) {
+        $afterLSBLKText = & wsl.exe -d Ubuntu-24.04 --user root -- lsblk --json --bytes --output NAME,PATH,TYPE,PKNAME,FSTYPE,SIZE,MOUNTPOINT
+        if ($LASTEXITCODE -ne 0) { throw "WSL_POST_MOUNT_INVENTORY_FAILED: exit $LASTEXITCODE" }
+        try { $afterLSBLK = ($afterLSBLKText -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop } catch {
+            throw "WSL_POST_MOUNT_INVENTORY_INVALID: $($_.Exception.Message)"
+        }
+        $newWSLDisks = @($afterLSBLK.blockdevices | Where-Object {
+            [string]$_.type -ceq 'disk' -and -not $beforeDiskPaths.ContainsKey([string]$_.path)
+        })
+        if ($newWSLDisks.Count -ne 0) { break }
+        Start-Sleep -Seconds 1
     }
-    $newWSLDisks = @($afterLSBLK.blockdevices | Where-Object {
-        [string]$_.type -ceq 'disk' -and -not $beforeDiskPaths.ContainsKey([string]$_.path)
-    })
     if ($newWSLDisks.Count -ne 1) {
         throw "WSL_NEW_DISK_IDENTITY_MISMATCH: expected exactly one newly added WSL disk; found $($newWSLDisks.Count)"
     }
@@ -1717,6 +1732,20 @@ if (-not (Test-Path -LiteralPath $finalVHDX -PathType Leaf)) {
     if ($existingHash -cne $expectedHash) { throw "PUBLISHED_VHDX_INVALID: existing digest differs" }
     Remove-Item -LiteralPath $stagedVHDX -Force -ErrorAction SilentlyContinue
 }
+if ($env:LABLINK_HYPERV_RESTRICTED -eq '1') {
+    $workerSID = 'S-1-15-3-1024-2268835264-3721307629-241982045-173645152-1490879176-104643441-2915960892-1612460704'
+    $acl = [Security.AccessControl.FileSecurity]::new()
+    $acl.SetAccessRuleProtection($true,$false)
+    foreach ($writerSID in @('S-1-5-18','S-1-5-32-544',[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+        $writer=[Security.Principal.SecurityIdentifier]::new($writerSID)
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($writer,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.AccessControlType]::Allow))
+    }
+    foreach ($readerSID in @('S-1-5-83-0',$workerSID)) {
+        $reader=[Security.Principal.SecurityIdentifier]::new($readerSID)
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($reader,[Security.AccessControl.FileSystemRights]::ReadAndExecute,[Security.AccessControl.AccessControlType]::Allow))
+    }
+    Set-Acl -LiteralPath $finalVHDX -AclObject $acl -ErrorAction Stop
+}
 Set-ItemProperty -LiteralPath $finalVHDX -Name IsReadOnly -Value $true
 $metadataTmp = "$metadataPath.tmp"
 [IO.File]::WriteAllText($metadataTmp, $metadataJSON, [Text.UTF8Encoding]::new($false))
@@ -1763,7 +1792,7 @@ func BuildLinuxImageBuilderAcquireLockScript(p LinuxImageBuilderLockParams) (str
 		staleAfter = 7200
 	}
 	body := fmt.Sprintf(`
-$lockRoot = Join-Path $env:ProgramData 'LabLink\linux-image-builder-locks'
+$lockRoot = `+ServiceStatePath("linux-image-builder-locks")+`
 $lockPath = Join-Path $lockRoot (%s + '.lock')
 $ownerToken = %s
 $staleAfter = %d
@@ -1822,7 +1851,7 @@ func BuildLinuxImageBuilderReleaseLockScript(p LinuxImageBuilderLockParams) (str
 		return "", err
 	}
 	body := fmt.Sprintf(`
-$lockRoot = Join-Path $env:ProgramData 'LabLink\linux-image-builder-locks'
+$lockRoot = `+ServiceStatePath("linux-image-builder-locks")+`
 $lockPath = Join-Path $lockRoot (%s + '.lock')
 $ownerToken = %s
 $released = $false

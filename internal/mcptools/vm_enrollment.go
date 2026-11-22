@@ -65,6 +65,9 @@ func prepareEnrollmentPayload(
 		return enrollmentPayload{}, err
 	}
 	remoteRoot := `C:\LabLink\VMEnrollment\` + stageID
+	if target.IsLocal && os.Getenv("LABLINK_HYPERV_RESTRICTED") == "1" {
+		remoteRoot = filepath.Join(config.ConfigDir, "VMEnrollment", stageID)
+	}
 	remoteDir := remoteRoot + `\payload`
 	remoteAgent := remoteRoot + `\lablink-agent.exe`
 	cleanupRemote := func() {
@@ -76,6 +79,11 @@ $root = %s
 $payload = %s
 New-Item -ItemType Directory -Force -Path $root,$payload | Out-Null
 icacls $root /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+if($env:LABLINK_HYPERV_RESTRICTED -eq '1') {
+  $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  icacls.exe $root /grant:r ("*$sid"+':(OI)(CI)F') | Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Restricted enrollment ACL failed'}
+}
 `, hyperv.PSLit(remoteRoot), hyperv.PSLit(remoteDir))
 	if _, _, err := runPS(ctx, reg, pool, target, prepareStage, vmDefaultTimeoutSec); err != nil {
 		cleanupRemote()

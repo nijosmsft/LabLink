@@ -248,7 +248,6 @@ func (m *Monitor) recordSuccess(node *registry.Node, agentVersion string, report
 		ctx, cancelFn := context.WithCancel(context.Background())
 		m.ctxs[node.Name] = ctx
 		m.cancels[node.Name] = cancelFn
-		m.pool.ResetConnection(node.Address)
 	}
 
 	// Ensure a context exists for new nodes.

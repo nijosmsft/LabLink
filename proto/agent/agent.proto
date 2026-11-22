@@ -3,6 +3,10 @@ package agent;
 option go_package = "github.com/nijosmsft/lablink/proto/agent";
 
 service NodeAgent {
+  // Restricted Hyper-V hosts expose this structured VM operation surface,
+  // not generic Execute/ExecuteScript or file-transfer RPCs.
+  rpc ManageVM(ManageVMRequest) returns (stream ManageVMResponse);
+
   // Execute a command and stream stdout/stderr back in real-time.
   rpc Execute(ExecuteRequest) returns (stream ExecuteResponse);
 
@@ -64,6 +68,26 @@ service NodeAgent {
   // Inspect relay runtime state.
   rpc GetRelayStats(GetRelayStatsRequest) returns (GetRelayStatsResponse);
   rpc ValidateRelay(ValidateRelayRequest) returns (ValidateRelayResponse);
+}
+
+message VMCredential {
+  string name = 1;
+  string username = 2;
+  string password = 3;
+}
+
+message ManageVMRequest {
+  string tool_name = 1;
+  bytes arguments_json = 2;
+  bytes profiles_json = 3;
+  repeated VMCredential credentials = 4;
+}
+
+message ManageVMResponse {
+  bytes result_json = 1;
+  string progress = 2;
+  // Newly enrolled guests retain full capabilities on the operator server.
+  bytes nodes_json = 3;
 }
 
 message ExecuteRequest {

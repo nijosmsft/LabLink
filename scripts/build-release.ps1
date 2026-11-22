@@ -79,11 +79,13 @@ $bundleFiles = @(
     'configs/vm-defaults.example.json',
     'docs/quickstart.md',
     'docs/linux-vm.md',
+    'docs/local-hyperv.md',
     'scripts/bootstrap-operator.ps1',
     'scripts/bootstrap-windows-node.ps1',
     'scripts/build-manual-package.ps1',
     'scripts/install.ps1',
     'scripts/install-agent.ps1',
+    'scripts/Install-LocalHyperV.ps1',
     'scripts/deploy-agent.ps1',
     'scripts/Update-LabLink.ps1'
 )
