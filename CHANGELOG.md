@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0-beta.2] - 2026-11-23
+
+### Fixed
+
+- Credential profiles and encrypted secrets are read from disk on every access,
+  without a long-lived cache. Additions, replacements, and deletions made by
+  another session no longer require restarting the MCP server. Cross-process
+  locks preserve concurrent saves, and read failures are reported explicitly.
+
 ## [0.10.0-beta.1] - 2026-11-21
 
 ### Added

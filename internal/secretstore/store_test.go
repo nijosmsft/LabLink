@@ -58,12 +58,6 @@ func TestStoreReloadsExternalUpdates(t *testing.T) {
 	if err := helperStore.Set("archive", "value"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := serverStore.Get("archive"); err == nil {
-		t.Fatal("store observed external update before reload")
-	}
-	if err := serverStore.Reload(); err != nil {
-		t.Fatal(err)
-	}
 	value, err := serverStore.Get("archive")
 	if err != nil || value != "value" {
 		t.Fatalf("externally saved secret = %q, %v", value, err)

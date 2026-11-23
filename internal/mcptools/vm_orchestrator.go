@@ -151,7 +151,11 @@ func resolveWindowsVMPlan(
 			case "vm_root":
 				properties[field] = stringField("Root folder for VM config and differencing disks", nil)
 			case "admin_password_credential":
-				properties[field] = stringField("Saved administrator credential profile", creds.List())
+				names, err := creds.List()
+				if err != nil {
+					return windowsVMPlan{}, fmt.Errorf("list administrator credentials: %w", err)
+				}
+				properties[field] = stringField("Saved administrator credential profile", names)
 			}
 		}
 		content, err := elicitVMFields(ctx, s, "Provide the missing Windows VM settings. Explicit values will override defaults.", properties, required)

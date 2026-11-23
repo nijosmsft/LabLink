@@ -43,7 +43,11 @@ func TestRestrictedLocalHyperVLive(t *testing.T) {
 	}
 	creds := credentials.LoadStore(filepath.Join(home, "credentials.json"))
 	existingCredential := false
-	for _, name := range creds.List() {
+	names, err := creds.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
 		existingCredential = existingCredential || name == "local-vm-admin"
 	}
 	if existingCredential {

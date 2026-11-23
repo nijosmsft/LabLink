@@ -56,8 +56,8 @@ func TestLegacyPlaintextCredentialIsRejectedUntilResaved(t *testing.T) {
 	if _, err := store.Get("legacy"); !errors.Is(err, ErrLegacyPlaintext) {
 		t.Fatalf("legacy Get error = %v", err)
 	}
-	profiles := store.ListProfiles()
-	if len(profiles) != 1 || !profiles[0].RequiresResave {
+	profiles, err := store.ListProfiles()
+	if err != nil || len(profiles) != 1 || !profiles[0].RequiresResave {
 		t.Fatalf("legacy profiles = %#v", profiles)
 	}
 	if err := store.Set(&Profile{
@@ -91,9 +91,6 @@ func TestSetReferenceUsesExternallyPromptedEncryptedValue(t *testing.T) {
 	if err := secretstore.Open(encrypted.Path()).Set(secretName, "prompt-value"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReloadSecrets(); err != nil {
-		t.Fatal(err)
-	}
 	if err := store.SetReference("prompted", "operator", secretName); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +118,7 @@ func TestTransientCredentialsNeverUseDiskAndRejectMutations(t *testing.T) {
 	if err != nil || again.Password != "request-only-test-secret" {
 		t.Fatal("caller mutated the request credential store")
 	}
-	if metadata := store.ListProfiles(); len(metadata) != 1 || metadata[0].Password != "" {
+	if metadata, err := store.ListProfiles(); err != nil || len(metadata) != 1 || metadata[0].Password != "" {
 		t.Fatal("credential metadata exposed a request password")
 	}
 	for _, mutate := range []func() error{

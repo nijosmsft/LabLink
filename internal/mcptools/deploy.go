@@ -258,11 +258,11 @@ func saveCredentialHandler(
 
 func listCredentialsHandler(creds *credentials.Store) server.ToolHandlerFunc {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := creds.Err(); err != nil {
+		profiles, err := creds.ListProfiles()
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf(
 				"load credential metadata: %v", err)), nil
 		}
-		profiles := creds.ListProfiles()
 		if len(profiles) == 0 {
 			return mcp.NewToolResultText("No credential profiles saved. Use `save_credential` to create one."), nil
 		}

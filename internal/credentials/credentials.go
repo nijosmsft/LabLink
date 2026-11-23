@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"unicode"
 
+	"github.com/nijosmsft/lablink/internal/flock"
 	"github.com/nijosmsft/lablink/internal/secretstore"
 )
 
@@ -46,12 +46,10 @@ type storeData struct {
 
 // Store manages credential metadata and an encrypted password store.
 type Store struct {
-	mu        sync.RWMutex
-	profiles  map[string]*Profile
-	filePath  string
-	secrets   *secretstore.Store
-	loadErr   error
-	transient bool
+	profiles   map[string]*Profile
+	filePath   string
+	secretPath string
+	transient  bool
 }
 
 // NewTransient returns a read-only, request-scoped credential store. Passwords
@@ -82,21 +80,17 @@ func NewTransient(profiles []*Profile) (*Store, error) {
 	return s, nil
 }
 
-// LoadStore reads credential metadata from disk. Passwords are stored in a
-// separate encrypted store beside credentials.json.
+// LoadStore opens a disk-backed store without caching credentials. Each
+// operation reads the metadata and any requested password directly from disk.
 func LoadStore(filePath string, encrypted ...*secretstore.Store) *Store {
 	secretPath := filepath.Join(filepath.Dir(filePath), "credential-secrets.json")
-	secretStore := secretstore.Open(secretPath)
 	if len(encrypted) > 0 && encrypted[0] != nil {
-		secretStore = encrypted[0]
+		secretPath = encrypted[0].Path()
 	}
-	s := &Store{
-		profiles: make(map[string]*Profile),
-		filePath: filePath,
-		secrets:  secretStore,
+	return &Store{
+		filePath:   filePath,
+		secretPath: secretPath,
 	}
-	s.loadErr = s.load()
-	return s
 }
 
 func ValidateName(name string) (string, error) {
@@ -131,17 +125,34 @@ func ValidateUsername(username string) (string, error) {
 	return username, nil
 }
 
-func (s *Store) load() error {
+func (s *Store) lock() (*flock.Locker, error) {
+	if s.transient {
+		return nil, nil
+	}
+	if s.filePath == "" {
+		return nil, fmt.Errorf("credential metadata path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(s.filePath), 0700); err != nil {
+		return nil, err
+	}
+	return flock.Lock(s.filePath + ".lock")
+}
+
+func (s *Store) load() (map[string]*Profile, error) {
+	if s.transient {
+		return s.profiles, nil
+	}
+	profiles := make(map[string]*Profile)
 	data, err := os.ReadFile(s.filePath)
 	if os.IsNotExist(err) {
-		return nil
+		return profiles, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read credential metadata: %w", err)
+		return nil, fmt.Errorf("read credential metadata: %w", err)
 	}
 	var stored storeData
 	if err := json.Unmarshal(data, &stored); err != nil {
-		return fmt.Errorf("parse credential metadata: %w", err)
+		return nil, fmt.Errorf("parse credential metadata: %w", err)
 	}
 	for key, raw := range stored.Profiles {
 		if raw == nil {
@@ -154,7 +165,7 @@ func (s *Store) load() error {
 		if name == "" {
 			continue
 		}
-		s.profiles[name] = &Profile{
+		profiles[name] = &Profile{
 			Name:           name,
 			Username:       raw.Username,
 			PasswordSecret: raw.PasswordSecret,
@@ -163,15 +174,12 @@ func (s *Store) load() error {
 				raw.PasswordSecret == "",
 		}
 	}
-	return nil
+	return profiles, nil
 }
 
-func (s *Store) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.filePath), 0700); err != nil {
-		return err
-	}
-	profiles := make(map[string]*diskProfile, len(s.profiles))
-	for name, profile := range s.profiles {
+func (s *Store) saveLocked(values map[string]*Profile) error {
+	profiles := make(map[string]*diskProfile, len(values))
+	for name, profile := range values {
 		profiles[name] = &diskProfile{
 			Name:           profile.Name,
 			Username:       profile.Username,
@@ -189,10 +197,7 @@ func (s *Store) saveLocked() error {
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	if err := os.Remove(s.filePath); err != nil && !os.IsNotExist(err) {
-		_ = os.Remove(tmp)
-		return err
-	}
+	defer os.Remove(tmp)
 	return os.Rename(tmp, s.filePath)
 }
 
@@ -213,25 +218,29 @@ func NewPasswordSecretName(profileName string) (string, error) {
 
 // SecretStorePath returns the encrypted password-store path.
 func (s *Store) SecretStorePath() string {
-	if s == nil || s.secrets == nil {
+	if s == nil {
 		return ""
 	}
-	return s.secrets.Path()
+	return s.secretPath
 }
 
-// ReloadSecrets refreshes encrypted passwords written by the prompt helper.
+// ReloadSecrets validates the encrypted password store. Reads never use a cache.
 func (s *Store) ReloadSecrets() error {
-	if s == nil || s.secrets == nil {
+	if s == nil || s.secretPath == "" {
 		return fmt.Errorf("credential password store is unavailable")
 	}
-	return s.secrets.Reload()
+	return secretstore.Open(s.secretPath).Reload()
 }
 
-// Err reports a credential metadata load failure.
+// Err reports a current credential metadata read failure.
 func (s *Store) Err() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.loadErr
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	_, err = s.load()
+	return err
 }
 
 // Set encrypts a password and adds or updates a credential profile.
@@ -253,11 +262,12 @@ func (s *Store) Set(p *Profile) error {
 	if err != nil {
 		return err
 	}
-	if err := s.secrets.Set(secretName, p.Password); err != nil {
+	secrets := secretstore.Open(s.secretPath)
+	if err := secrets.Set(secretName, p.Password); err != nil {
 		return fmt.Errorf("encrypt credential password: %w", err)
 	}
 	if err := s.SetReference(name, p.Username, secretName); err != nil {
-		_ = s.secrets.Delete(secretName)
+		_ = secrets.Delete(secretName)
 		return err
 	}
 	return nil
@@ -277,31 +287,31 @@ func (s *Store) SetReference(name, username, secretName string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.secrets.Get(secretName); err != nil {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	profiles, err := s.load()
+	if err != nil {
+		return err
+	}
+	secrets := secretstore.Open(s.secretPath)
+	if _, err := secrets.Get(secretName); err != nil {
 		return fmt.Errorf("resolve encrypted credential password: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr != nil {
-		return s.loadErr
-	}
-	old := s.profiles[name]
+	old := profiles[name]
 	next := &Profile{
 		Name: name, Username: strings.TrimSpace(username),
 		PasswordSecret: secretName,
 	}
-	s.profiles[name] = next
-	if err := s.saveLocked(); err != nil {
-		if old == nil {
-			delete(s.profiles, name)
-		} else {
-			s.profiles[name] = old
-		}
+	profiles[name] = next
+	if err := s.saveLocked(profiles); err != nil {
 		return err
 	}
 	if old != nil && old.PasswordSecret != "" && old.PasswordSecret != secretName {
-		_ = s.secrets.Delete(old.PasswordSecret)
+		_ = secrets.Delete(old.PasswordSecret)
 	}
 	return nil
 }
@@ -312,19 +322,20 @@ func (s *Store) Get(name string) (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	if s.loadErr != nil {
-		err := s.loadErr
-		s.mu.RUnlock()
+	lock, err := s.lock()
+	if err != nil {
 		return nil, err
 	}
-	p, ok := s.profiles[name]
+	defer lock.Close()
+	profiles, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := profiles[name]
 	if !ok {
-		s.mu.RUnlock()
 		return nil, fmt.Errorf("credential profile %q not found", name)
 	}
 	copy := *p
-	s.mu.RUnlock()
 	if s.transient {
 		return &copy, nil
 	}
@@ -332,7 +343,7 @@ func (s *Store) Get(name string) (*Profile, error) {
 		return nil, fmt.Errorf("%w: credential profile %q is disabled; run save_credential with its name and username",
 			ErrLegacyPlaintext, name)
 	}
-	password, err := s.secrets.Get(copy.PasswordSecret)
+	password, err := secretstore.Open(s.secretPath).Get(copy.PasswordSecret)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential profile %q: %w", name, err)
 	}
@@ -349,44 +360,57 @@ func (s *Store) Delete(name string) error {
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr != nil {
-		return s.loadErr
+	lock, err := s.lock()
+	if err != nil {
+		return err
 	}
-	profile, ok := s.profiles[name]
+	defer lock.Close()
+	profiles, err := s.load()
+	if err != nil {
+		return err
+	}
+	profile, ok := profiles[name]
 	if !ok {
 		return fmt.Errorf("credential profile %q not found", name)
 	}
-	delete(s.profiles, name)
-	if err := s.saveLocked(); err != nil {
-		s.profiles[name] = profile
+	delete(profiles, name)
+	if err := s.saveLocked(profiles); err != nil {
 		return err
 	}
 	if profile.PasswordSecret != "" {
-		_ = s.secrets.Delete(profile.PasswordSecret)
+		_ = secretstore.Open(s.secretPath).Delete(profile.PasswordSecret)
 	}
 	return nil
 }
 
 // List returns all profile names.
-func (s *Store) List() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	names := make([]string, 0, len(s.profiles))
-	for name := range s.profiles {
+func (s *Store) List() ([]string, error) {
+	profiles, err := s.ListProfiles()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		name := profile.Name
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names
+	return names, nil
 }
 
 // ListProfiles returns credential metadata without passwords.
-func (s *Store) ListProfiles() []*Profile {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	profiles := make([]*Profile, 0, len(s.profiles))
-	for _, profile := range s.profiles {
+func (s *Store) ListProfiles() ([]*Profile, error) {
+	lock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+	values, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	profiles := make([]*Profile, 0, len(values))
+	for _, profile := range values {
 		copy := *profile
 		copy.Password = ""
 		profiles = append(profiles, &copy)
@@ -394,5 +418,5 @@ func (s *Store) ListProfiles() []*Profile {
 	sort.Slice(profiles, func(i, j int) bool {
 		return profiles[i].Name < profiles[j].Name
 	})
-	return profiles
+	return profiles, nil
 }

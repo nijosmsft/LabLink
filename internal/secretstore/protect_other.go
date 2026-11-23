@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nijosmsft/lablink/internal/flock"
 )
 
 type aesProtector struct {
@@ -16,14 +18,19 @@ type aesProtector struct {
 }
 
 func newProtector(configDir string) (protector, error) {
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
 	keyPath := filepath.Join(configDir, "secrets.key")
+	lock, err := flock.Lock(keyPath + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
 	key, err := os.ReadFile(keyPath)
 	if os.IsNotExist(err) {
 		key = make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
-			return nil, err
-		}
-		if err := os.MkdirAll(configDir, 0700); err != nil {
 			return nil, err
 		}
 		if err := os.WriteFile(keyPath, key, 0600); err != nil {
