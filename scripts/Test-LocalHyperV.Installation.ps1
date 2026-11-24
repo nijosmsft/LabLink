@@ -28,12 +28,32 @@ $VMRoot=Join-Path $TestRoot 'VMs'
 $ImageRoot=Join-Path $TestRoot 'Images'
 New-Item -ItemType Directory -Path $TestRoot | Out-Null
 $result=[Collections.Generic.List[object]]::new()
+$testVM=$null
 try {
     $clean=Join-Path $TestRoot 'clean'
     Set-PrivateDirectory $clean 'F'
     $acl=Get-Acl -LiteralPath $clean
     if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544'){throw 'Fresh directory owner is not Administrators'}
     $result.Add([pscustomobject]@{test='protected fresh creation';ok=$true})
+
+    Set-PrivateDirectory $VMRoot 'F'
+    $testVM=New-VM -Name ('ll-acl-'+[Guid]::NewGuid().ToString('N').Substring(0,6)) -Path $VMRoot -NoVHD -MemoryStartupBytes 256MB
+    $vmOwner=([Security.Principal.NTAccount]('NT VIRTUAL MACHINE\'+$testVM.Id)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $checkpoint=Join-Path $VMRoot 'checkpoint.avhdx'
+    New-Item -ItemType File -Path $checkpoint | Out-Null
+    & icacls.exe $checkpoint /setowner ("*$vmOwner") | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'Cannot prepare VM-owned checkpoint fixture'}
+    Set-PrivateDirectory $VMRoot 'F'
+    $codeRoot=Join-Path $TestRoot 'strict-code-owner'
+    Set-PrivateDirectory $codeRoot 'RX'
+    $codeFile=Join-Path $codeRoot 'agent.exe'
+    New-Item -ItemType File -Path $codeFile | Out-Null
+    & icacls.exe $codeFile /setowner ("*$vmOwner") | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'Cannot prepare VM-owned code fixture'}
+    $rejected=$false
+    try {Set-PrivateDirectory $codeRoot 'RX'} catch {$rejected=$_.Exception.Message -like '*untrusted account*'}
+    if(-not $rejected){throw 'VM ownership was accepted outside the VM storage root'}
+    $result.Add([pscustomobject]@{test='accept VM-owned checkpoints only in VM storage';ok=$true})
 
     Set-PrivateDirectory $ImageRoot 'F'
     $image=Join-Path $ImageRoot 'parent.vhdx'
@@ -98,6 +118,7 @@ try {
     (Get-Item -LiteralPath $link -Force).Delete()
     $result | ConvertTo-Json -Compress
 } finally {
+    if($testVM){Remove-VM -VM $testVM -Force -ErrorAction Stop}
     if(Test-Path -LiteralPath (Join-Path $TestRoot 'junction')){
         (Get-Item -LiteralPath (Join-Path $TestRoot 'junction') -Force).Delete()
     }

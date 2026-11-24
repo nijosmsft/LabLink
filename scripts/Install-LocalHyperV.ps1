@@ -206,7 +206,9 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Installation tree contains a reparse point: $entry" }
         $acl = Get-Acl -LiteralPath $entry -ErrorAction Stop
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-        if ($owner -notin $trusted) { throw "Refusing an existing service path owned by an untrusted account: $entry" }
+        $vmOwned = $VMRoot -and $entry.StartsWith($VMRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase) -and
+            $owner -match '^S-1-5-83-1-(?:\d+-){3}\d+$'
+        if ($owner -notin $trusted -and -not $vmOwned) { throw "Refusing an existing service path owned by an untrusted account: $entry" }
         foreach ($rule in @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))) {
             $sid = $rule.IdentityReference.Value
             $vmIdentity = $sid.StartsWith('S-1-5-83-') -or $sid -eq 'S-1-15-3-1024-2268835264-3721307629-241982045-173645152-1490879176-104643441-2915960892-1612460704'

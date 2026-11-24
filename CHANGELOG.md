@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-24
+
+### Fixed
+
+- Protected-service upgrades accept Hyper-V-owned checkpoint/runtime files
+  beneath the managed VM root without relaxing code or private-state ownership.
+
 ## [0.10.1] - 2026-11-24
 
 ### Fixed
