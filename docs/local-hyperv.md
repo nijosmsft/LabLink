@@ -78,7 +78,14 @@ These are machine-wide privileges and broad Hyper-V rights. They are **not**
 OS-enforced per-VM permissions. Treat the service as privileged software;
 the application policy and restricted API are important security boundaries.
 No local Administrators membership, LocalSystem account, or blanket Defender
-exclusion is needed for this service.
+exclusion for PowerShell is used for this service.
+
+Setup protects the service directories, then adds and verifies Microsoft
+Defender **antivirus** path exclusions for its code, state, VM, and image roots,
+plus a process exclusion for the protected `lablink-agent.exe`. This happens
+before copying or executing service binaries. A policy that prevents the
+requested exclusions causes setup to stop before modifying service binaries.
+ASR rules and their policy are not changed.
 
 Real-account probes established that assigning partition drive letters through
 the storage provider is still denied. Restricted Windows provisioning instead
@@ -96,6 +103,19 @@ By default:
 - Service state/keys: `%ProgramData%\LabLinkHyperV`.
 - Managed child storage: `%ProgramData%\LabLinkHyperV\VMs`.
 - Ubuntu image cache: `%ProgramData%\LabLinkHyperV\Images`.
+
+The protected code directory contains only the Windows agent, the Linux guest
+agent payload, and required appliance assets. Setup uses `lablink-server.exe`
+and `lablink-ca.exe` from the existing operator package rather than installing
+second copies in the service directory. Client certificates are issued directly
+into the protected state directory.
+
+Installer scratch files (including temporary native-helper compilation) use
+`StateRoot\Temp` after exclusions are verified. The running service also sets
+`TEMP` and `TMP` beneath that excluded state root. These guarantees cover
+LabLink-owned host files; shared operator registry/templates remain in the
+operator home, guest filesystem writes occur inside their VHDs, and Windows
+continues to manage its own service configuration and event logs.
 
 The elevated script accepts separate `-VMRoot`, `-ImageRoot`, `-InstallRoot`,
 and `-StateRoot` paths. Writes outside the installed VM root, traversal,
@@ -130,6 +150,25 @@ retained. A colliding profile belonging to another target is rejected, not
 overwritten. The ordinary full `LabLink Agent` service is separate and is not
 modified; remove any separately installed full host agent if this machine
 must expose no generic host execution endpoint.
+
+The main `install.ps1` also updates an already installed local Hyper-V service;
+`-LocalHyperV` is required only to opt in on a new installation.
+`Update-LabLink.ps1` detects the protected service separately from the operator,
+requires elevation to update it, and invokes its dedicated installer using the
+new package. `-SkipLocalHyperV` explicitly selects an operator-only update.
+When updating as a different Windows account, pass the original `-OperatorHome`
+to `Update-LabLink.ps1`, or `-LocalOperatorHome` to the main installer. New
+installations record the original operator home in protected `installation.json`
+and reuse it on subsequent upgrades. Existing CA/token identity mismatches are
+rejected before changing the service. Certificates are issued in protected
+staging and prior authentication files are included in upgrade rollback.
+Process stopping for operator updates is restricted to
+that operator directory; it does not kill the protected agent by executable name.
+An unsuccessful protected-service upgrade restores its prior runtime files and
+restarts it if it was previously running. Existing Defender exclusions are
+retained on uninstall because VM/state files are retained.
+An installed protected service is synchronized even when the operator version
+already matches, so exclusion preparation cannot be skipped by version probing.
 
 ```powershell
 & 'C:\LabLink\current\scripts\Install-LocalHyperV.ps1' -Uninstall

@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-24
+
+### Fixed
+
+- Local Hyper-V setup verifies Defender antivirus exclusions before staging
+  service files, keeps installer scratch data in excluded protected storage,
+  and reuses operator setup tools instead of copying a second MCP server.
+- Operator updates recognize the separate protected Hyper-V service, update it
+  through its installer, and scope process stopping to the selected installation.
+
 ## [0.10.0-beta.2] - 2026-11-23
 
 ### Fixed

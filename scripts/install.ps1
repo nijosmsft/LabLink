@@ -26,6 +26,7 @@ param(
     [switch]$Prerelease,
     [string]$InstallRoot = 'C:\LabLink',
     [switch]$LocalHyperV,
+    [string]$LocalOperatorHome,
     [string[]]$LocalWindowsBaseVHD = @(),
     [string[]]$LocalVSwitch = @('Default Switch'),
     [string]$LocalVMCredential = 'local-vm-admin'
@@ -357,8 +358,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "bootstrap-operator.ps1 failed with exit code $LASTEXITCODE"
     }
-    if ($LocalHyperV) {
-        $localOptions = @{PackageRoot=$destination; VMCredential=$LocalVMCredential}
+    $installedLocalHyperV=Get-Service -Name 'LabLinkHyperV' -ErrorAction SilentlyContinue
+    if ($LocalHyperV -or $installedLocalHyperV) {
+        $localOptions = @{PackageRoot=$destination}
+        if ($LocalOperatorHome) { $localOptions.OperatorHome=$LocalOperatorHome }
+        if ($LocalHyperV -or $PSBoundParameters.ContainsKey('LocalVMCredential')) { $localOptions.VMCredential=$LocalVMCredential }
         if ($PSBoundParameters.ContainsKey('LocalWindowsBaseVHD')) { $localOptions.WindowsBaseVHD=$LocalWindowsBaseVHD }
         if ($PSBoundParameters.ContainsKey('LocalVSwitch')) { $localOptions.VSwitch=$LocalVSwitch }
         & (Join-Path $currentPath 'scripts\Install-LocalHyperV.ps1') @localOptions

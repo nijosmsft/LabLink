@@ -50,6 +50,15 @@
     Skip interactive confirmation when running lablink-* processes need to be
     stopped. Without -Force, the script lists the processes and prompts.
 
+.PARAMETER SkipLocalHyperV
+    Update only the operator/full-agent installation, leaving an installed
+    protected LabLinkHyperV service unchanged. Otherwise it is updated through
+    its dedicated elevated installer, preserving its separate code/data paths.
+
+.PARAMETER OperatorHome
+    Original operator configuration home used when updating the protected
+    Hyper-V service. Explicitly forwarded to detached updates.
+
 .PARAMETER Detach
     Instead of running the update inline, register a Windows one-shot scheduled
     task (LabLinkSelfUpdate) that executes this script as SYSTEM approximately
@@ -95,6 +104,10 @@ param(
     [switch]$Force,
 
     [switch]$SkipServiceStop,
+
+    [switch]$SkipLocalHyperV,
+
+    [string]$OperatorHome,
 
     [switch]$Detach
 )
@@ -408,14 +421,59 @@ function Verify-Sha256 {
     Write-Ok "SHA256 OK ($actual)"
 }
 
+function Get-InstalledLocalHyperV {
+    $service=Get-CimInstance Win32_Service -Filter "Name='LabLinkHyperV'" -ErrorAction Stop
+    if (-not $service) { return $null }
+    if ($service.StartName -ine 'NT SERVICE\LabLinkHyperV') { throw 'Unexpected LabLinkHyperV service identity.' }
+    if ($service.PathName -match '^\s*"([^"]+)"') { $path=$Matches[1] }
+    elseif ($service.PathName -match '^\s*(\S+)') { $path=$Matches[1] }
+    else { throw 'Cannot determine the protected Hyper-V agent path.' }
+    if ((Split-Path -Leaf $path) -ine 'lablink-agent.exe' -or $service.PathName -notmatch '--hyperv-only(?:\s|$)') {
+        throw 'Existing LabLinkHyperV service is not the restricted agent.'
+    }
+    return [pscustomobject]@{Service=$service;AgentPath=$path}
+}
+
+function Resolve-LocalHyperVOperatorHome($LocalService,[string]$RequestedHome) {
+    if ($RequestedHome) { return $RequestedHome }
+    if ($LocalService) {
+        $record=Join-Path (Split-Path -Parent (Split-Path -Parent $LocalService.AgentPath)) 'installation.json'
+        if (Test-Path -LiteralPath $record) {
+            $homePath=([IO.File]::ReadAllText($record)|ConvertFrom-Json).operator_home
+            if (-not $homePath) {throw 'Protected installation record has no original operator home.'}
+            return $homePath
+        }
+    }
+    return Join-Path $HOME '.lablink'
+}
+
+function Update-LocalHyperV {
+    param([string]$PackageRoot,[string]$OperatorHomePath)
+    $installer=Join-Path $PackageRoot 'scripts\Install-LocalHyperV.ps1'
+    if (-not (Test-Path -LiteralPath $installer)) { throw 'Release is missing the local Hyper-V updater.' }
+    & $installer -PackageRoot $PackageRoot -OperatorHome $OperatorHomePath
+}
+
+function Test-LabLinkProcessPath([string]$Path,[string]$Destination) {
+    if (-not $Path) { return $false }
+    return [IO.Path]::GetFullPath($Path).StartsWith(
+        [IO.Path]::GetFullPath($Destination).TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)
+}
+
 function Stop-LabLinkProcesses {
-    param([switch]$Force, [switch]$SkipServiceStop)
+    param([switch]$Force, [switch]$SkipServiceStop,[Parameter(Mandatory)][string]$DestinationDir)
 
     # Stop the Windows service first so SCM cannot restart the process between
     # the kill and the binary swap.  On operator machines (no service) pass
     # -SkipServiceStop to bypass this step.
     if (-not $SkipServiceStop) {
-        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        $serviceInfo=Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        $servicePath=$null
+        if ($serviceInfo.PathName -match '^\s*"([^"]+)"') { $servicePath=$Matches[1] }
+        elseif ($serviceInfo.PathName -match '^\s*(\S+)') { $servicePath=$Matches[1] }
+        $svc = if (Test-LabLinkProcessPath $servicePath $DestinationDir) {
+            Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        } else { $null }
         if ($svc -and $svc.Status -in @('Running', 'StartPending', 'ContinuePending', 'Paused', 'PausePending')) {
             Write-Step "Stopping Windows service '$ServiceName'"
             Stop-Service -Name $ServiceName -Force -ErrorAction Stop
@@ -426,7 +484,10 @@ function Stop-LabLinkProcesses {
     }
 
     $names = $ManagedBinaries | ForEach-Object { [System.IO.Path]::GetFileNameWithoutExtension($_) }
-    $running = Get-Process -Name $names -ErrorAction SilentlyContinue
+    $running = @(Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object {
+        $path=try {$_.Path} catch {$null}
+        Test-LabLinkProcessPath $path $DestinationDir
+    })
     if (-not $running) {
         return
     }
@@ -507,6 +568,23 @@ function Install-Binaries {
     # .old files are intentionally preserved here. Call Commit-Install only
     # after Start-Service + Confirm-Install both succeed, or Rollback-Install on failure.
     return [pscustomobject]@{ Installed = $installed }
+}
+
+function Install-OperatorSupport {
+    param([string]$PackageRoot,[string]$DestinationDir)
+    $root=if ((Split-Path -Leaf $DestinationDir) -ieq 'bin') {Split-Path -Parent $DestinationDir} else {$DestinationDir}
+    $scripts=Join-Path $root 'scripts'
+    New-Item -ItemType Directory -Path $scripts -Force | Out-Null
+    foreach ($name in @('Install-LocalHyperV.ps1','Update-LabLink.ps1','install.ps1')) {
+        $source=Join-Path $PackageRoot ("scripts\"+$name)
+        if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $scripts -Force -ErrorAction Stop }
+    }
+    $linux=Join-Path $PackageRoot 'bin\linux-amd64\lablink-agent'
+    if (Test-Path -LiteralPath $linux) {
+        $target=Join-Path $DestinationDir 'linux-amd64'
+        New-Item -ItemType Directory -Path $target -Force | Out-Null
+        Copy-Item -LiteralPath $linux -Destination $target -Force -ErrorAction Stop
+    }
 }
 
 function Commit-Install {
@@ -632,7 +710,21 @@ try {
     $destination = Resolve-DestinationDir
     $serverPath  = Join-Path $destination $ServerBinary
 
+    $installedLocalHyperV=Get-InstalledLocalHyperV
+    if ($installedLocalHyperV) {
+        if ([IO.Path]::GetFullPath($destination).TrimEnd('\') -ieq (Split-Path -Parent $installedLocalHyperV.AgentPath).TrimEnd('\')) {
+            throw 'The protected Hyper-V bin directory is not an operator install destination. Select the operator directory; its agent is updated separately.'
+        }
+    }
     $currentVersion = Get-CurrentInstalledVersion -BinaryPath $serverPath
+    $localHyperV=if (-not $SkipLocalHyperV) {$installedLocalHyperV} else {$null}
+    if ($localHyperV) {
+        $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+        if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Updating the installed protected Hyper-V service requires elevation. Run elevated, or explicitly use -SkipLocalHyperV for an operator-only update.'
+        }
+    }
+    $OperatorHome=Resolve-LocalHyperVOperatorHome $localHyperV $OperatorHome
     if ($currentVersion) {
         Write-Info "currently installed: v$currentVersion"
     } else {
@@ -640,7 +732,7 @@ try {
     }
 
     $targetTrim = $Version.TrimStart('v')
-    if ($currentVersion -and $currentVersion -eq $targetTrim) {
+    if ($currentVersion -and $currentVersion -eq $targetTrim -and -not $localHyperV) {
         Write-Host ""
         Write-Host "Already at $Version. Nothing to do." -ForegroundColor Green
         exit 0
@@ -654,6 +746,8 @@ try {
         if ($UpdateMcpConfig) { $forwarded += '-UpdateMcpConfig' }
         if ($Force) { $forwarded += '-Force' }
         if ($SkipServiceStop) { $forwarded += '-SkipServiceStop' }
+        if ($SkipLocalHyperV) { $forwarded += '-SkipLocalHyperV' }
+        $forwarded += '-OperatorHome'; $forwarded += $OperatorHome
         $scriptPath = $MyInvocation.MyCommand.Path
         Invoke-DetachedUpdate -ScriptPath $scriptPath -ForwardedArgs $forwarded
         return
@@ -697,15 +791,21 @@ try {
             throw "Could not find bin\ directory inside extracted release zip."
         }
         Write-Info "release bin: $binDir"
+        if ($localHyperV) {
+            Write-Step "Updating the protected Hyper-V agent separately"
+            Update-LocalHyperV -PackageRoot (Split-Path -Parent $binDir) -OperatorHomePath $OperatorHome
+            Confirm-Install -BinaryPath $localHyperV.AgentPath -ExpectedVersion $Version | Out-Null
+        }
 
         $script:serviceRestartHandled = $false
         $installResult = $null
 
         try {
-            Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop
+            Stop-LabLinkProcesses -Force:$Force -SkipServiceStop:$SkipServiceStop -DestinationDir $destination
 
             $installResult = Install-Binaries -ExtractedBinDir $binDir -DestinationDir $destination
             $installed = $installResult.Installed
+            Install-OperatorSupport -PackageRoot (Split-Path -Parent $binDir) -DestinationDir $destination
 
             if ($script:serviceWasStopped) {
                 Write-Step "Restarting Windows service '$ServiceName'"

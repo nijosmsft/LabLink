@@ -15,7 +15,15 @@ Add-Type -TypeDefinition $definition.Value
 $function=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Set-PrivateDirectory'},$true)
 if(-not $function){throw 'Installer directory protection function missing'}
 . ([scriptblock]::Create($function.Extent.Text))
-$script:serviceSid=([Security.Principal.NTAccount]$ServiceIdentity).Translate([Security.Principal.SecurityIdentifier]).Value
+if($ServiceIdentity -like 'NT SERVICE\*'){
+    $sidOutput=& sc.exe showsid $ServiceIdentity.Substring(11)
+    if($LASTEXITCODE -ne 0){throw 'Cannot derive the test virtual-service SID'}
+    $match=[regex]::Match(($sidOutput -join "`n"),'S-1-5-80(?:-\d+){5}')
+    if(-not $match.Success){throw 'Test virtual-service SID missing'}
+    $script:serviceSid=$match.Value
+}else{
+    $script:serviceSid=([Security.Principal.NTAccount]$ServiceIdentity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
 $VMRoot=Join-Path $TestRoot 'VMs'
 $ImageRoot=Join-Path $TestRoot 'Images'
 New-Item -ItemType Directory -Path $TestRoot | Out-Null

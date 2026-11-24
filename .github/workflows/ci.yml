@@ -39,3 +39,15 @@ jobs:
 
       - name: go test
         run: go test ./... -timeout 5m
+
+      - name: Windows installer and split-path updater tests
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          & .\scripts\tests\LocalHyperV.Helpers.Tests.ps1
+          if (-not $?) { exit 1 }
+          & .\scripts\tests\Update-LabLink.Tests.ps1
+          if (-not $?) { exit 1 }
+          $env:PSModulePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+          & powershell.exe -NoProfile -NonInteractive -File .\scripts\tests\LocalHyperV.Helpers.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
