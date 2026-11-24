@@ -59,15 +59,10 @@ type simpleIsolatedAppliance interface {
 
 type simpleIsolatedHost interface {
 	PhysicalIdentity(context.Context, Target) (simplePhysicalIdentity, error)
-	Discover(context.Context, Target) (simpleHostDiscovery, error)
 }
 
 type simplePhysicalIdentity struct {
 	PhysicalHostID string `json:"physical_host_id"`
-}
-
-type simpleHostDiscovery struct {
-	Routes []isolated.RouteObservation `json:"routes"`
 }
 
 type simpleLinuxCreator interface {
@@ -127,30 +122,6 @@ if ([string]::IsNullOrWhiteSpace($id)) { throw 'physical host identity is unavai
 		return simplePhysicalIdentity{}, err
 	}
 	var value simplePhysicalIdentity
-	err = json.Unmarshal([]byte(jsonExtract(out)), &value)
-	return value, err
-}
-
-func (h productionSimpleIsolatedHost) Discover(
-	ctx context.Context,
-	target Target,
-) (simpleHostDiscovery, error) {
-	script := `
-[array]$routes = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object {
-  [pscustomobject]@{
-    destination_prefix=[string]$_.DestinationPrefix
-    next_hop=[string]$_.NextHop
-    interface_alias=[string]$_.InterfaceAlias
-    route_metric=[int]$_.RouteMetric
-  }
-})
-[pscustomobject]@{ routes=$routes } | ConvertTo-Json -Depth 5 -Compress
-`
-	out, _, err := runPS(ctx, h.reg, h.pool, target, script, vmDefaultTimeoutSec)
-	if err != nil {
-		return simpleHostDiscovery{}, err
-	}
-	var value simpleHostDiscovery
 	err = json.Unmarshal([]byte(jsonExtract(out)), &value)
 	return value, err
 }

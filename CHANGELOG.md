@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-24
+
+### Fixed
+
+- Private isolated-network allocation no longer rejects subnets that overlap
+  host or VPN routes. Subnets already allocated within the same orchestrator
+  remain reserved; host routes and VPN configuration are not modified.
+
 ## [0.10.2] - 2026-11-24
 
 ### Fixed

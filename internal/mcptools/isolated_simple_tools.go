@@ -879,25 +879,22 @@ func addSimpleIsolatedNetworkHandler(deps *isolatedLifecycleDeps) server.ToolHan
 				used[value.SubnetIndex] = true
 			}
 		}
-		discovery, err := deps.host.Discover(ctx, target)
-		if err != nil {
-			return isolatedError(err)
-		}
 		subnetIndex := -1
 		var prefix netip.Prefix
+		// Private switches have no host vNIC; host/VPN routes do not reserve their subnets.
 		for index := 0; index < isolated.PrivateSubnetCount; index++ {
 			if used[index] {
 				continue
 			}
-			candidate, candidateErr := isolated.PrivateSubnet(index)
-			if candidateErr == nil &&
-				len(isolated.FindPrivateRouteConflicts(candidate, discovery.Routes)) == 0 {
-				subnetIndex, prefix = index, candidate
-				break
+			candidate, err := isolated.PrivateSubnet(index)
+			if err != nil {
+				return isolatedError(err)
 			}
+			subnetIndex, prefix = index, candidate
+			break
 		}
 		if subnetIndex < 0 {
-			return isolatedError(errors.New("no private /26 subnet remains"))
+			return isolatedError(errors.New("no unused private /26 subnet remains for this orchestrator"))
 		}
 		mac, err := isolated.DeterministicMAC(networkID.String())
 		if err != nil {

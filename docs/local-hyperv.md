@@ -43,6 +43,11 @@ creation. The same Ubuntu profile works with `create_isolated_orchestrator`.
 VM tools targeting `localhost` use the registered `local-hyperv` service;
 explicit remote targets keep using their ordinary full agents.
 
+Isolated networks use private vSwitches and may reuse address space covered by
+host/VPN routes. Allocation still avoids subnets already in use by the same
+orchestrator. This does not add host routes, alter the VPN, or make private guest
+IPs directly reachable from the host; use their registered relay endpoints.
+
 ## Process and transport model
 
 - The operator MCP server continues to run as the interactive user.

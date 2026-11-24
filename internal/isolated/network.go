@@ -18,41 +18,6 @@ const (
 	MaxVMsPerOrchestrator      = 100
 )
 
-type RouteConflictObservation struct {
-	Candidate netip.Prefix
-	Route     RouteObservation
-}
-
-type RouteObservation struct {
-	DestinationPrefix string `json:"destination_prefix"`
-	NextHop           string `json:"next_hop"`
-	InterfaceAlias    string `json:"interface_alias"`
-	RouteMetric       int    `json:"route_metric"`
-}
-
-func FindPrivateRouteConflicts(
-	candidate netip.Prefix,
-	routes []RouteObservation,
-) []RouteConflictObservation {
-	if !candidate.IsValid() {
-		return []RouteConflictObservation{{Candidate: candidate}}
-	}
-
-	var conflicts []RouteConflictObservation
-	for _, route := range routes {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(route.DestinationPrefix))
-		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
-			continue
-		}
-		if candidate.Overlaps(prefix.Masked()) {
-			conflicts = append(conflicts, RouteConflictObservation{
-				Candidate: candidate, Route: route,
-			})
-		}
-	}
-	return conflicts
-}
-
 func DeterministicMAC(resourceID string) (string, error) {
 	resourceID = strings.TrimSpace(resourceID)
 	if resourceID == "" {

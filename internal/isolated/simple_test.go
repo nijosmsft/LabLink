@@ -19,10 +19,6 @@ func TestSimplePrivateNetworkHelpers(t *testing.T) {
 	if err != nil || address.String() != "192.168.240.10" {
 		t.Fatalf("unexpected first guest: %s %v", address, err)
 	}
-	conflicts := FindPrivateRouteConflicts(prefix, nil)
-	if len(conflicts) != 0 {
-		t.Fatalf("unexpected conflicts: %+v", conflicts)
-	}
 	if _, err := GuestAddress(netip.Prefix{}, 10); err == nil {
 		t.Fatal("invalid prefix accepted")
 	}

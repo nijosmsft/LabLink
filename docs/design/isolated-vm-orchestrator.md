@@ -1272,24 +1272,16 @@ The agent records:
 - Default route.
 - Resolver addresses from systemd-resolved or the effective resolver file.
 
-Before reserving a subnet, the appliance compares it with every main-link IPv4
-address prefix and every non-default destination route. The literal
-`0.0.0.0/0` default route is excluded from overlap testing; it represents
-upstream reachability and must not collide with every candidate `/26`.
+Private-network allocation does not use the Hyper-V host route table as an
+overlap veto. A broad VPN advertisement covering the pool does not consume its
+capacity: private vSwitches have no host vNIC, and management uses orchestrator
+relay endpoints. No host route or VPN change is made to permit allocation.
 
-Collision inputs include connected prefixes, static routes, DHCP classless
-routes, policy-table routes with destination prefix other than `/0`, and
-specific host routes, including a host route to a default gateway. "Associated
-with the default route" does not mean expanding its next hop to all IPv4
-space. Only the default destination prefix itself is ignored.
-
-CIDR overlap uses interval math, not string-prefix comparison. An overlapping
-`/26` is reserved as `main_route_conflict` and is never offered. If a specific
-non-default route such as `192.168.240.0/20` or a covering prefix overlaps the
-entire pool, the orchestrator has zero network capacity. Existing networks
-that become overlapped are marked degraded and block new child creation; they
-are not silently renumbered. There is no hidden VRF, policy routing, or
-namespace workaround.
+Each orchestrator still allocates distinct `/26` subnets for its active private
+networks. The same address space may be reused on separate orchestrators.
+Private address reuse does not make overlapping external destinations
+unambiguous inside a guest or its router; it is not an implicit VRF or a
+translation mechanism for reaching two destinations with the same address.
 
 ### 10.2 Private NICs
 
@@ -2994,11 +2986,11 @@ Release validation must cover both modes:
 | 17th network | Capacity error. |
 | Remove nonempty network | Refused. |
 | Same CIDR on two orchestrators | Supported. |
-| Candidate `/26` overlaps main address/route | Candidate reserved as conflict and not allocated. |
-| Main link has only `0.0.0.0/0` plus non-overlapping connected route | Candidate `/26` remains available. |
-| DHCP/static/policy route with non-default overlapping prefix | Candidate `/26` is rejected. |
-| Specific host route inside candidate `/26` | Candidate `/26` is rejected. |
-| Main route overlaps whole `/20` | Network capacity is zero; no VRF workaround. |
+| Candidate `/26` overlaps a host/VPN route | Allowed for the private network; host routes unchanged. |
+| Host default, DHCP, static, or policy route | Not an input to private subnet allocation. |
+| Specific host route inside candidate `/26` | Does not reserve the private subnet. |
+| VPN advertisement overlaps whole `/20` | Unused private subnets remain available. |
+| Every `/26` already allocated to this orchestrator | Capacity error. |
 | Cross-network IPv4 | Blocked. |
 | Same-switch peer traffic | Allowed directly. |
 
