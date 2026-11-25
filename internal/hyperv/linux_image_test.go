@@ -1,7 +1,11 @@
 package hyperv
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -260,6 +264,119 @@ func TestLinuxImageBuilderUserTaskUsesEphemeralPasswordLogonAndExactCleanup(t *t
 	taskStart := strings.Index(script, "Start-ScheduledTask")
 	if effectiveEnv < 0 || taskStart < 0 || effectiveEnv > taskStart {
 		t.Fatal("effective builder identity is not set in the wrapper environment before task start")
+	}
+}
+
+func TestLinuxImageBuilderUserTaskRunnerPreservesNativeExitAndOutput(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("builder runner behavior requires Windows PowerShell")
+	}
+	script, err := BuildLinuxImageBuilderUserTaskScript("unused", 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tail, found := strings.Cut(script, "[IO.File]::WriteAllBytes($runnerPath, [Convert]::FromBase64String('")
+	if !found {
+		t.Fatal("encoded runner is missing")
+	}
+	encoded, _, found := strings.Cut(tail, "'")
+	if !found {
+		t.Fatal("encoded runner is unterminated")
+	}
+	runner, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name     string
+		payload  string
+		wantExit int
+		markers  []string
+	}{
+		{
+			name: "successful payload with stderr",
+			payload: `[Console]::Error.WriteLine('[warning] root session unavailable')
+Write-Output '{"status":"complete"}'
+exit 0
+`,
+		},
+		{
+			name: "failed payload preserves both streams",
+			payload: `[Console]::Error.WriteLine('stderr-marker')
+Write-Output 'stdout-marker'
+exit 23
+`,
+			wantExit: 23,
+			markers:  []string{"stdout-marker", "stderr-marker"},
+		},
+		{
+			name: "oversized stderr is rejected before merging",
+			payload: `[Console]::Error.WriteLine(('x' * 1048577))
+Write-Output 'stdout-marker'
+exit 23
+`,
+			wantExit: -1,
+			markers:  []string{"stdout-marker", "BUILDER_USER_TASK_OUTPUT_TOO_LARGE", "payload exited 23"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "builder job")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range map[string][]byte{
+				"runner.ps1":    runner,
+				"payload.ps1":   []byte(tt.payload),
+				"identity.json": []byte(`{"user":"builder","sid":"test-sid"}`),
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), content, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive",
+				"-ExecutionPolicy", "Bypass", "-File", filepath.Join(dir, "runner.ps1"))
+			output, runErr := cmd.CombinedOutput()
+			if (runErr != nil) != (tt.wantExit != 0) {
+				t.Fatalf("runner: %v\n%s", runErr, output)
+			}
+			if cmd.ProcessState == nil || uint32(cmd.ProcessState.ExitCode()) != uint32(tt.wantExit) {
+				t.Fatalf("runner process state = %v, want exit %d: %s", cmd.ProcessState, tt.wantExit, output)
+			}
+			resultJSON, err := os.ReadFile(filepath.Join(dir, "result.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				ExitCode int `json:"exit_code"`
+			}
+			if err := json.Unmarshal(resultJSON, &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.ExitCode != tt.wantExit {
+				t.Fatalf("result exit = %d, want %d", result.ExitCode, tt.wantExit)
+			}
+			payloadOutput, err := os.ReadFile(filepath.Join(dir, "payload-output.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantExit == 0 {
+				var payloadResult struct {
+					Status string `json:"status"`
+				}
+				if err := json.Unmarshal(payloadOutput, &payloadResult); err != nil || payloadResult.Status != "complete" {
+					t.Fatalf("stderr corrupted successful JSON output: %q, err=%v", payloadOutput, err)
+				}
+			} else {
+				for _, marker := range tt.markers {
+					if !strings.Contains(string(payloadOutput), marker) {
+						t.Errorf("failure lost %q: %q", marker, payloadOutput)
+					}
+				}
+				if len(payloadOutput) > 1048576 {
+					t.Fatalf("oversized diagnostics were merged into output: %d bytes", len(payloadOutput))
+				}
+			}
+		})
 	}
 }
 
