@@ -213,6 +213,52 @@ func TestForwardPortHandlerEndToEnd(t *testing.T) {
 	}
 }
 
+func TestForwardUsesRefreshedEndpointForNewConnections(t *testing.T) {
+	original := startMinAgent(t)
+	reg := newTestRegistry(t, original)
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	request := reqNoToken(map[string]any{"node": "node1", "remote_addr": startEchoListener(t)})
+	result, err := forwardPortHandler(reg, pool)(context.Background(), request)
+	if err != nil || result.IsError {
+		t.Fatalf("open forward: %v %+v", err, result)
+	}
+	entries := forwards.list()
+	if len(entries) != 1 {
+		t.Fatalf("forward count = %d", len(entries))
+	}
+	fwd := entries[0]
+	t.Cleanup(func() {
+		forwards.remove(fwd.ID)
+		fwd.cancel()
+		_ = fwd.ln.Close()
+	})
+	roundTrip := func() {
+		t.Helper()
+		conn, err := net.DialTimeout("tcp", fwd.LocalAddr, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Write([]byte("refresh")); err != nil {
+			t.Fatal(err)
+		}
+		response := make([]byte, len("refresh"))
+		if _, err := io.ReadFull(conn, response); err != nil || string(response) != "refresh" {
+			t.Fatalf("forward did not recover: %q %v", response, err)
+		}
+	}
+	roundTrip()
+	node, _ := reg.GetNode("node1")
+	node.Address = startMinAgent(t)
+	if err := reg.SetNode(node); err != nil {
+		t.Fatal(err)
+	}
+	pool.ResetConnection(original)
+	roundTrip()
+}
+
 func TestForwardPortMissingNode(t *testing.T) {
 	reg := registry.Load(filepath.Join(t.TempDir(), "empty.json"))
 	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})

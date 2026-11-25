@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/nijosmsft/lablink/internal/agentclient"
-	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/registry"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 )
@@ -25,14 +23,14 @@ const (
 
 // NodeState represents the health status of a node.
 type NodeState struct {
-	Status              string    `json:"status"` // "online", "offline", "unknown"
-	LastSeen            time.Time `json:"last_seen,omitempty"`
-	ConsecutiveFails    int       `json:"consecutive_fails"`
-	AgentVersion        string    `json:"agent_version,omitempty"`
-	UpgradeRecommended  bool      `json:"upgrade_recommended"`
-	VersionWarning      string    `json:"version_warning,omitempty"`
-	applianceReady      bool
-	managementIPCapable bool
+	Status             string    `json:"status"` // "online", "offline", "unknown"
+	LastSeen           time.Time `json:"last_seen,omitempty"`
+	ConsecutiveFails   int       `json:"consecutive_fails"`
+	AgentVersion       string    `json:"agent_version,omitempty"`
+	UpgradeRecommended bool      `json:"upgrade_recommended"`
+	VersionWarning     string    `json:"version_warning,omitempty"`
+	applianceReady     bool
+	endpoint           agentclient.Endpoint
 }
 
 // Monitor periodically probes registered nodes and cancels contexts for dead nodes.
@@ -52,17 +50,31 @@ type Monitor struct {
 
 	warnedVersionTuples map[string]struct{}
 
-	stopCh      chan struct{}
-	onConnected func(context.Context, *registry.Node, *pb.GetInfoResponse)
+	stopCh         chan struct{}
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	startOnce      sync.Once
+	stopOnce       sync.Once
+	onConnected    func(context.Context, *registry.Node, *pb.GetInfoResponse)
+	beforeProbe    func(context.Context) error
+	reconcileError string
 }
 
 // SetOnConnected installs an explicit post-probe action. It runs outside monitor
-// locks, on the first successful probe, recovery, appliance readiness, or newly
-// advertised management-IP pin capability on a ready appliance.
+// locks, on the first successful probe, recovery, or appliance readiness.
 func (m *Monitor) SetOnConnected(fn func(context.Context, *registry.Node, *pb.GetInfoResponse)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onConnected = fn
+}
+
+// SetBeforeProbe installs host-assisted endpoint reconciliation before the next
+// registry snapshot, including the initial startup probe.
+func (m *Monitor) SetBeforeProbe(fn func(context.Context) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.beforeProbe = fn
 }
 
 // New creates a new health monitor.
@@ -71,6 +83,7 @@ func New(reg *registry.Registry, pool *agentclient.Pool, serverVersion ...string
 	if len(serverVersion) > 0 {
 		version = serverVersion[0]
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &Monitor{
 		states:              make(map[string]*NodeState),
 		ctxs:                make(map[string]context.Context),
@@ -83,6 +96,8 @@ func New(reg *registry.Registry, pool *agentclient.Pool, serverVersion ...string
 		serverVersion:       version,
 		warnedVersionTuples: make(map[string]struct{}),
 		stopCh:              make(chan struct{}),
+		ctx:                 ctx,
+		cancel:              cancel,
 	}
 
 	// Override from env vars.
@@ -107,12 +122,22 @@ func New(reg *registry.Registry, pool *agentclient.Pool, serverVersion ...string
 
 // Start begins the background health check loop.
 func (m *Monitor) Start() {
-	go m.loop()
+	m.startOnce.Do(func() {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			m.loop()
+		}()
+	})
 }
 
 // Stop terminates the health check loop.
 func (m *Monitor) Stop() {
-	close(m.stopCh)
+	m.stopOnce.Do(func() {
+		m.cancel()
+		close(m.stopCh)
+	})
+	m.wg.Wait()
 }
 
 // NodeContext returns a context that will be cancelled if the node is declared dead.
@@ -197,6 +222,31 @@ func (m *Monitor) loop() {
 }
 
 func (m *Monitor) probeAll() {
+	if m.ctx.Err() != nil {
+		return
+	}
+	m.mu.RLock()
+	reconcile := m.beforeProbe
+	m.mu.RUnlock()
+	if reconcile != nil {
+		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+		err := reconcile(ctx)
+		cancel()
+		detail := ""
+		if err != nil {
+			detail = err.Error()
+		}
+		m.mu.Lock()
+		changed := detail != m.reconcileError
+		m.reconcileError = detail
+		m.mu.Unlock()
+		if err != nil && changed {
+			log.Printf("healthmon: endpoint reconciliation: %v", err)
+		}
+	}
+	if m.ctx.Err() != nil {
+		return
+	}
 	nodes := m.reg.AllNodes()
 	if len(nodes) == 0 {
 		return
@@ -220,16 +270,21 @@ func (m *Monitor) probeAll() {
 }
 
 func (m *Monitor) probeNode(node *registry.Node) {
+	m.refreshEndpoint(node)
 	client, err := m.pool.GetClient(node.Address, node.TLSServerName)
 	if err != nil {
 		m.recordFailure(node)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), m.probeTimeout)
+	ctx, cancel := context.WithTimeout(m.ctx, m.probeTimeout)
 	defer cancel()
 
 	info, err := client.GetInfo(ctx, &pb.GetInfoRequest{})
+	if current, found := m.reg.GetNode(node.Name); found &&
+		(current.Address != node.Address || current.TLSServerName != node.TLSServerName) {
+		return
+	}
 	if err != nil {
 		m.recordFailure(node)
 		return
@@ -238,20 +293,46 @@ func (m *Monitor) probeNode(node *registry.Node) {
 	connected := m.recordSuccess(node, info.AgentVersion, true)
 	m.mu.Lock()
 	state := m.states[node.Name]
-	capable := slices.Contains(info.GetCapabilities(), appliance.ManagementIPCapability)
-	connected = connected || info.GetApplianceReady() && (!state.applianceReady || capable && !state.managementIPCapable)
+	connected = connected || info.GetApplianceReady() && !state.applianceReady
 	state.applianceReady = info.GetApplianceReady()
-	state.managementIPCapable = capable
 	callback := m.onConnected
 	m.mu.Unlock()
 	if connected && callback != nil {
-		actionCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		actionCtx, cancel := context.WithTimeout(m.ctx, 45*time.Second)
 		defer cancel()
 		callback(actionCtx, node, info)
 	}
 }
 
+func (m *Monitor) refreshEndpoint(node *registry.Node) {
+	endpoint := agentclient.Endpoint{Address: node.Address, TLSServerName: node.TLSServerName}
+	m.mu.Lock()
+	state := m.states[node.Name]
+	if state == nil {
+		state = &NodeState{Status: "unknown"}
+		m.states[node.Name] = state
+	}
+	previous := state.endpoint
+	changed := previous.Address != "" && previous != endpoint
+	if changed {
+		if cancel := m.cancels[node.Name]; cancel != nil {
+			cancel()
+		}
+		delete(m.ctxs, node.Name)
+		delete(m.cancels, node.Name)
+		state.Status = "unknown"
+		state.ConsecutiveFails = 0
+		state.applianceReady = false
+	}
+	state.endpoint = endpoint
+	m.mu.Unlock()
+	if changed {
+		m.pool.ResetEndpoint(previous)
+	}
+}
+
 func (m *Monitor) recordSuccess(node *registry.Node, agentVersion string, reportVersion bool) bool {
+	m.refreshEndpoint(node)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

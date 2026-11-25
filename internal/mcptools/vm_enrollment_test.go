@@ -177,7 +177,41 @@ func splitEnrollmentAddress(t *testing.T, address string) (string, int) {
 	return host, port
 }
 
+func TestEnrollmentPersistsVMEndpointBindingWithoutLosingLabels(t *testing.T) {
+	address, transport := startEnrollmentMTLSAgent(t, "bound-guest")
+	host, port := splitEnrollmentAddress(t, address)
+	reg := newRebootTestRegistry(t, map[string]string{"bound-guest": "192.0.2.10:9091"})
+	node, _ := reg.GetNode("bound-guest")
+	node.Labels = map[string]string{"user-label": "preserved"}
+	if err := reg.SetNode(node); err != nil {
+		t.Fatal(err)
+	}
+	pool := agentclient.NewPool("", transport)
+	defer pool.Close()
+	oldMonitor := hmon
+	hmon = nil
+	t.Cleanup(func() { hmon = oldMonitor })
+	err := verifyEnrolledVMWithOptions(context.Background(), windowsVMPlan{
+		Target: "hyperv-host", LabLinkNodeName: "bound-guest", LabLinkPort: port,
+	}, startedVMInfo{
+		IPAddress: host, VMID: "original-vm-guid", MAC: "02:15:5d:00:00:01",
+	}, reg, pool, true, enrollmentWaitOptions{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := reg.GetNode("bound-guest")
+	if bound.Labels[vmHostLabel] != "hyperv-host" || bound.Labels[vmIDLabel] != "original-vm-guid" ||
+		bound.Labels[vmMACLabel] != "02155D000001" || bound.Labels["user-label"] != "preserved" {
+		t.Fatalf("enrollment lost the stable binding or existing labels: %+v", bound)
+	}
+}
+
 func startEnrollmentMTLSAgent(t *testing.T, serverName string) (string, internalsec.ClientTransportConfig) {
+	t.Helper()
+	return startEnrollmentMTLSAgentServer(t, serverName, &enrollmentInfoAgent{})
+}
+
+func startEnrollmentMTLSAgentServer(t *testing.T, serverName string, agent pb.NodeAgentServer) (string, internalsec.ClientTransportConfig) {
 	t.Helper()
 	dir := t.TempDir()
 	now := time.Now()
@@ -233,7 +267,7 @@ func startEnrollmentMTLSAgent(t *testing.T, serverName string) (string, internal
 		t.Fatal(err)
 	}
 	server := grpc.NewServer(grpc.Creds(serverCreds))
-	pb.RegisterNodeAgentServer(server, &enrollmentInfoAgent{})
+	pb.RegisterNodeAgentServer(server, agent)
 	go func() { _ = server.Serve(ln) }()
 	t.Cleanup(func() {
 		server.Stop()

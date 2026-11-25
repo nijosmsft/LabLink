@@ -715,7 +715,7 @@ func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server
 			seed := profile.SeedConfig(deps.serverVersion, id.String())
 			plan.Orchestrator = &seed
 			result, err := deps.linux.Create(ctx, linuxReq, plan, resolvedTarget, progress)
-			if err != nil || result == nil || result.IsError {
+			if err != nil || !linuxVMProvisioningComplete(result, true) {
 				if err != nil {
 					return isolatedError(err)
 				}
@@ -749,25 +749,14 @@ func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server
 				return isolatedError(err)
 			}
 			record.MainIP = optionalTrimmed(nodeHost(node.Address))
+			record.MainMAC = optionalTrimmed(node.Labels[vmMACLabel])
 			record.ApplianceSchema = int(readiness.ProtocolVersion)
 			seen := isolatedNow()
 			record.LastSeenAt = &seen
 			if err := deps.state.PutOrchestrator(ctx, record); err != nil {
 				return isolatedError(err)
 			}
-			result = simpleIsolatedResult("**Isolated orchestrator created**", record)
-			if pinner, ok := deps.appliance.(interface {
-				PinManagementIPv4(context.Context, string) (string, error)
-			}); ok {
-				pinCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-				message, pinErr := pinner.PinManagementIPv4(pinCtx, record.ID)
-				cancel()
-				if pinErr != nil {
-					message = "Management IPv4 not pinned: " + pinErr.Error()
-				}
-				result.Content = append(result.Content, mcp.NewTextContent(message))
-			}
-			return result, nil
+			return simpleIsolatedResult("**Isolated orchestrator created**", record), nil
 		}
 		return withSimpleTargetLease(ctx, req, deps, target.Name, run)
 	}
@@ -1278,7 +1267,7 @@ func createSimpleIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 					ctx, linuxReq, plan, resolvedTarget, deps.registry, deps.pool,
 					deps.defaults, deps.credentials, deps.audit, deps.enrollment,
 					deps.lease, progress)
-				if err != nil || result == nil || result.IsError {
+				if err != nil || !linuxVMProvisioningComplete(result, false) {
 					if err != nil {
 						return isolatedError(err)
 					}

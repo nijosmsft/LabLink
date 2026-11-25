@@ -10,6 +10,33 @@ import (
 	"time"
 )
 
+func TestEndpointBatchWriteFailurePreservesRegisteredAddresses(t *testing.T) {
+	reg := Load(filepath.Join(t.TempDir(), "nodes.json"))
+	nodes := []*Node{
+		{Name: "parent", Address: "192.0.2.10:9091", TLSServerName: "parent"},
+		{Name: "child", Address: "192.0.2.10:20000", TLSServerName: "child"},
+	}
+	for _, node := range nodes {
+		if err := reg.SetNode(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(reg.filePath+".tmp", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.UpdateAddresses(nodes, map[string]string{
+		"parent": "192.0.2.20:9091", "child": "192.0.2.20:20000",
+	}); err == nil {
+		t.Fatal("injected registry write failure was ignored")
+	}
+	for _, original := range nodes {
+		got, _ := reg.GetNode(original.Name)
+		if got.Address != original.Address {
+			t.Fatalf("failed persistence retained an in-memory endpoint update: %+v", got)
+		}
+	}
+}
+
 func TestRemoveNodePrunesTopologies(t *testing.T) {
 	reg := &Registry{
 		nodes: map[string]*Node{

@@ -75,6 +75,35 @@ func newExecRecordAgent() *execRecordAgent {
 	}
 }
 
+func TestRebootIdentityProbeFollowsRefreshedRegistration(t *testing.T) {
+	original, _ := startExecAgent(t)
+	recovered, agent := startExecAgent(t)
+	agent.mu.Lock()
+	agent.rebooted = true
+	agent.mu.Unlock()
+	reg := newRebootTestRegistry(t, map[string]string{"node1": original})
+	node, _ := reg.GetNode("node1")
+	plan, err := newRebootPlan(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.registry = reg
+	pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+	defer pool.Close()
+	before, _, err := readBootIdentity(context.Background(), pool, plan, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.Address = recovered
+	if err := reg.SetNode(node); err != nil {
+		t.Fatal(err)
+	}
+	after, authenticated, err := readBootIdentity(context.Background(), pool, plan, true)
+	if err != nil || !authenticated || before == after || plan.node.Address != recovered {
+		t.Fatalf("reboot wait used a stale endpoint: %s %s %v %v", before, after, authenticated, err)
+	}
+}
+
 func (a *execRecordAgent) Execute(req *pb.ExecuteRequest, stream grpc.ServerStreamingServer[pb.ExecuteResponse]) error {
 	a.mu.Lock()
 	a.calls = append(a.calls, req)

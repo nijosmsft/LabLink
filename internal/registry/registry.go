@@ -3,6 +3,7 @@ package registry
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,7 +168,11 @@ func (r *Registry) withWriteLock(fn func() error) error {
 	if err := fn(); err != nil {
 		return err
 	}
-	return r.saveAtomicLocked()
+	if err := r.saveAtomicLocked(); err != nil {
+		r.reloadFromDiskLocked()
+		return err
+	}
+	return nil
 }
 
 // withReadLock guarantees the caller observes the freshest on-disk state by
@@ -240,6 +245,33 @@ func (r *Registry) SetNode(n *Node) error {
 			}
 		}
 		r.nodes[next.Name] = next
+		return nil
+	})
+}
+
+// UpdateAddresses commits a related set of endpoint changes in one registry write.
+// The original identities and addresses must still match the caller's snapshot.
+func (r *Registry) UpdateAddresses(nodes []*Node, addresses map[string]string) error {
+	return r.withWriteLock(func() error {
+		for _, node := range nodes {
+			if node == nil {
+				return fmt.Errorf("endpoint reconciliation node must not be nil")
+			}
+			current := r.nodes[node.Name]
+			if current == nil || current.TLSServerName != node.TLSServerName ||
+				current.TransportMode != node.TransportMode || !maps.Equal(current.Labels, node.Labels) ||
+				current.Address != node.Address && current.Address != addresses[node.Name] {
+				return fmt.Errorf("node %q changed during endpoint reconciliation", node.Name)
+			}
+			if strings.TrimSpace(addresses[node.Name]) == "" {
+				return fmt.Errorf("node %q has an empty replacement address", node.Name)
+			}
+		}
+		for _, node := range nodes {
+			next := cloneNode(r.nodes[node.Name])
+			next.Address = addresses[node.Name]
+			r.nodes[node.Name] = next
+		}
 		return nil
 	})
 }

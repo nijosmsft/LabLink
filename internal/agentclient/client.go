@@ -74,6 +74,15 @@ func (p *Pool) GetEndpointClient(endpoint Endpoint) (pb.NodeAgentClient, error) 
 	return p.GetClient(endpoint.Address, endpoint.TLSServerName)
 }
 
+// GetMTLSEndpointClient does not allow an operator's plaintext transport opt-in
+// to turn endpoint discovery into an unauthenticated identity check.
+func (p *Pool) GetMTLSEndpointClient(endpoint Endpoint) (pb.NodeAgentClient, error) {
+	if p.transport.Mode != security.TransportModeMTLS {
+		return nil, fmt.Errorf("endpoint discovery requires an mTLS connection pool")
+	}
+	return p.GetEndpointClient(endpoint)
+}
+
 // ResetConnection drops the cached connection for an address, forcing a fresh dial on next use.
 func (p *Pool) ResetConnection(address string) {
 	p.mu.Lock()

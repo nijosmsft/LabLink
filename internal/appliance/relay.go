@@ -263,8 +263,19 @@ func (m *RelayManager) Rebind(ctx context.Context, mainIPv4 string) error {
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
 		alreadyBound := runtime.listener != nil &&
-			runtime.boundMainIP == normalized && runtime.bindError == ""
+			runtime.boundMainIP == normalized
 		relayID := runtime.relay.ID
+		if alreadyBound && runtime.bindError != "" {
+			// A failed move retains the previous listener. If DHCP returns
+			// to that address, reuse it rather than rebinding its occupied port.
+			if err := m.store.SetRelayBindStatus(ctx, relayID, normalized, "", "ready"); err != nil {
+				runtime.mu.Unlock()
+				bindErrors = append(bindErrors, fmt.Errorf("relay %s: %w", relayID, err))
+				continue
+			}
+			runtime.bindError = ""
+			runtime.listenerState = "ready"
+		}
 		runtime.mu.Unlock()
 		if alreadyBound {
 			continue

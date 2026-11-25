@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/nijosmsft/lablink/internal/agentclient"
-	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
@@ -59,6 +58,54 @@ func TestRecoveryKeepsTheSuccessfullyProbedConnectionUsable(t *testing.T) {
 	}
 }
 
+func TestEndpointRefreshPrecedesProbesAndCancelsOldNodeContext(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterNodeAgentServer(server, &recoveryProbeAgent{})
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	node := &registry.Node{Name: "guest", Address: "127.0.0.1:1", TLSServerName: "guest"}
+	if err := reg.SetNode(node); err != nil {
+		t.Fatal(err)
+	}
+	pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+	defer pool.Close()
+	monitor := New(reg, pool)
+	monitor.RecordAuthenticatedProbeSuccess(node)
+	oldContext := monitor.NodeContext(node.Name)
+	monitor.SetBeforeProbe(func(context.Context) error {
+		next := *node
+		next.Address = listener.Addr().String()
+		return reg.SetNode(&next)
+	})
+	monitor.probeAll()
+	if oldContext.Err() != context.Canceled {
+		t.Fatal("address refresh retained the old in-flight node context")
+	}
+	if state := monitor.GetStatus(node.Name); state.Status != "online" || monitor.NodeContext(node.Name).Err() != nil {
+		t.Fatalf("refreshed endpoint was not probed and revived: %+v", state)
+	}
+}
+
+func TestStopCancelsAndJoinsEndpointReconciliation(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	monitor := New(reg, nil)
+	started := make(chan struct{})
+	monitor.SetBeforeProbe(func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	monitor.Start()
+	<-started
+	monitor.Stop()
+	monitor.Stop()
+}
+
 func TestConnectedCallbackCoversStartupAndRecoveryOutsideLocks(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -92,7 +139,7 @@ func TestConnectedCallbackCoversStartupAndRecoveryOutsideLocks(t *testing.T) {
 	}
 }
 
-func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testing.T) {
+func TestConnectedCallbackCoversApplianceBecomingReady(t *testing.T) {
 	for _, outage := range []bool{false, true} {
 		name := "online-upgrade"
 		if outage {
@@ -105,11 +152,10 @@ func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testi
 			}
 			const concurrentProbes = 8
 			responses := make(chan *pb.GetInfoResponse, concurrentProbes+2)
-			responses <- &pb.GetInfoResponse{AgentVersion: "v0.10.4", ApplianceReady: true}
+			responses <- &pb.GetInfoResponse{AgentVersion: "v0.10.7", ApplianceReady: false}
 			for i := 0; i <= concurrentProbes; i++ {
 				responses <- &pb.GetInfoResponse{
-					AgentVersion: "v0.10.5", ApplianceReady: true,
-					Capabilities: []string{appliance.ManagementIPCapability},
+					AgentVersion: "v0.10.7", ApplianceReady: true,
 				}
 			}
 			server := grpc.NewServer()
@@ -133,7 +179,7 @@ func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testi
 			})
 			monitor.probeNode(node)
 			if calls.Load() != 1 {
-				t.Fatalf("legacy startup callbacks = %d, want 1", calls.Load())
+				t.Fatalf("startup callbacks = %d, want 1", calls.Load())
 			}
 			if outage {
 				monitor.recordFailure(node)
@@ -141,7 +187,7 @@ func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testi
 					t.Fatal("expected an observed outage")
 				}
 			}
-			monitor.RecordAuthenticatedProbeSuccess(node, "v0.10.5")
+			monitor.RecordAuthenticatedProbeSuccess(node, "v0.10.7")
 			if calls.Load() != 1 || monitor.GetStatus(node.Name).Status != "online" {
 				t.Fatal("authenticated recovery must update health without invoking the callback")
 			}
@@ -155,11 +201,11 @@ func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testi
 			}
 			wg.Wait()
 			if calls.Load() != 2 {
-				t.Fatalf("first observed management capability callbacks = %d, want 2 including legacy startup", calls.Load())
+				t.Fatalf("first observed appliance readiness callbacks = %d, want 2 including startup", calls.Load())
 			}
 			monitor.probeNode(node)
 			if calls.Load() != 2 {
-				t.Fatalf("unchanged capability repeated callback: %d", calls.Load())
+				t.Fatalf("unchanged readiness repeated callback: %d", calls.Load())
 			}
 		})
 	}

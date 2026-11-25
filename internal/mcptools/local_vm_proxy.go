@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -229,21 +230,11 @@ func prepareLocalVMRequest(name string, req mcp.CallToolRequest, defaults *vmcon
 }
 
 func syncLocalVMNodes(reg *registry.Registry, source string, nodes []*registry.Node) error {
-	present := make(map[string]bool)
+	if err := updateLocalVMNodes(reg, source, nodes); err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(nodes))
 	for _, node := range nodes {
-		if node == nil || node.Name == source || strings.TrimSpace(node.Name) == "" {
-			return fmt.Errorf("restricted host returned an invalid guest node")
-		}
-		if old, exists := reg.GetNode(node.Name); exists && old.Labels[localVMSourceLabel] != source {
-			return fmt.Errorf("guest name %q conflicts with an existing node", node.Name)
-		}
-		if node.Labels == nil {
-			node.Labels = make(map[string]string)
-		}
-		node.Labels[localVMSourceLabel] = source
-		if err := reg.SetNode(node); err != nil {
-			return err
-		}
 		present[node.Name] = true
 	}
 	for _, node := range reg.AllNodes() {
@@ -251,6 +242,48 @@ func syncLocalVMNodes(reg *registry.Registry, source string, nodes []*registry.N
 			if err := reg.RemoveNode(node.Name); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func updateLocalVMNodes(reg *registry.Registry, source string, nodes []*registry.Node) error {
+	present := make(map[string]bool)
+	var existing []*registry.Node
+	addresses := make(map[string]string)
+	for _, node := range nodes {
+		if node == nil || node.Name == source || strings.TrimSpace(node.Name) == "" {
+			return fmt.Errorf("restricted host returned an invalid guest node")
+		}
+		if present[node.Name] {
+			return fmt.Errorf("restricted host returned duplicate guest %q", node.Name)
+		}
+		if old, exists := reg.GetNode(node.Name); exists {
+			if old.Labels[localVMSourceLabel] != source || old.TLSServerName != node.TLSServerName {
+				return fmt.Errorf("guest name %q conflicts with an existing node identity", node.Name)
+			}
+			if old.Address != node.Address {
+				existing = append(existing, old)
+				addresses[node.Name] = node.Address
+			}
+		}
+		present[node.Name] = true
+	}
+	if len(existing) != 0 {
+		if err := reg.UpdateAddresses(existing, addresses); err != nil {
+			return err
+		}
+	}
+	for _, node := range nodes {
+		if node.Labels == nil {
+			node.Labels = make(map[string]string)
+		}
+		node.Labels[localVMSourceLabel] = source
+		if old, found := reg.GetNode(node.Name); found && reflect.DeepEqual(old, node) {
+			continue
+		}
+		if err := reg.SetNode(node); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nijosmsft/lablink/internal/appliance"
@@ -34,12 +36,17 @@ type applianceConfig struct {
 }
 
 type applianceRPC struct {
+	mu            sync.Mutex
 	enabled       bool
 	store         *appliance.Store
 	apply         *appliance.ApplyManager
 	relay         *appliance.RelayManager
 	mainInterface string
 	startupErr    error
+	networkIP     string
+	networkDirty  bool
+	networkCancel context.CancelFunc
+	networkDone   chan struct{}
 }
 
 func resolveApplianceConfig(
@@ -180,7 +187,71 @@ func openApplianceRPC(cfg applianceConfig, goos string) *applianceRPC {
 	}
 	service.apply = manager
 	service.relay = relay
+	service.networkIP = relay.MainIPv4()
+	service.startNetworkWatch()
 	return service
+}
+
+func (a *applianceRPC) startNetworkWatch() {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.networkCancel = cancel
+	a.networkDone = make(chan struct{})
+	go func() {
+		defer close(a.networkDone)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		lastError := ""
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			checkCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+			address, err := discoverMainIPv4(checkCtx, a.mainInterface)
+			if err == nil {
+				err = a.reconcileManagementIPv4(checkCtx, address)
+			} else {
+				a.mu.Lock()
+				a.networkIP = ""
+				err = errors.Join(err, a.store.SetReadiness(checkCtx, false, err.Error()))
+				a.mu.Unlock()
+			}
+			stop()
+			if err != nil && ctx.Err() == nil {
+				if err.Error() != lastError {
+					log.Printf("appliance management network reconciliation: %v", err)
+					lastError = err.Error()
+				}
+			} else {
+				lastError = ""
+			}
+		}
+	}()
+}
+
+func (a *applianceRPC) reconcileManagementIPv4(ctx context.Context, address string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if address == a.networkIP && !a.networkDirty {
+		return nil
+	}
+	a.networkDirty = true
+	if err := a.store.SetReadiness(ctx, false, "reconciling changed management IPv4"); err != nil {
+		return err
+	}
+	if a.relay == nil || a.apply == nil {
+		return fmt.Errorf("management network reconciliation requires relay and policy managers")
+	}
+	if err := a.relay.Rebind(ctx, address); err != nil {
+		return errors.Join(err, a.store.SetReadiness(ctx, false, err.Error()))
+	}
+	if err := a.apply.ApplyStaticConfig(ctx); err != nil {
+		return err
+	}
+	a.networkIP = address
+	a.networkDirty = false
+	return nil
 }
 
 func (a *applianceRPC) failStartup(err error) {
@@ -279,6 +350,12 @@ func (a *applianceRPC) Close() error {
 	if a == nil {
 		return nil
 	}
+	if a.networkCancel != nil {
+		a.networkCancel()
+		<-a.networkDone
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.relay != nil {
 		_ = a.relay.Shutdown(context.Background())
 	}
@@ -345,6 +422,15 @@ func (s *agentServer) GetApplianceState(
 	ctx context.Context,
 	_ *pb.GetApplianceStateRequest,
 ) (*pb.GetApplianceStateResponse, error) {
+	if s.appliance == nil {
+		return nil, status.Error(codes.FailedPrecondition, "appliance mode is not enabled")
+	}
+	s.appliance.mu.Lock()
+	defer s.appliance.mu.Unlock()
+	return s.applianceState(ctx)
+}
+
+func (s *agentServer) applianceState(ctx context.Context) (*pb.GetApplianceStateResponse, error) {
 	store, err := s.applianceStore()
 	if err != nil {
 		return nil, err
@@ -460,6 +546,8 @@ func (s *agentServer) ConfigureIsolatedAppliance(
 	if err != nil {
 		return nil, err
 	}
+	s.appliance.mu.Lock()
+	defer s.appliance.mu.Unlock()
 	if req == nil {
 		return nil, status.Error(
 			codes.InvalidArgument, "configuration is required")
@@ -590,8 +678,7 @@ func (s *agentServer) ConfigureIsolatedAppliance(
 	if err := s.appliance.apply.ApplyStaticConfig(ctx); err != nil {
 		return nil, applianceError(err)
 	}
-	state, err := s.GetApplianceState(
-		ctx, &pb.GetApplianceStateRequest{})
+	state, err := s.applianceState(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -689,9 +776,14 @@ func (s *agentServer) GetRelayStats(
 	ctx context.Context,
 	req *pb.GetRelayStatsRequest,
 ) (*pb.GetRelayStatsResponse, error) {
-	if s.appliance == nil || s.appliance.relay == nil {
+	if s.appliance == nil {
 		return nil, status.Error(
 			codes.Unavailable, "relay manager is not available")
+	}
+	s.appliance.mu.Lock()
+	defer s.appliance.mu.Unlock()
+	if s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
 	}
 	stats, err := s.appliance.relay.Stats(ctx, req.GetRelayId())
 	if err != nil {
@@ -719,6 +811,11 @@ func (s *agentServer) ValidateRelay(
 	store, err := s.applianceStore()
 	if err != nil {
 		return nil, err
+	}
+	s.appliance.mu.Lock()
+	defer s.appliance.mu.Unlock()
+	if s.appliance.relay == nil {
+		return nil, status.Error(codes.Unavailable, "relay manager is not available")
 	}
 	relay, found, err := store.Relay(ctx, req.GetRelayId())
 	if err != nil {

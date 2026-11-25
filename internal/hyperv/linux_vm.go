@@ -957,15 +957,18 @@ Enable-VMIntegrationService -VMName $name -Name 'Key-Value Pair Exchange' -Error
 if ($vm.State -ne 'Running') { Start-VM -Name $name -ErrorAction Stop | Out-Null }
 $deadline = (Get-Date).AddMinutes(15)
 do {
-    $ip = Get-VMNetworkAdapter -VMName $name -ErrorAction SilentlyContinue |
-        ForEach-Object IPAddresses |
-        Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^169\.254\.' -and $_ -ne '127.0.0.1' } |
-        Select-Object -First 1
+    $ip = $null
+    foreach ($adapter in @(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop)) {
+        $ip = $adapter.IPAddresses |
+            Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^169\.254\.' -and $_ -ne '127.0.0.1' } |
+            Select-Object -First 1
+        if ($ip) { break }
+    }
     if ($ip) { break }
     Start-Sleep -Seconds 5
 } while ((Get-Date) -lt $deadline)
 if (-not $ip) { throw "VM_KVP_IP_TIMEOUT: '$name' did not report DHCP IPv4 through Hyper-V KVP" }
-[pscustomobject]@{ status='running'; state=[string](Get-VM -Name $name).State; ip_address=$ip; discovery='hyperv-kvp' } | ConvertTo-Json -Compress
+[pscustomobject]@{ status='running'; state=[string](Get-VM -Id $vm.Id).State; ip_address=$ip; vm_id=[string]$vm.Id; mac=[string]$adapter.MacAddress; discovery='hyperv-kvp' } | ConvertTo-Json -Compress
 `, PSLit(name))
 	return wrapTagged(body), nil
 }

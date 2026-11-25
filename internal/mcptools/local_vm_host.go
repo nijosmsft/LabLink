@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,13 +154,14 @@ func (p LocalVMPolicy) image(path string) error {
 // LocalVMHost invokes the same tool handlers used by the normal MCP server,
 // with an immutable host policy and request-scoped in-memory credentials.
 type LocalVMHost struct {
-	policy  LocalVMPolicy
-	reg     *registry.Registry
-	pool    *agentclient.Pool
-	state   *isolatedstate.Store
-	token   string
-	version string
-	mu      sync.Mutex
+	policy    LocalVMPolicy
+	reg       *registry.Registry
+	pool      *agentclient.Pool
+	state     *isolatedstate.Store
+	token     string
+	version   string
+	mu        sync.Mutex
+	endpoints *VMEndpointReconciler
 }
 
 func NewLocalVMHost(policy LocalVMPolicy, token, version string, transport security.ClientTransportConfig) (*LocalVMHost, error) {
@@ -170,10 +172,12 @@ func NewLocalVMHost(policy LocalVMPolicy, token, version string, transport secur
 	if err != nil {
 		return nil, err
 	}
-	return &LocalVMHost{
+	host := &LocalVMHost{
 		policy: policy, reg: registry.Load(filepath.Join(policy.StateDir, "nodes.json")),
 		pool: agentclient.NewPool(token, transport), state: state, token: token, version: version,
-	}, nil
+	}
+	host.endpoints = NewVMEndpointReconciler(host.reg, host.pool, state)
+	return host, nil
 }
 
 func (h *LocalVMHost) Close() error {
@@ -188,8 +192,12 @@ func (h *LocalVMHost) Call(ctx context.Context, request *pb.ManageVMRequest) (*m
 	if len(request.ArgumentsJson) > 1024*1024 || len(request.ProfilesJson) > 1024*1024 || len(request.Credentials) > 64 {
 		return nil, nil, fmt.Errorf("restricted VM request exceeds size limits")
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Read-only endpoint discovery must remain available during long image/VM
+	// operations. Its registry updates use their own cross-process CAS lock.
+	if request.GetToolName() != "list_isolated_orchestrators" {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -242,11 +250,11 @@ func (h *LocalVMHost) Call(ctx context.Context, request *pb.ManageVMRequest) (*m
 		AgentBinary:      filepath.Join(h.policy.InstallRoot, "bin", "lablink-agent.exe"),
 		LinuxAgentBinary: filepath.Join(h.policy.InstallRoot, "bin", "linux-amd64", "lablink-agent"),
 	}
-	log := audit.NewLog(h.policy.StateDir)
+	auditLog := audit.NewLog(h.policy.StateDir)
 	secrets := secretstore.Open(filepath.Join(runtimeDir, "unused-secrets.json"))
 	s := server.NewMCPServer("local-hyperv", h.version)
-	RegisterVM(s, h.reg, h.pool, creds, secrets, defaults, log, enrollment, LeaseGateConfig{})
-	deps, err := NewIsolatedLifecycleDependencies(s, h.state, h.reg, h.pool, defaults, creds, secrets, log, enrollment, LeaseGateConfig{}, h.version)
+	RegisterVM(s, h.reg, h.pool, creds, secrets, defaults, auditLog, enrollment, LeaseGateConfig{})
+	deps, err := NewIsolatedLifecycleDependencies(s, h.state, h.reg, h.pool, defaults, creds, secrets, auditLog, enrollment, LeaseGateConfig{}, h.version)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -263,7 +271,17 @@ func (h *LocalVMHost) Call(ctx context.Context, request *pb.ManageVMRequest) (*m
 	if err := h.validate(ctx, req, defaults); err != nil {
 		return nil, nil, err
 	}
+	var refreshErr error
+	if request.ToolName == "list_isolated_orchestrators" && h.endpoints != nil {
+		refreshErr = h.endpoints.Reconcile(ctx)
+		if refreshErr != nil {
+			log.Printf("restricted Hyper-V endpoint refresh: %v", refreshErr)
+		}
+	}
 	result, err := tool.Handler(ctx, req)
+	if refreshErr != nil && result != nil {
+		result.Content = append(result.Content, mcp.NewTextContent("Some VM endpoints could not be refreshed: "+refreshErr.Error()))
+	}
 	return result, h.reg.AllNodes(), err
 }
 

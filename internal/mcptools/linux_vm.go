@@ -114,6 +114,29 @@ type linuxVMPlan struct {
 	DeferBoot                 bool `json:"-"`
 }
 
+type linuxVMProvisioningOutcome struct {
+	VMCreated            bool `json:"vm_created"`
+	ProvisioningComplete bool `json:"provisioning_complete"`
+	Registered           bool `json:"registered"`
+}
+
+func provisionedLinuxVMResult(header string, plan linuxVMPlan) *mcp.CallToolResult {
+	result := vmResult(header, marshalPlan(plan))
+	result.StructuredContent = linuxVMProvisioningOutcome{
+		VMCreated: true, ProvisioningComplete: true, Registered: plan.Registered,
+	}
+	return result
+}
+
+func linuxVMProvisioningComplete(result *mcp.CallToolResult, requireRegistration bool) bool {
+	if result == nil || result.IsError {
+		return false
+	}
+	outcome, ok := result.StructuredContent.(linuxVMProvisioningOutcome)
+	return ok && outcome.VMCreated && outcome.ProvisioningComplete &&
+		(!requireRegistration || outcome.Registered)
+}
+
 func registerCreateLinuxVMTool(
 	s *server.MCPServer,
 	reg *registry.Registry,
@@ -525,7 +548,7 @@ func executeLinuxVMPlan(
 		}
 		if plan.DeferBoot {
 			plan.State = existing.State
-			return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+			return provisionedLinuxVMResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), plan), nil
 		}
 		return finishLinuxVM(ctx, plan, existing.Metadata.ExpectedCIDATAISO, target, reg, pool, progress)
 	}
@@ -668,7 +691,7 @@ func executeLinuxVMPlan(
 	if plan.DeferBoot {
 		plan.CIDATAPath = stage.isoPath
 		plan.State = "Off"
-		return vmResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), marshalPlan(plan)), nil
+		return provisionedLinuxVMResult(fmt.Sprintf("**Linux VM `%s` provisioned on `%s` and retained off**", plan.Name, plan.Target), plan), nil
 	}
 	return finishLinuxVM(ctx, plan, stage.isoPath, target, reg, pool, progress)
 }
@@ -738,7 +761,7 @@ func finishLinuxVM(
 	}
 	identityPlan := windowsVMPlan{
 		LabLinkNodeName: plan.LabLinkNodeName, LabLinkRole: plan.LabLinkRole,
-		LabLinkPort: plan.LabLinkPort,
+		LabLinkPort: plan.LabLinkPort, Target: plan.Target,
 	}
 	progress.Update("registration", "NoCloud provisioning has the guest address; waiting up to 10 minutes for the mTLS agent")
 	if err := verifyEnrolledVMWithOptions(ctx, identityPlan, started, reg, pool, plan.RegisterWithLabLink, enrollmentWaitOptions{
@@ -764,7 +787,7 @@ func finishLinuxVM(
 	plan.CIDATAPath = ""
 	plan.LabLinkAddress = fmt.Sprintf("%s:%d", started.IPAddress, plan.LabLinkPort)
 	plan.State = started.State
-	return vmResult(fmt.Sprintf("**Linux VM `%s` created and verified on `%s`**", plan.Name, plan.Target), marshalPlan(plan)), nil
+	return provisionedLinuxVMResult(fmt.Sprintf("**Linux VM `%s` created and verified on `%s`**", plan.Name, plan.Target), plan), nil
 }
 
 type managedLinuxVMState struct {

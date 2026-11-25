@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sort"
 	"sync"
@@ -115,7 +116,7 @@ func forwardPortHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 			return mcp.NewToolResultError(fmt.Sprintf("node %q not found", nodeName)), nil
 		}
 
-		client, err := pool.GetClient(node.Address, node.TLSServerName)
+		_, err := pool.GetClient(node.Address, node.TLSServerName)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("connect: %v", err)), nil
 		}
@@ -137,7 +138,7 @@ func forwardPortHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 		}
 		forwards.add(fwd)
 
-		go runForwardAcceptLoop(fwdCtx, fwd, client)
+		go runForwardAcceptLoop(fwdCtx, fwd, reg, pool)
 
 		text := fmt.Sprintf("**Forward opened**\n- forward_id: `%s`\n- node: %s\n- local: %s\n- remote: %s",
 			fwd.ID, nodeName, fwd.LocalAddr, remoteAddr)
@@ -178,7 +179,7 @@ func listForwardsHandler() server.ToolHandlerFunc {
 
 // runForwardAcceptLoop is the listener loop: each accepted local connection
 // gets its own gRPC Forward stream and a pair of byte-shuttling goroutines.
-func runForwardAcceptLoop(ctx context.Context, fwd *activeForward, client pb.NodeAgentClient) {
+func runForwardAcceptLoop(ctx context.Context, fwd *activeForward, reg *registry.Registry, pool *agentclient.Pool) {
 	defer fwd.ln.Close()
 	for {
 		conn, err := fwd.ln.Accept()
@@ -187,13 +188,27 @@ func runForwardAcceptLoop(ctx context.Context, fwd *activeForward, client pb.Nod
 		}
 		go func(c net.Conn) {
 			defer c.Close()
+			node, found := reg.GetNode(fwd.Node)
+			if !found {
+				log.Printf("forward %s: node %q is no longer registered", fwd.ID, fwd.Node)
+				return
+			}
+			client, err := pool.GetClient(node.Address, node.TLSServerName)
+			if err != nil {
+				log.Printf("forward %s: connect to refreshed endpoint: %v", fwd.ID, err)
+				return
+			}
 			runForwardConn(ctx, fwd, client, c)
 		}(conn)
 	}
 }
 
 func runForwardConn(ctx context.Context, fwd *activeForward, client pb.NodeAgentClient, conn net.Conn) {
-	stream, err := client.Forward(ctx)
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(streamCtx, func() { _ = conn.Close() })
+	defer stopClose()
+	stream, err := client.Forward(streamCtx)
 	if err != nil {
 		return
 	}
@@ -204,8 +219,6 @@ func runForwardConn(ctx context.Context, fwd *activeForward, client pb.NodeAgent
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// local -> stream
 	go func() {

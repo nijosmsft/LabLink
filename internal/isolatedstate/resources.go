@@ -3,7 +3,26 @@ package isolatedstate
 import (
 	"context"
 	"database/sql"
+	"fmt"
 )
+
+func (s *Store) UpdateOrchestratorMainIP(ctx context.Context, id, vmID, ip string, now int64) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE orchestrators SET main_ip=?,updated_at_unix=?
+		WHERE id=? AND hyperv_vm_id=? AND lifecycle_state<>?
+	`, ip, now, id, vmID, OrchestratorDeleted)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("orchestrator %q changed during endpoint reconciliation", id)
+	}
+	return nil
+}
 
 func (s *Store) PutOrchestrator(ctx context.Context, v Orchestrator) error {
 	_, err := s.db.ExecContext(ctx, `

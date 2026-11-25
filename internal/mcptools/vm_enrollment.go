@@ -244,6 +244,8 @@ func firstBootScriptBeforeEnrollment(userScript string) string {
 type startedVMInfo struct {
 	IPAddress string `json:"ip_address"`
 	State     string `json:"state"`
+	VMID      string `json:"vm_id"`
+	MAC       string `json:"mac"`
 }
 
 const (
@@ -269,15 +271,18 @@ if ($vm.State -ne 'Running') {
     }
 }
 do {
-    $ip = Get-VMNetworkAdapter -VMName $name -ErrorAction SilentlyContinue |
-        ForEach-Object IPAddresses |
-        Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^169\.254\.' -and $_ -ne '127.0.0.1' } |
-        Select-Object -First 1
+    $ip = $null
+    foreach ($adapter in @(Get-VMNetworkAdapter -VM $vm -ErrorAction Stop)) {
+        $ip = $adapter.IPAddresses |
+            Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -notmatch '^169\.254\.' -and $_ -ne '127.0.0.1' } |
+            Select-Object -First 1
+        if ($ip) { break }
+    }
     if ($ip) { break }
     Start-Sleep -Seconds 5
 } while ((Get-Date) -lt $deadline)
 if (-not $ip) { throw "VM_IP_TIMEOUT: VM '$name' did not report an IPv4 address within 15 minutes" }
-[pscustomobject]@{ ip_address=$ip; state=[string](Get-VM -Name $name).State } | ConvertTo-Json -Compress
+[pscustomobject]@{ ip_address=$ip; state=[string](Get-VM -Id $vm.Id).State; vm_id=[string]$vm.Id; mac=[string]$adapter.MacAddress } | ConvertTo-Json -Compress
 `, hyperv.PSLit(plan.Name))
 	out, _, err := runPS(ctx, reg, pool, target, script, 1000)
 	if err != nil {
@@ -337,6 +342,17 @@ func verifyEnrolledVMWithOptions(ctx context.Context, plan windowsVMPlan, info s
 					OS: live.Os, Arch: live.Arch, CPUCount: int(live.CpuCount),
 					Memory: live.MemoryBytes, LastSeen: time.Now(),
 					TransportMode: "mtls", TLSServerName: plan.LabLinkNodeName,
+				}
+				if existing, found := reg.GetNode(verifiedNode.Name); found {
+					verifiedNode.Labels = cloneLabels(existing.Labels)
+				}
+				if plan.Target != "" && info.VMID != "" && info.MAC != "" {
+					if verifiedNode.Labels == nil {
+						verifiedNode.Labels = make(map[string]string)
+					}
+					verifiedNode.Labels[vmHostLabel] = plan.Target
+					verifiedNode.Labels[vmIDLabel] = info.VMID
+					verifiedNode.Labels[vmMACLabel] = normalizeVMMAC(info.MAC)
 				}
 				if register {
 					if err := reg.SetNode(verifiedNode); err != nil {

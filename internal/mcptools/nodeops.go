@@ -117,7 +117,7 @@ func waitForNodeHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 				}
 
 				status := hmon.GetStatus(nodeName)
-				if status.Status == "online" {
+				if status.Status == "online" && status.LastSeen.After(start) {
 					consecutiveOnline++
 				} else {
 					consecutiveOnline = 0
@@ -135,6 +135,11 @@ func waitForNodeHandler(reg *registry.Registry, pool *agentclient.Pool) server.T
 
 		for time.Now().Before(deadline) {
 			attempts++
+			var found bool
+			node, found = reg.GetNode(nodeName)
+			if !found {
+				return mcp.NewToolResultError(fmt.Sprintf("node %q was removed while waiting", nodeName)), nil
+			}
 			pool.ResetConnection(node.Address)
 			client, err := pool.GetClient(node.Address, node.TLSServerName)
 			if err == nil {

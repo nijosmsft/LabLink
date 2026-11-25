@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-11-25
+
+### Fixed
+
+- Recover managed VM LabLink endpoints after DHCP changes through their bound
+  Hyper-V VM/NIC and authenticated mTLS identity, including protected local-host
+  node mirrors. Orchestrator changes refresh every child's LabLink relay address
+  without changing private IPs, relay ports or NAT settings.
+- Orchestrators rebind relays and reapply/verify their persisted network policy
+  after a management IP change, without depending on an active MCP connection.
+- Stop automatically pinning orchestrator management IPs. Reboot waits and new
+  forwarded connections follow refreshed endpoints. RPCs and protocol versions
+  remain unchanged.
+- Wait for completed Linux provisioning before isolated workflows query
+  Hyper-V. Pending image preparation and retained diagnostic results no longer
+  advance orchestration; orchestrators require completed agent registration,
+  while isolated Linux guests retain their deferred-boot path.
+
 ## [0.10.7] - 2026-11-25
 
 ### Fixed

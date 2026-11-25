@@ -15,7 +15,6 @@ import (
 	"github.com/nijosmsft/lablink/internal/audit"
 	"github.com/nijosmsft/lablink/internal/credentials"
 	"github.com/nijosmsft/lablink/internal/healthmon"
-	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
 	"github.com/nijosmsft/lablink/internal/leasing"
 	"github.com/nijosmsft/lablink/internal/mcptools"
@@ -25,7 +24,6 @@ import (
 	"github.com/nijosmsft/lablink/internal/secretstore"
 	"github.com/nijosmsft/lablink/internal/security"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
-	pb "github.com/nijosmsft/lablink/proto/agent"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
@@ -298,17 +296,8 @@ ANTI-PATTERNS — DO NOT do these things:
 		}
 	}
 	mcptools.RegisterLocalVMProxy(s, reg, pool, vmDefaults, creds, isolatedStore, localHyperV)
-	monitor.SetOnConnected(func(ctx context.Context, node *registry.Node, info *pb.GetInfoResponse) {
-		if node.Role != "isolated-orchestrator" || node.Labels["lablink.orchestrator_id"] == "" || !info.GetApplianceReady() {
-			return
-		}
-		message, err := isolated.NewApplianceClient(reg, pool, serverVersion).PinManagementIPv4(ctx, node.Labels["lablink.orchestrator_id"])
-		if err != nil {
-			log.Printf("orchestrator %s: %v", node.Name, err)
-		} else {
-			log.Printf("orchestrator %s: %s", node.Name, message)
-		}
-	})
+	endpoints := mcptools.NewVMEndpointReconciler(reg, pool, isolatedStore)
+	monitor.SetBeforeProbe(endpoints.Reconcile)
 	monitor.Start()
 
 	// Run with stdio transport.

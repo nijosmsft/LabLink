@@ -277,6 +277,7 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		plan.registry = reg
 
 		var doneAtomic atomic.Int64
 		stop := StartMCPHeartbeat(ctx, request, defaultHeartbeatInterval, func() (int64, int64) {
@@ -328,6 +329,7 @@ func rebootNodeHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog 
 
 type rebootPlan struct {
 	node            *registry.Node
+	registry        *registry.Registry
 	command         string
 	shell           string
 	identityCommand string
@@ -392,6 +394,13 @@ func normalizeBootIdentity(plan *rebootPlan, output string) (string, error) {
 }
 
 func readBootIdentity(ctx context.Context, pool *agentclient.Pool, plan *rebootPlan, reset bool) (identity string, authenticated bool, err error) {
+	if plan.registry != nil {
+		current, found := plan.registry.GetNode(plan.node.Name)
+		if !found {
+			return "", false, fmt.Errorf("node %q was removed while waiting for reboot", plan.node.Name)
+		}
+		plan.node = current
+	}
 	if reset {
 		pool.ResetConnection(plan.node.Address)
 	}
@@ -514,6 +523,7 @@ func rebootNodesHandler(reg *registry.Registry, pool *agentclient.Pool, auditLog
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+			plan.registry = reg
 			plans = append(plans, plan)
 		}
 		if len(unknown) > 0 {
