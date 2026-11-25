@@ -691,6 +691,10 @@ try {
     }
     $exitCode = [int]$process.ExitCode
     if ($exitCode -ne 0 -and (Test-Path -LiteralPath $errorPath -PathType Leaf)) {
+        $errorInfo = Get-Item -LiteralPath $errorPath -ErrorAction Stop
+        if ($errorInfo.Length -gt 1048576) {
+            throw "BUILDER_USER_TASK_OUTPUT_TOO_LARGE: stderr $($errorInfo.Length) bytes; payload exited $exitCode"
+        }
         [IO.File]::AppendAllText($outputPath, ([Environment]::NewLine + [IO.File]::ReadAllText($errorPath)), [Text.UTF8Encoding]::new($false))
     }
 } catch {

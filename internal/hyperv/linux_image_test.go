@@ -291,6 +291,7 @@ func TestLinuxImageBuilderUserTaskRunnerPreservesNativeExitAndOutput(t *testing.
 		name     string
 		payload  string
 		wantExit int
+		markers  []string
 	}{
 		{
 			name: "successful payload with stderr",
@@ -306,6 +307,16 @@ Write-Output 'stdout-marker'
 exit 23
 `,
 			wantExit: 23,
+			markers:  []string{"stdout-marker", "stderr-marker"},
+		},
+		{
+			name: "oversized stderr is rejected before merging",
+			payload: `[Console]::Error.WriteLine(('x' * 1048577))
+Write-Output 'stdout-marker'
+exit 23
+`,
+			wantExit: -1,
+			markers:  []string{"stdout-marker", "BUILDER_USER_TASK_OUTPUT_TOO_LARGE", "payload exited 23"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -328,7 +339,7 @@ exit 23
 			if (runErr != nil) != (tt.wantExit != 0) {
 				t.Fatalf("runner: %v\n%s", runErr, output)
 			}
-			if cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != tt.wantExit {
+			if cmd.ProcessState == nil || uint32(cmd.ProcessState.ExitCode()) != uint32(tt.wantExit) {
 				t.Fatalf("runner process state = %v, want exit %d: %s", cmd.ProcessState, tt.wantExit, output)
 			}
 			resultJSON, err := os.ReadFile(filepath.Join(dir, "result.json"))
@@ -356,10 +367,13 @@ exit 23
 					t.Fatalf("stderr corrupted successful JSON output: %q, err=%v", payloadOutput, err)
 				}
 			} else {
-				for _, marker := range []string{"stdout-marker", "stderr-marker"} {
+				for _, marker := range tt.markers {
 					if !strings.Contains(string(payloadOutput), marker) {
 						t.Errorf("failure lost %q: %q", marker, payloadOutput)
 					}
+				}
+				if len(payloadOutput) > 1048576 {
+					t.Fatalf("oversized diagnostics were merged into output: %d bytes", len(payloadOutput))
 				}
 			}
 		})
