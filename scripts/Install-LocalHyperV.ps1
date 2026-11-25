@@ -222,9 +222,7 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
             $imageRead = $imageChild -and ($creatorOnly -or ($vmIdentity -and
                 (([long]$rule.FileSystemRights -band (-bnot [long][Security.AccessControl.FileSystemRights]::ReadAndExecute -band -bnot [long][Security.AccessControl.FileSystemRights]::Synchronize)) -eq 0)))
             if (($vmAccess -or $imageRead) -and $rule.AccessControlType -eq 'Allow') {
-                $preserved.Add([Security.AccessControl.FileSystemAccessRule]::new(
-                    [Security.Principal.SecurityIdentifier]::new($sid),
-                    $rule.FileSystemRights,$rule.InheritanceFlags,$rule.PropagationFlags,$rule.AccessControlType))
+                $preserved.Add($rule)
             }
         }
         $inheritance = if ($item.PSIsContainer) { 'OICI' } else { '' }

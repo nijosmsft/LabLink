@@ -64,6 +64,11 @@ try {
     New-Item -ItemType Directory -Path $operation -Force | Out-Null
     & icacls.exe $operation /grant:r '*S-1-3-0:(OI)(CI)(IO)F' | Out-Null
     if($LASTEXITCODE -ne 0){throw 'Cannot prepare staging CreatorOwner regression fixture'}
+    $operationAcl=Get-Acl -LiteralPath $operation
+    $operationAcl.SetSecurityDescriptorSddlForm(
+        $operationAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)+'(A;OICIIO;GA;;;CO)',
+        [Security.AccessControl.AccessControlSections]::Access)
+    Set-Acl -LiteralPath $operation -AclObject $operationAcl
     $disk=Join-Path $operation 'staging.vhdx'
     New-Item -ItemType File -Path $disk | Out-Null
     & icacls.exe $disk /grant:r '*S-1-5-83-0:F' | Out-Null
@@ -82,6 +87,13 @@ try {
     New-Item -ItemType Directory -Path $badGrant | Out-Null
     & icacls.exe $badGrant /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-1-0:(OI)(CI)F' | Out-Null
     if($LASTEXITCODE -ne 0){throw 'Cannot prepare explicit-ACE regression fixture'}
+    $syntheticCloudSid=[Security.Principal.SecurityIdentifier]::new('S-1-12-1-100-200-300-400')
+    $grantAcl=Get-Acl -LiteralPath $badGrant
+    $grantAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $syntheticCloudSid,[Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+        [Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow))
+    Set-Acl -LiteralPath $badGrant -AclObject $grantAcl
     $badChild=Join-Path $badGrant 'child.txt'
     New-Item -ItemType File -Path $badChild | Out-Null
     & icacls.exe $badChild /grant:r '*S-1-1-0:F' | Out-Null
@@ -89,8 +101,8 @@ try {
     Set-PrivateDirectory $badGrant 'F'
     foreach($path in @($badGrant,$badChild)){
         $remaining=@((Get-Acl -LiteralPath $path).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) |
-            Where-Object {$_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow'})
-        if($remaining.Count){throw 'An explicit Everyone FullControl grant survived repair'}
+            Where-Object {$_.IdentityReference.Value -in @('S-1-1-0',$syntheticCloudSid.Value) -and $_.AccessControlType -eq 'Allow'})
+        if($remaining.Count){throw 'An extra Everyone/cloud-account grant survived repair'}
     }
     $result.Add([pscustomobject]@{test='repair pre-existing root and child untrusted ACEs';ok=$true})
 

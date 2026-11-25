@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-25
+
+### Fixed
+
+- Preserve native Hyper-V and Creator Owner access rules directly during ACL
+  repair, including generic Windows access masks not accepted by the public
+  .NET FileSystemAccessRule constructor.
+
 ## [0.10.6] - 2026-11-25
 
 ### Fixed
