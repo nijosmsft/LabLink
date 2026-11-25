@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"strings"
 	"sync"
 )
 
@@ -24,6 +25,17 @@ type CommandResult struct {
 
 type CommandExecutor interface {
 	Run(context.Context, string, ...string) (CommandResult, error)
+}
+
+func commandFailure(command string, result CommandResult) error {
+	detail := strings.TrimSpace(result.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(result.Stdout)
+	}
+	if detail == "" {
+		detail = "no diagnostic output"
+	}
+	return fmt.Errorf("%s exited with code %d: %s", command, result.ExitCode, detail)
 }
 
 type FileSystem interface {

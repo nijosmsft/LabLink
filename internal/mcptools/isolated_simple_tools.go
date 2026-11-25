@@ -755,7 +755,19 @@ func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server
 			if err := deps.state.PutOrchestrator(ctx, record); err != nil {
 				return isolatedError(err)
 			}
-			return simpleIsolatedResult("**Isolated orchestrator created**", record), nil
+			result = simpleIsolatedResult("**Isolated orchestrator created**", record)
+			if pinner, ok := deps.appliance.(interface {
+				PinManagementIPv4(context.Context, string) (string, error)
+			}); ok {
+				pinCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				message, pinErr := pinner.PinManagementIPv4(pinCtx, record.ID)
+				cancel()
+				if pinErr != nil {
+					message = "Management IPv4 not pinned: " + pinErr.Error()
+				}
+				result.Content = append(result.Content, mcp.NewTextContent(message))
+			}
+			return result, nil
 		}
 		return withSimpleTargetLease(ctx, req, deps, target.Name, run)
 	}

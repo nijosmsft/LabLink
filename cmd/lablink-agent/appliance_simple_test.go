@@ -28,6 +28,26 @@ func TestNormalAgentDoesNotReportApplianceState(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("GetApplianceState error = %v", err)
 	}
+	_, err = server.PinOrchestratorIPv4(context.Background(), &pb.PinOrchestratorIPv4Request{ExpectedIpv4: "172.22.22.219"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("ordinary agent accepted management pin: %v", err)
+	}
+}
+
+func TestManagementPinRequiresMTLSAndIsDeniedOnProtectedHost(t *testing.T) {
+	store, err := appliance.Open(filepath.Join(t.TempDir(), "appliance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := &agentServer{appliance: &applianceRPC{enabled: true, store: store, mainInterface: "eth0"}}
+	_, err = server.PinOrchestratorIPv4(context.Background(), &pb.PinOrchestratorIPv4Request{ExpectedIpv4: "172.22.22.219"})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("non-mTLS pin was not denied: %v", err)
+	}
+	if hyperVMethodAllowed(pb.NodeAgent_PinOrchestratorIPv4_FullMethodName) {
+		t.Fatal("management pin widened the protected host RPC allowlist")
+	}
 }
 
 func TestApplianceStateUsesStaticConfiguration(t *testing.T) {

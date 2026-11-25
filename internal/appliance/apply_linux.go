@@ -470,14 +470,3 @@ func runChecked(
 	}
 	return nil
 }
-
-func commandFailure(command string, result CommandResult) error {
-	detail := strings.TrimSpace(result.Stderr)
-	if detail == "" {
-		detail = strings.TrimSpace(result.Stdout)
-	}
-	if detail == "" {
-		detail = "no diagnostic output"
-	}
-	return fmt.Errorf("%s exited with code %d: %s", command, result.ExitCode, detail)
-}

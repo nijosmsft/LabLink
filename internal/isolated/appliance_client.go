@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 
@@ -255,6 +258,44 @@ func (c *ApplianceRPCClient) CheckReadiness(
 		}
 	}
 	return readiness, nil
+}
+
+func (c *ApplianceRPCClient) PinManagementIPv4(ctx context.Context, orchestratorID string) (string, error) {
+	client, node, readiness, err := c.clientFor(ctx, orchestratorID, true)
+	if err != nil {
+		return "", err
+	}
+	if node.Role != isolatedOrchestratorRole || node.Labels[orchestratorIDLabel] != orchestratorID {
+		return "", fmt.Errorf("management IPv4 pinning requires an explicitly identified isolated orchestrator")
+	}
+	if !slices.Contains(readiness.Capabilities, appliance.ManagementIPCapability) {
+		return "", fmt.Errorf("agent %s does not support management IPv4 pinning; DHCP unchanged; upgrade the agent explicitly", node.Name)
+	}
+	host, _, err := net.SplitHostPort(node.Address)
+	ip, parseErr := netip.ParseAddr(host)
+	if err != nil || parseErr != nil || !ip.Is4() {
+		return "", fmt.Errorf("management IPv4 pinning requires an IPv4 endpoint, not %q", node.Address)
+	}
+	response, err := client.PinOrchestratorIPv4(ctx, &pb.PinOrchestratorIPv4Request{ExpectedIpv4: host})
+	if err != nil {
+		return "", fmt.Errorf("management IPv4 pin failed (unconfirmed changes roll back): %w", err)
+	}
+	if response.GetConfirmToken() == "" {
+		return response.GetMessage(), nil
+	}
+	// A new TLS connection, not reachability on the old channel, confirms apply.
+	c.pool.ResetEndpoint(agentclient.Endpoint{Address: node.Address, TLSServerName: node.TLSServerName})
+	client, _, _, err = c.clientFor(ctx, orchestratorID, true)
+	if err != nil {
+		return "", fmt.Errorf("management IPv4 reconnect failed; awaiting DHCP rollback: %w", err)
+	}
+	response, err = client.PinOrchestratorIPv4(ctx, &pb.PinOrchestratorIPv4Request{
+		ExpectedIpv4: host, ConfirmToken: response.GetConfirmToken(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("management IPv4 confirmation failed; awaiting DHCP rollback: %w", err)
+	}
+	return response.GetMessage(), nil
 }
 
 func (c *ApplianceRPCClient) InspectApplianceState(

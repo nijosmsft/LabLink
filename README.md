@@ -28,6 +28,53 @@ Typical things an AI client can ask LabLink to do:
 - **Bootstrap scripts** generate the PKI, the token, and the MCP config snippet for you.
 - **Pure Go**, no external runtimes on the nodes.
 
+## Isolated orchestrator management IPv4 stopgap (v0.10.5)
+
+After new orchestrator readiness, and on the operator's first authenticated
+connection or an offline-to-online recovery, LabLink freezes the **current**
+DHCP4 address on that isolated orchestrator's management NIC. An already-ready
+orchestrator is also handled when a periodic probe first observes pin support
+after an explicit agent upgrade, even if an authenticated update probe has
+already marked it online. Local protected
+Hyper-V orchestrators use the same path through their mirrored node role/ID;
+this does not depend on resolving the operator's isolated-state database.
+Only appliance agents advertising `orchestrator_management_ipv4_pin_v1`
+participate. Existing agents are not upgraded automatically; unsupported
+agents report that the address was not pinned.
+
+The MAC-specific persistent networkd unit copies the existing management policy
+and captures its IPv4/prefix, connected-prefix metric, DHCP routes/metrics,
+upstream DNS/search/routing domains and MTU. The connected-prefix metric is set
+on the static `[Address]` with networkd `RouteMetric=`, not a duplicate route.
+DHCP6, IPv6 RA, link-local policy and private NICs are preserved.
+The original Netplan/cloud-init/networkd files remain unchanged. Already-static
+management NICs are left alone. Ambiguous or unsupported configurations retain
+DHCP and report a warning; ordinary guests and image-builder VMs are excluded.
+
+An independent 60-second rollback restores the original DHCP policy unless a
+fresh mTLS connection confirms the change. Pending changes also roll back before
+network startup after a guest reboot. Pin failures appear in creation output or
+the MCP server log, not as successful pinning.
+
+**Accepted risk:** this does not reserve or exclude the address from DHCP. The
+server can reassign a released/expired lease, causing an address collision.
+Freezing the guest also cannot survive a changed host NAT subnet/gateway (for
+example, Default Switch/ICS renumbering). This is only an unchanged-subnet
+stopgap, not general endpoint reconciliation or isolated-state-scope repair.
+An already-unreachable orchestrator must first be recovered/re-registered.
+
+Developer validation: `TestManagementCaptureRecordedProductionPipeline` always
+replays the complete read-only capture with sanitized native command outputs.
+Before a new mutating fixture test, run `TestManagementIPReadOnlyFixtureCapture`
+on the explicitly owned Linux fixture. It skips unless
+`LABLINK_TEST_MANAGEMENT_CAPTURE=1`; also supply `LABLINK_TEST_MANAGEMENT_`
+variables with suffixes `HOSTNAME`, `MACHINE_ID`, `INTERFACE`, `IPV4`, `MAC`, and
+`PRIVATE_MACS` (comma-separated). These are exact harness-provided identity
+guards, not defaults. The opt-in test uses the same production capture core,
+real OS reads, and an eight-command read-only allowlist; it renders policy only
+in memory and never calls pin/apply/confirm or changes network files.
+Review and artifact-identity gates still apply before any mutating test.
+
 ## Get started in ~5 minutes
 
 You'll need:

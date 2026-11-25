@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 
@@ -25,30 +26,39 @@ import (
 var agentVersion = "v0.5.1"
 
 var (
-	listenAddr        = flag.String("listen", ":9091", "gRPC listen address")
-	authToken         = flag.String("auth-token", "", "pre-shared key for authentication")
-	authTokenFile     = flag.String("auth-token-file", "", "path to a file containing the shared auth token")
-	transportMode     = flag.String("transport", "", "transport mode: mtls or insecure")
-	allowInsecure     = flag.Bool("allow-insecure", false, "explicitly allow the legacy plaintext gRPC transport until mTLS is configured")
-	tlsCAPath         = flag.String("tls-ca", "", "path to the CA certificate bundle for mTLS")
-	tlsCertPath       = flag.String("tls-cert", "", "path to the TLS certificate chain for mTLS")
-	tlsKeyPath        = flag.String("tls-key", "", "path to the TLS private key for mTLS")
-	tlsServerName     = flag.String("tls-server-name", "", "server certificate identity used for CSR generation")
-	generateServerCSR = flag.Bool("generate-server-csr", false, "generate a server private key and CSR for mTLS and exit")
-	csrOut            = flag.String("csr-out", "", "path to write the generated server CSR")
-	keyOut            = flag.String("key-out", "", "path to write the generated server private key")
-	install           = flag.Bool("install", false, "install as Windows service")
-	uninstall         = flag.Bool("uninstall", false, "uninstall Windows service")
-	setToken          = flag.String("set-token", "", "write auth token to registry and exit")
-	versionFlag       = flag.Bool("version", false, "print version and exit")
-	applianceMode     = flag.Bool("appliance", false, "enable isolated appliance RPC mode (Linux only)")
-	applianceDBPath   = flag.String("appliance-db", "", "path to isolated appliance SQLite state")
-	hyperVOnly        = flag.Bool("hyperv-only", false, "expose only structured local Hyper-V management, never arbitrary execution")
-	hyperVPolicyPath  = flag.String("hyperv-policy", "", "administrator-installed restricted Hyper-V policy file")
+	listenAddr           = flag.String("listen", ":9091", "gRPC listen address")
+	authToken            = flag.String("auth-token", "", "pre-shared key for authentication")
+	authTokenFile        = flag.String("auth-token-file", "", "path to a file containing the shared auth token")
+	transportMode        = flag.String("transport", "", "transport mode: mtls or insecure")
+	allowInsecure        = flag.Bool("allow-insecure", false, "explicitly allow the legacy plaintext gRPC transport until mTLS is configured")
+	tlsCAPath            = flag.String("tls-ca", "", "path to the CA certificate bundle for mTLS")
+	tlsCertPath          = flag.String("tls-cert", "", "path to the TLS certificate chain for mTLS")
+	tlsKeyPath           = flag.String("tls-key", "", "path to the TLS private key for mTLS")
+	tlsServerName        = flag.String("tls-server-name", "", "server certificate identity used for CSR generation")
+	generateServerCSR    = flag.Bool("generate-server-csr", false, "generate a server private key and CSR for mTLS and exit")
+	csrOut               = flag.String("csr-out", "", "path to write the generated server CSR")
+	keyOut               = flag.String("key-out", "", "path to write the generated server private key")
+	install              = flag.Bool("install", false, "install as Windows service")
+	uninstall            = flag.Bool("uninstall", false, "uninstall Windows service")
+	setToken             = flag.String("set-token", "", "write auth token to registry and exit")
+	versionFlag          = flag.Bool("version", false, "print version and exit")
+	applianceMode        = flag.Bool("appliance", false, "enable isolated appliance RPC mode (Linux only)")
+	applianceDBPath      = flag.String("appliance-db", "", "path to isolated appliance SQLite state")
+	rollbackManagementIP = flag.Bool("rollback-management-ip", false, "restore a pending orchestrator DHCP configuration and exit")
+	hyperVOnly           = flag.Bool("hyperv-only", false, "expose only structured local Hyper-V management, never arbitrary execution")
+	hyperVPolicyPath     = flag.String("hyperv-policy", "", "administrator-installed restricted Hyper-V policy file")
 )
 
 func main() {
 	flag.Parse()
+	if *rollbackManagementIP {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := appliance.RollbackManagementIPv4(ctx); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *hyperVOnly && (*uninstall || *setToken != "" || *applianceMode) {
 		log.Fatal("use Install-LocalHyperV.ps1 for restricted-service removal; legacy service and appliance modes cannot be combined")
 	}

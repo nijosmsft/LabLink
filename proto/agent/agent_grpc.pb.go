@@ -36,6 +36,7 @@ const (
 	NodeAgent_Forward_FullMethodName                    = "/agent.NodeAgent/Forward"
 	NodeAgent_GetApplianceState_FullMethodName          = "/agent.NodeAgent/GetApplianceState"
 	NodeAgent_ConfigureIsolatedAppliance_FullMethodName = "/agent.NodeAgent/ConfigureIsolatedAppliance"
+	NodeAgent_PinOrchestratorIPv4_FullMethodName        = "/agent.NodeAgent/PinOrchestratorIPv4"
 	NodeAgent_GetRelayStats_FullMethodName              = "/agent.NodeAgent/GetRelayStats"
 	NodeAgent_ValidateRelay_FullMethodName              = "/agent.NodeAgent/ValidateRelay"
 )
@@ -87,6 +88,9 @@ type NodeAgentClient interface {
 	// LabLink is a single-controller developer tool, so updates are explicit,
 	// sequential, and idempotent by resource identity.
 	ConfigureIsolatedAppliance(ctx context.Context, in *ConfigureIsolatedApplianceRequest, opts ...grpc.CallOption) (*ConfigureIsolatedApplianceResponse, error)
+	// Freeze only an isolated orchestrator's current management IPv4.
+	// Confirm on a fresh authenticated connection before rollback expires.
+	PinOrchestratorIPv4(ctx context.Context, in *PinOrchestratorIPv4Request, opts ...grpc.CallOption) (*PinOrchestratorIPv4Response, error)
 	// Inspect relay runtime state.
 	GetRelayStats(ctx context.Context, in *GetRelayStatsRequest, opts ...grpc.CallOption) (*GetRelayStatsResponse, error)
 	ValidateRelay(ctx context.Context, in *ValidateRelayRequest, opts ...grpc.CallOption) (*ValidateRelayResponse, error)
@@ -321,6 +325,16 @@ func (c *nodeAgentClient) ConfigureIsolatedAppliance(ctx context.Context, in *Co
 	return out, nil
 }
 
+func (c *nodeAgentClient) PinOrchestratorIPv4(ctx context.Context, in *PinOrchestratorIPv4Request, opts ...grpc.CallOption) (*PinOrchestratorIPv4Response, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PinOrchestratorIPv4Response)
+	err := c.cc.Invoke(ctx, NodeAgent_PinOrchestratorIPv4_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *nodeAgentClient) GetRelayStats(ctx context.Context, in *GetRelayStatsRequest, opts ...grpc.CallOption) (*GetRelayStatsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetRelayStatsResponse)
@@ -388,6 +402,9 @@ type NodeAgentServer interface {
 	// LabLink is a single-controller developer tool, so updates are explicit,
 	// sequential, and idempotent by resource identity.
 	ConfigureIsolatedAppliance(context.Context, *ConfigureIsolatedApplianceRequest) (*ConfigureIsolatedApplianceResponse, error)
+	// Freeze only an isolated orchestrator's current management IPv4.
+	// Confirm on a fresh authenticated connection before rollback expires.
+	PinOrchestratorIPv4(context.Context, *PinOrchestratorIPv4Request) (*PinOrchestratorIPv4Response, error)
 	// Inspect relay runtime state.
 	GetRelayStats(context.Context, *GetRelayStatsRequest) (*GetRelayStatsResponse, error)
 	ValidateRelay(context.Context, *ValidateRelayRequest) (*ValidateRelayResponse, error)
@@ -451,6 +468,9 @@ func (UnimplementedNodeAgentServer) GetApplianceState(context.Context, *GetAppli
 }
 func (UnimplementedNodeAgentServer) ConfigureIsolatedAppliance(context.Context, *ConfigureIsolatedApplianceRequest) (*ConfigureIsolatedApplianceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ConfigureIsolatedAppliance not implemented")
+}
+func (UnimplementedNodeAgentServer) PinOrchestratorIPv4(context.Context, *PinOrchestratorIPv4Request) (*PinOrchestratorIPv4Response, error) {
+	return nil, status.Error(codes.Unimplemented, "method PinOrchestratorIPv4 not implemented")
 }
 func (UnimplementedNodeAgentServer) GetRelayStats(context.Context, *GetRelayStatsRequest) (*GetRelayStatsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRelayStats not implemented")
@@ -728,6 +748,24 @@ func _NodeAgent_ConfigureIsolatedAppliance_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _NodeAgent_PinOrchestratorIPv4_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PinOrchestratorIPv4Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeAgentServer).PinOrchestratorIPv4(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: NodeAgent_PinOrchestratorIPv4_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeAgentServer).PinOrchestratorIPv4(ctx, req.(*PinOrchestratorIPv4Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _NodeAgent_GetRelayStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetRelayStatsRequest)
 	if err := dec(in); err != nil {
@@ -810,6 +848,10 @@ var NodeAgent_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ConfigureIsolatedAppliance",
 			Handler:    _NodeAgent_ConfigureIsolatedAppliance_Handler,
+		},
+		{
+			MethodName: "PinOrchestratorIPv4",
+			Handler:    _NodeAgent_PinOrchestratorIPv4_Handler,
 		},
 		{
 			MethodName: "GetRelayStats",

@@ -17,6 +17,8 @@ import (
 	"github.com/nijosmsft/lablink/internal/isolated"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -298,6 +300,9 @@ func (a *applianceRPC) populateInfo(
 			response.Capabilities, string(capability))
 	}
 	response.ProtocolVersion = isolated.MaximumProtocolVersion
+	if runtime.GOOS == "linux" {
+		response.Capabilities = append(response.Capabilities, appliance.ManagementIPCapability)
+	}
 	if a.startupErr != nil {
 		response.ApplianceError = a.startupErr.Error()
 		return
@@ -413,6 +418,38 @@ func (s *agentServer) GetApplianceState(
 			})
 	}
 	return response, nil
+}
+
+func (s *agentServer) PinOrchestratorIPv4(ctx context.Context, req *pb.PinOrchestratorIPv4Request) (*pb.PinOrchestratorIPv4Response, error) {
+	store, err := s.applianceStore()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.PermissionDenied, "management IP pinning requires authenticated mTLS")
+	}
+	tls, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tls.State.VerifiedChains) == 0 {
+		return nil, status.Error(codes.PermissionDenied, "management IP pinning requires authenticated mTLS")
+	}
+	ip, err := netip.ParseAddr(req.GetExpectedIpv4())
+	if err != nil || !ip.Is4() || ip.IsLoopback() || ip.IsUnspecified() {
+		return nil, status.Error(codes.InvalidArgument, "expected management IPv4 is required")
+	}
+	snapshot, err := store.Snapshot(ctx)
+	if err != nil {
+		return nil, applianceError(err)
+	}
+	privateMACs := make([]string, 0, len(snapshot.Networks))
+	for _, network := range snapshot.Networks {
+		privateMACs = append(privateMACs, network.NICMAC)
+	}
+	token, message, err := appliance.PinManagementIPv4(ctx, s.appliance.mainInterface, ip.String(), req.GetConfirmToken(), privateMACs)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "management IPv4 not pinned: %v", err)
+	}
+	return &pb.PinOrchestratorIPv4Response{ConfirmToken: token, Message: message}, nil
 }
 
 func (s *agentServer) ConfigureIsolatedAppliance(

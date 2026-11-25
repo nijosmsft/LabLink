@@ -4,10 +4,13 @@ import (
 	"context"
 	"net"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nijosmsft/lablink/internal/agentclient"
+	"github.com/nijosmsft/lablink/internal/appliance"
 	"github.com/nijosmsft/lablink/internal/registry"
 	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
@@ -16,9 +19,13 @@ import (
 
 type recoveryProbeAgent struct {
 	pb.UnimplementedNodeAgentServer
+	responses chan *pb.GetInfoResponse
 }
 
-func (*recoveryProbeAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+func (a *recoveryProbeAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+	if a.responses != nil {
+		return <-a.responses, nil
+	}
 	return &pb.GetInfoResponse{Hostname: "recovered"}, nil
 }
 
@@ -49,6 +56,112 @@ func TestRecoveryKeepsTheSuccessfullyProbedConnectionUsable(t *testing.T) {
 	monitor.RecordAuthenticatedProbeSuccess(node)
 	if _, err := client.GetInfo(ctx, &pb.GetInfoRequest{}); err != nil {
 		t.Fatalf("health recovery discarded a proven-live connection: %v", err)
+	}
+}
+
+func TestConnectedCallbackCoversStartupAndRecoveryOutsideLocks(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterNodeAgentServer(server, &recoveryProbeAgent{})
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+	defer pool.Close()
+	monitor := New(registry.Load(filepath.Join(t.TempDir(), "nodes.json")), pool)
+	monitor.deadThreshold = 1
+	node := &registry.Node{Name: "recovering", Address: listener.Addr().String()}
+	calls := 0
+	monitor.SetOnConnected(func(ctx context.Context, n *registry.Node, _ *pb.GetInfoResponse) {
+		if ctx.Err() != nil || monitor.GetStatus(n.Name).Status != "online" {
+			t.Fatal("callback must run after success and outside monitor locks")
+		}
+		calls++
+	})
+	monitor.probeNode(node)
+	monitor.probeNode(node)
+	if calls != 1 {
+		t.Fatalf("startup invoked callback %d times", calls)
+	}
+	monitor.recordFailure(node)
+	monitor.probeNode(node)
+	if calls != 2 {
+		t.Fatalf("recovery did not invoke callback: %d", calls)
+	}
+}
+
+func TestConnectedCallbackCoversFirstManagementIPCapabilityAfterUpgrade(t *testing.T) {
+	for _, outage := range []bool{false, true} {
+		name := "online-upgrade"
+		if outage {
+			name = "authenticated-recovery-before-periodic-probe"
+		}
+		t.Run(name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			const concurrentProbes = 8
+			responses := make(chan *pb.GetInfoResponse, concurrentProbes+2)
+			responses <- &pb.GetInfoResponse{AgentVersion: "v0.10.4", ApplianceReady: true}
+			for i := 0; i <= concurrentProbes; i++ {
+				responses <- &pb.GetInfoResponse{
+					AgentVersion: "v0.10.5", ApplianceReady: true,
+					Capabilities: []string{appliance.ManagementIPCapability},
+				}
+			}
+			server := grpc.NewServer()
+			pb.RegisterNodeAgentServer(server, &recoveryProbeAgent{responses: responses})
+			go server.Serve(listener)
+			t.Cleanup(server.Stop)
+			pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+			defer pool.Close()
+			monitor := New(registry.Load(filepath.Join(t.TempDir(), "nodes.json")), pool)
+			monitor.deadThreshold = 1
+			node := &registry.Node{
+				Name: "orchestrator-upgraded", Address: listener.Addr().String(),
+				Role: "isolated-orchestrator", Labels: map[string]string{"lablink.orchestrator_id": "test-id"},
+			}
+			var calls atomic.Int32
+			monitor.SetOnConnected(func(ctx context.Context, n *registry.Node, _ *pb.GetInfoResponse) {
+				if ctx.Err() != nil || monitor.GetStatus(n.Name).Status != "online" {
+					t.Error("callback must run after success and outside monitor locks")
+				}
+				calls.Add(1)
+			})
+			monitor.probeNode(node)
+			if calls.Load() != 1 {
+				t.Fatalf("legacy startup callbacks = %d, want 1", calls.Load())
+			}
+			if outage {
+				monitor.recordFailure(node)
+				if monitor.GetStatus(node.Name).Status != "offline" {
+					t.Fatal("expected an observed outage")
+				}
+			}
+			monitor.RecordAuthenticatedProbeSuccess(node, "v0.10.5")
+			if calls.Load() != 1 || monitor.GetStatus(node.Name).Status != "online" {
+				t.Fatal("authenticated recovery must update health without invoking the callback")
+			}
+			var wg sync.WaitGroup
+			for i := 0; i < concurrentProbes; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					monitor.probeNode(node)
+				}()
+			}
+			wg.Wait()
+			if calls.Load() != 2 {
+				t.Fatalf("first observed management capability callbacks = %d, want 2 including legacy startup", calls.Load())
+			}
+			monitor.probeNode(node)
+			if calls.Load() != 2 {
+				t.Fatalf("unchanged capability repeated callback: %d", calls.Load())
+			}
+		})
 	}
 }
 
