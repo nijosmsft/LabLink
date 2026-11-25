@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-11-25
+
+### Fixed
+
+- Builder user tasks capture native stdout and stderr separately and use the
+  payload process's exit code. Successful stderr warnings no longer turn valid
+  JSON results into Windows PowerShell NativeCommandError failures.
+- Failed tasks preserve both output streams and append redacted runner
+  diagnostics without overwriting captured stdout. Redirected output is read
+  as UTF-8, and oversized stderr is rejected before loading it into memory.
+- Include clean re-install troubleshooting for the Windows operator and local
+  Hyper-V service, including scoped leftover-process cleanup.
+
 ## [0.10.8] - 2026-11-25
 
 ### Fixed

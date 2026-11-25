@@ -684,6 +684,7 @@ $ErrorActionPreference = 'Stop'
 $script:builderPhase = 'user_task_runner'
 $payloadPath = Join-Path $PSScriptRoot 'payload.ps1'
 $outputPath = Join-Path $PSScriptRoot 'payload-output.txt'
+$errorPath = Join-Path $PSScriptRoot 'payload-stderr.txt'
 $resultPath = Join-Path $PSScriptRoot 'result.json'
 $identityPath = Join-Path $PSScriptRoot 'identity.json'
 $exitCode = -1
@@ -695,10 +696,21 @@ try {
     }
     $env:LABLINK_BUILDER_EFFECTIVE_USER = [string]$identity.user
     $env:LABLINK_BUILDER_EFFECTIVE_USER_SID = [string]$identity.sid
-    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $payloadPath *> $outputPath
-    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $payloadPath
+    $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $arguments -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath
+    if ($null -eq $process.ExitCode) {
+        throw 'BUILDER_USER_TASK_EXIT_CODE_MISSING: payload process did not return an exit code'
+    }
+    $exitCode = [int]$process.ExitCode
+    if ($exitCode -ne 0 -and (Test-Path -LiteralPath $errorPath -PathType Leaf)) {
+        $errorInfo = Get-Item -LiteralPath $errorPath -ErrorAction Stop
+        if ($errorInfo.Length -gt 1048576) {
+            throw "BUILDER_USER_TASK_OUTPUT_TOO_LARGE: stderr $($errorInfo.Length) bytes; payload exited $exitCode"
+        }
+        [IO.File]::AppendAllText($outputPath, ([Environment]::NewLine + [IO.File]::ReadAllText($errorPath)), [Text.UTF8Encoding]::new($false))
+    }
 } catch {
-    [IO.File]::WriteAllText($outputPath, ("LABLINK_ERROR: " + (Format-BuilderError $_)), [Text.UTF8Encoding]::new($false))
+    [IO.File]::AppendAllText($outputPath, ([Environment]::NewLine + "LABLINK_ERROR: " + (Format-BuilderError $_)), [Text.UTF8Encoding]::new($false))
     $exitCode = -1
 } finally {
     Remove-Item Env:LABLINK_BUILDER_EFFECTIVE_USER -ErrorAction SilentlyContinue
@@ -803,7 +815,7 @@ try {
         if ($outputInfo.Length -gt 1048576) {
             throw "BUILDER_USER_TASK_OUTPUT_TOO_LARGE: $($outputInfo.Length) bytes"
         }
-        $payloadOutput = Get-Content -Raw -LiteralPath $outputPath -ErrorAction Stop
+        $payloadOutput = [IO.File]::ReadAllText($outputPath)
     }
 } catch {
     $primaryError = Format-BuilderError $_

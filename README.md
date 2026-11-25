@@ -907,6 +907,95 @@ You can register as many `lablink-*` entries as you want; each gets its own port
 | `LABLINK_PORTAL` | `disabled` to suppress the local web portal. |
 | `LABLINK_PORTAL_ADDR` | Override the portal bind address (loopback only, e.g. `127.0.0.1:9092`). |
 
+## Troubleshoot
+
+### Clean re-install: Windows operator and local Hyper-V service
+
+Use this to reset **both** the LabLink operator/MCP installation and LabLink's
+local Hyper-V management service. It does **not** uninstall the Windows Hyper-V
+feature or remove your AI client's MCP configuration.
+
+**Destructive:** this removes LabLink's local state, credentials, certificates,
+VM files and cached images. Retained remote agents must be re-enrolled because
+the fresh installation creates a new CA/token identity.
+
+These commands assume the default installation, operator home and storage paths.
+For custom paths, inspect `hyperv-policy.json` and `installation.json` under the
+protected service installation and adjust the cleanup before proceeding.
+
+1. In Hyper-V Manager, remove **only LabLink-created VMs** and their private
+   switches. Keep **Default Switch** and unrelated VMs/switches. Do not proceed
+   if any remaining VM depends on disks or cached images in the cleanup folders.
+2. Close every MCP client using this installation so it cannot automatically
+   restart an old server. The cleanup below stops the local Hyper-V service,
+   then leftover processes under the two LabLink code folders by their specific
+   process IDs. It does not kill unrelated Windows processes.
+3. Open **Administrator PowerShell under your usual Windows account**, then run:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+Set-Location $env:SystemRoot
+
+$localService = Get-Service LabLinkHyperV -ErrorAction SilentlyContinue
+if ($localService) {
+    Stop-Service -Name LabLinkHyperV -ErrorAction Stop
+}
+
+Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.ExecutablePath -and
+        ($_.ExecutablePath.StartsWith(
+            'C:\LabLink\', [StringComparison]::OrdinalIgnoreCase) -or
+         $_.ExecutablePath.StartsWith(
+            "$env:ProgramFiles\LabLinkHyperV\",
+            [StringComparison]::OrdinalIgnoreCase))
+    } |
+    ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+    }
+
+if ($localService) {
+    & 'C:\LabLink\current\scripts\Install-LocalHyperV.ps1' -Uninstall
+}
+
+$folders = @(
+    'C:\LabLink'
+    "$env:ProgramFiles\LabLinkHyperV"
+    "$env:ProgramData\LabLinkHyperV"
+    "$HOME\.lablink"
+)
+
+foreach ($folder in $folders) {
+    if (Test-Path -LiteralPath $folder) {
+        Remove-Item -LiteralPath $folder -Recurse -Force
+    }
+}
+
+New-Item -ItemType Directory -Path 'C:\LabLink' | Out-Null
+Invoke-WebRequest `
+    'https://github.com/nijosmsft/LabLink/releases/latest/download/install.ps1' `
+    -OutFile 'C:\LabLink\install.ps1'
+
+Unblock-File 'C:\LabLink\install.ps1'
+& 'C:\LabLink\install.ps1' -LocalHyperV
+```
+
+`-Uninstall` removes the restricted service, its group membership and assigned
+account rights; it deliberately preserves VM/state files. The explicit folder
+cleanup above removes those files afterward. The final `-LocalHyperV` command
+reinstalls **both LabLink components**, not Windows Hyper-V itself.
+
+Restart your MCP client afterward. Its existing entry can stay if it uses the
+stable `C:\LabLink\current\bin\lablink-server.exe` path and credential files at
+the recreated paths. Replace any embedded old token or certificate material
+using the newly generated `$HOME\.lablink\mcp.example.json`.
+
+If removing an old version reports **Access denied**, first close all MCP
+clients and run the scoped process cleanup above from an elevated prompt.
+Retry deletion using the exact folder path with `-LiteralPath`, not a wildcard
+such as `lablink-server*`. If the error persists, inspect that folder's ACL and
+security-software events rather than taking ownership of broad system folders.
+
 ## Build from source
 
 If you don't want to use the published release zips:
