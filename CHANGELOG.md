@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-25
+
+### Fixed
+
+- Local Hyper-V installation and updates repair managed directory and file
+  permissions instead of rejecting extra existing access grants. Required
+  service access and permitted Hyper-V VM/image access are applied while
+  retaining ownership, ancestor and reparse-point safety checks.
+
 ## [0.10.4] - 2026-11-24
 
 ### Fixed

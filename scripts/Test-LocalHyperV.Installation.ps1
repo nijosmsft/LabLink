@@ -71,19 +71,28 @@ try {
     Set-PrivateDirectory $ImageRoot 'F'
     & icacls.exe $image /grant:r '*S-1-5-83-0:W' | Out-Null
     if($LASTEXITCODE -ne 0){throw 'Cannot prepare writable image regression fixture'}
-    $rejected=$false
-    try {Set-PrivateDirectory $ImageRoot 'F'} catch {$rejected=$_.Exception.Message -like '*non-service permissions*'}
-    if(-not $rejected){throw 'A VM-writeable approved parent was accepted'}
-    $result.Add([pscustomobject]@{test='preserve VM image readers but reject VM image writers';ok=$true})
+    Set-PrivateDirectory $ImageRoot 'F'
+    $remaining=@((Get-Acl -LiteralPath $image).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) |
+        Where-Object {$_.IdentityReference.Value -eq 'S-1-5-83-0' -and $_.AccessControlType -eq 'Allow' -and
+            ([long]$_.FileSystemRights -band [long][Security.AccessControl.FileSystemRights]::Write)})
+    if($remaining.Count){throw 'VM write access to an approved parent survived repair'}
+    $result.Add([pscustomobject]@{test='preserve VM image readers and repair VM image writers';ok=$true})
 
     $badGrant=Join-Path $TestRoot 'explicit-user-grant'
     New-Item -ItemType Directory -Path $badGrant | Out-Null
     & icacls.exe $badGrant /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-1-0:(OI)(CI)F' | Out-Null
     if($LASTEXITCODE -ne 0){throw 'Cannot prepare explicit-ACE regression fixture'}
-    $rejected=$false
-    try {Set-PrivateDirectory $badGrant 'F'} catch {$rejected=$_.Exception.Message -like '*non-service permissions*'}
-    if(-not $rejected){throw 'An explicit Everyone FullControl grant survived setup'}
-    $result.Add([pscustomobject]@{test='reject pre-existing explicit untrusted ACE';ok=$true})
+    $badChild=Join-Path $badGrant 'child.txt'
+    New-Item -ItemType File -Path $badChild | Out-Null
+    & icacls.exe $badChild /grant:r '*S-1-1-0:F' | Out-Null
+    if($LASTEXITCODE -ne 0){throw 'Cannot prepare explicit child-ACE regression fixture'}
+    Set-PrivateDirectory $badGrant 'F'
+    foreach($path in @($badGrant,$badChild)){
+        $remaining=@((Get-Acl -LiteralPath $path).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) |
+            Where-Object {$_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow'})
+        if($remaining.Count){throw 'An explicit Everyone FullControl grant survived repair'}
+    }
+    $result.Add([pscustomobject]@{test='repair pre-existing root and child untrusted ACEs';ok=$true})
 
     $badOwner=Join-Path $TestRoot 'untrusted-owner'
     New-Item -ItemType Directory -Path $badOwner | Out-Null

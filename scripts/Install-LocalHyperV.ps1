@@ -199,6 +199,7 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
         }
     }
     $pending = [Collections.Generic.Stack[string]]::new()
+    $repairs = [Collections.Generic.List[object]]::new()
     $pending.Push($Path)
     while ($pending.Count) {
         $entry = $pending.Pop()
@@ -209,6 +210,7 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
         $vmOwned = $VMRoot -and $entry.StartsWith($VMRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase) -and
             $owner -match '^S-1-5-83-1-(?:\d+-){3}\d+$'
         if ($owner -notin $trusted -and -not $vmOwned) { throw "Refusing an existing service path owned by an untrusted account: $entry" }
+        $preserved = [Collections.Generic.List[object]]::new()
         foreach ($rule in @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))) {
             $sid = $rule.IdentityReference.Value
             $vmIdentity = $sid.StartsWith('S-1-5-83-') -or $sid -eq 'S-1-15-3-1024-2268835264-3721307629-241982045-173645152-1490879176-104643441-2915960892-1612460704'
@@ -219,13 +221,25 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
                 ($vmIdentity -or $creatorOnly)
             $imageRead = $imageChild -and ($creatorOnly -or ($vmIdentity -and
                 (([long]$rule.FileSystemRights -band (-bnot [long][Security.AccessControl.FileSystemRights]::ReadAndExecute -band -bnot [long][Security.AccessControl.FileSystemRights]::Synchronize)) -eq 0)))
-            if ($sid -notin $trusted -and -not $vmAccess -and -not $imageRead -and $rule.AccessControlType -eq 'Allow') {
-                throw "Refusing existing non-service permissions at $entry ($sid). Select a clean protected directory."
+            if (($vmAccess -or $imageRead) -and $rule.AccessControlType -eq 'Allow') {
+                $preserved.Add([Security.AccessControl.FileSystemAccessRule]::new(
+                    [Security.Principal.SecurityIdentifier]::new($sid),
+                    $rule.FileSystemRights,$rule.InheritanceFlags,$rule.PropagationFlags,$rule.AccessControlType))
             }
         }
+        $inheritance = if ($item.PSIsContainer) { 'OICI' } else { '' }
+        # Replace only the DACL, preserving VM ownership and audit information.
+        $acl.SetSecurityDescriptorSddlForm(
+            "D:P(A;$inheritance;FA;;;SY)(A;$inheritance;FA;;;BA)(A;$inheritance;$access;;;$script:serviceSid)",
+            [Security.AccessControl.AccessControlSections]::Access)
+        foreach ($rule in $preserved) { $acl.AddAccessRule($rule) }
+        $repairs.Add([pscustomobject]@{Path=$entry;Acl=$acl})
         if ($item.PSIsContainer) {
             foreach ($child in @(Get-ChildItem -LiteralPath $entry -Force -ErrorAction Stop)) { $pending.Push($child.FullName) }
         }
+    }
+    foreach ($repair in $repairs) {
+        Set-Acl -LiteralPath $repair.Path -AclObject $repair.Acl -ErrorAction Stop
     }
     Set-Acl -LiteralPath $Path -AclObject $secure -ErrorAction Stop
 }
