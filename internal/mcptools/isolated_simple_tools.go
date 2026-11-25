@@ -715,7 +715,7 @@ func createSimpleIsolatedOrchestratorHandler(deps *isolatedLifecycleDeps) server
 			seed := profile.SeedConfig(deps.serverVersion, id.String())
 			plan.Orchestrator = &seed
 			result, err := deps.linux.Create(ctx, linuxReq, plan, resolvedTarget, progress)
-			if err != nil || result == nil || result.IsError {
+			if err != nil || !linuxVMProvisioningComplete(result, true) {
 				if err != nil {
 					return isolatedError(err)
 				}
@@ -1269,7 +1269,7 @@ func createSimpleIsolatedVMHandler(deps *isolatedLifecycleDeps) server.ToolHandl
 					ctx, linuxReq, plan, resolvedTarget, deps.registry, deps.pool,
 					deps.defaults, deps.credentials, deps.audit, deps.enrollment,
 					deps.lease, progress)
-				if err != nil || result == nil || result.IsError {
+				if err != nil || !linuxVMProvisioningComplete(result, false) {
 					if err != nil {
 						return isolatedError(err)
 					}
