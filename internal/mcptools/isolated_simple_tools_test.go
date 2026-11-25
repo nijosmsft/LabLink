@@ -12,10 +12,107 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/isolated"
 	"github.com/nijosmsft/lablink/internal/isolatedstate"
+	internalsec "github.com/nijosmsft/lablink/internal/security"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 )
+
+type simpleLinuxCreatorFunc func(context.Context, mcp.CallToolRequest, linuxVMPlan, Target, *MCPProgressState) (*mcp.CallToolResult, error)
+
+func (f simpleLinuxCreatorFunc) Create(
+	ctx context.Context, req mcp.CallToolRequest, plan linuxVMPlan,
+	target Target, progress *MCPProgressState,
+) (*mcp.CallToolResult, error) {
+	return f(ctx, req, plan, target, progress)
+}
+
+func TestOrchestratorRequiresCompletedLinuxProvisioningBeforeHostLookup(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		result     *mcp.CallToolResult
+		wantLookup bool
+	}{
+		{
+			name: "image-preparing",
+			result: vmResult("Linux image is preparing",
+				`{"status":"image_preparing","vm_created":false}`),
+		},
+		{
+			name: "retained-for-diagnosis",
+			result: retainedLinuxVMError(linuxVMPlan{}, "",
+				errors.New("guest enrollment failed")),
+		},
+		{
+			name:   "provisioned-but-not-registered",
+			result: provisionedLinuxVMResult("VM retained off", linuxVMPlan{}),
+		},
+		{
+			name:       "created-and-registered",
+			result:     provisionedLinuxVMResult("VM verified", linuxVMPlan{Registered: true}),
+			wantLookup: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := &linuxImageMockAgent{failAt: 1, failure: "host lookup reached"}
+			addr := startNodeAgent(t, agent)
+			reg := newRebootTestRegistry(t, map[string]string{"node1": addr})
+			pool := agentclient.NewPool("", internalsec.ClientTransportConfig{
+				Mode: internalsec.TransportModeInsecure,
+			})
+			defer pool.Close()
+			store, err := isolatedstate.Open(filepath.Join(t.TempDir(), "isolated.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			deps := &isolatedLifecycleDeps{
+				state: store, registry: reg, pool: pool,
+				defaults: linuxDefaultsStore(t, `{
+  "default_linux_profile":"ubuntu",
+  "profiles":{"ubuntu":{
+    "guest_os":"linux","target":"node1","image_cache_root":"E:\\Images",
+    "distribution":"ubuntu","release":"24.04","architecture":"amd64",
+    "vm_root":"E:\\VM","vswitch":"ext","linux_username":"lab",
+    "ssh_public_key":"`+linuxTestKey()+`"
+  }}
+}`),
+			}
+			calls := 0
+			deps.linux = simpleLinuxCreatorFunc(func(
+				_ context.Context, _ mcp.CallToolRequest, plan linuxVMPlan,
+				_ Target, _ *MCPProgressState,
+			) (*mcp.CallToolResult, error) {
+				calls++
+				if plan.Orchestrator == nil || !plan.RegisterWithLabLink {
+					t.Fatal("orchestrator provisioning was not requested")
+				}
+				return tt.result, nil
+			})
+			result, err := createSimpleIsolatedOrchestratorHandler(deps)(
+				context.Background(), reqNoToken(nil))
+			if err != nil || result == nil {
+				t.Fatalf("create: result=%+v err=%v", result, err)
+			}
+			if calls != 1 {
+				t.Fatalf("Linux create calls = %d, want 1: %s", calls, toolResultText(result))
+			}
+			if tt.wantLookup {
+				if !result.IsError || len(agent.Scripts()) != 1 ||
+					!strings.Contains(toolResultText(result), "host lookup reached") {
+					t.Fatalf("verified creation did not reach host lookup: %+v", result)
+				}
+			} else if result != tt.result || len(agent.Scripts()) != 0 {
+				t.Fatalf("incomplete creation was not returned before host lookup: %+v", result)
+			}
+			records, err := store.ListOrchestrators(context.Background(), "")
+			if err != nil || len(records) != 0 {
+				t.Fatalf("unexpected orchestrator persistence: records=%+v err=%v", records, err)
+			}
+		})
+	}
+}
 
 func TestOrchestratorDryRunInheritsOrdinaryLinuxProfileTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vm-defaults.json")
