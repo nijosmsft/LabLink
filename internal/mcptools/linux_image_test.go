@@ -348,8 +348,86 @@ func TestBuilderOrchestratorDoesNotRunWSLDirectlyAsLocalSystem(t *testing.T) {
 		strings.Contains(text, "runPS(ctx, reg, pool, builderTarget, transform") {
 		t.Fatal("setup or transform still runs directly under the LabLink Agent LocalSystem context")
 	}
-	if strings.Count(text, "runLinuxImageBuilderUserScript(") < 4 {
-		t.Fatal("setup, resume, and transform are not all routed through the builder user task")
+	if strings.Count(text, "runLinuxImageBuilderSetup(") < 3 ||
+		strings.Count(text, "runLinuxImageBuilderUserScript(") < 3 {
+		t.Fatal("setup/resume are not split, or user WSL/transform bypasses the selected-user task")
+	}
+}
+
+func TestBuilderSetupRequiresOwnedEnrolledGuestAndSplitsExecution(t *testing.T) {
+	for _, mode := range []string{"ready", "pending", "not-owned", "wrong-role", "insecure", "wrong-tls", "local", "host-endpoint", "unexpected-status"} {
+		t.Run(mode, func(t *testing.T) {
+			store, creds := linuxBuilderStores(t, validBuilderConfig(false))
+			plan, _, err := resolveLinuxImagePlan(reqNoToken(map[string]any{}), newRebootTestRegistry(t, nil), store, creds)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostAgent := &linuxImageMockAgent{responses: []string{`{"exists":true}`}}
+			if mode == "not-owned" {
+				hostAgent.responses = []string{`{"exists":false}`}
+			}
+			machineStatus := `{"status":"machine_ready"}`
+			if mode == "pending" {
+				machineStatus = `{"status":"setup_pending","phase":"wsl_msi_downloading"}`
+			}
+			if mode == "unexpected-status" {
+				machineStatus = `{"status":"builder_ready"}`
+			}
+			builderAgent := &linuxImageMockAgent{responses: []string{machineStatus, `{"status":"builder_ready"}`}}
+			hostAddr := startNodeAgent(t, hostAgent)
+			builderAddr := startNodeAgent(t, builderAgent)
+			reg := newRebootTestRegistry(t, map[string]string{"host": hostAddr, plan.BuilderNodeName: builderAddr})
+			host, _ := resolvePlanTarget("host", reg)
+			builder, _ := resolvePlanTarget(plan.BuilderNodeName, reg)
+			builder.Node.Role = "linux-image-builder"
+			builder.Node.TransportMode = "mtls"
+			builder.Node.TLSServerName = plan.BuilderNodeName
+			switch mode {
+			case "wrong-role":
+				builder.Node.Role = "server"
+			case "insecure":
+				builder.Node.TransportMode = "insecure"
+			case "wrong-tls":
+				builder.Node.TLSServerName = "another-node"
+			case "local":
+				builder.IsLocal = true
+			case "host-endpoint":
+				builder.Node.Address = hostAddr
+			}
+			pool := agentclient.NewPool("", internalsec.ClientTransportConfig{Mode: internalsec.TransportModeInsecure})
+			defer pool.Close()
+			out, err := runLinuxImageBuilderSetup(context.Background(), plan, host, builder, reg, pool, creds)
+			switch mode {
+			case "ready":
+				if err != nil || !strings.Contains(out, "builder_ready") {
+					t.Fatalf("setup: %v %s", err, out)
+				}
+				scripts, envs := builderAgent.Scripts(), builderAgent.Envs()
+				if len(scripts) != 2 || len(envs[0]) != 0 ||
+					!strings.Contains(scripts[0], "BUILDER_MACHINE_IDENTITY_UNSUPPORTED") ||
+					strings.Contains(scripts[0], "Register-ScheduledTask") ||
+					!strings.Contains(scripts[1], "Register-ScheduledTask") ||
+					envs[1]["LABLINK_BUILDER_PASSWORD"] == "" {
+					t.Fatal("machine/user phases or credential routing were not separated")
+				}
+			case "pending":
+				if err != nil || len(builderAgent.Scripts()) != 1 || !strings.Contains(out, "setup_pending") {
+					t.Fatalf("pending reached user task: %v %s", err, out)
+				}
+			case "unexpected-status":
+				if err == nil || len(builderAgent.Scripts()) != 1 {
+					t.Fatal("unexpected machine-ready response bypassed user setup")
+				}
+			case "not-owned":
+				if err == nil || len(builderAgent.Scripts()) != 0 {
+					t.Fatal("unowned builder reached machine preparation")
+				}
+			default:
+				if err == nil || len(builderAgent.Scripts()) != 0 || len(hostAgent.Scripts()) != 0 {
+					t.Fatal("unenrolled/local/host endpoint passed the guest gate")
+				}
+			}
+		})
 	}
 }
 

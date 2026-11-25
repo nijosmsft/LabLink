@@ -126,11 +126,13 @@ Only the enrolled builder runs these operations:
   and a valid Microsoft Authenticode signer before silent execution;
 - install only
   `https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi`
-  with a hidden `Start-Process -Wait -PassThru` invocation of
+  with a hidden `Start-Process -PassThru` invocation of
   `msiexec.exe /i ... /qn /norestart /L*v`. Every attempt has a bounded
-  verbose log under `C:\ProgramData\LabLink\wsl`; exit `0` and `3010` are
-  accepted, the runtime is re-detected after an unexpected exit, and at most
-  one retry is made when WSL is still absent;
+  verbose log under `C:\ProgramData\LabLink\wsl\preparations\<id>`; exit `0`
+  and `3010` are accepted after runtime/reboot checks. Only installer-busy
+  (`1618`) allows one retry, after 30 seconds. Each installer wait is at most
+  300 seconds; a persisted PID/start time prevents overlapping installations.
+  An interrupted result without a verified installed runtime fails explicitly;
 - run
   `wsl --install -d Ubuntu-24.04 --web-download --no-launch`;
 - make Ubuntu 24.04 the default WSL version 2 distribution and verify it with
@@ -138,15 +140,41 @@ Only the enrolled builder runs these operations:
 
 The MSI URL, version, filename, digest, BITS display name, and distribution are
 compiled-in metadata and copied into the builder's atomically replaced state
-file. They are not caller inputs. Error/cancelled BITS jobs are removed and
-recreated, suspended/transient jobs are resumed, and any MSI that fails hash or
-signature validation is moved to an operation-owned quarantine directory
-before another download can start.
+file. They are not caller inputs. Additive, versioned `machine_preparation`
+metadata preserves the existing builder schema and selected-user identity.
+The preparation records a unique transfer token before BITS creation, then
+persists the returned job ID. Recovery enumerates only the current SYSTEM
+owner's jobs and matches that ID, or the exact token after an interrupted
+creation. Ownership, pinned source and unique destination must agree.
+Only provably owned empty jobs or classified transient failures may be repaired
+(at most twice); nonempty mismatches and permanent failures remain untouched.
+BITS handles transient transfer retries; only suspended jobs are explicitly resumed.
+Legacy fixed-name/user-owned jobs are never adopted or deleted. An existing
+legacy MSI is verified, copied into the protected preparation directory, then
+verified again. A bad preparation-owned MSI is quarantined and fails explicitly;
+integrity failures never trigger automatic download retries.
 
-The LabLink Agent remains LocalSystem for inventory and orchestration, but it
-does **not** call WSL directly. WSL distribution registration is per-user, and
-WSL rejects LocalSystem. Setup, every post-reboot resume, and the filesystem
-transform therefore run under the builder profile's saved normal local
+Bounds persist across calls and reboots: 120 seconds for transient startup
+recovery, 20 minutes for a transfer, five minutes without byte progress, four
+requested reboots and 60 minutes for preparation. Repeated calls do not reset
+these budgets. Each poll reconciles the exact owned job's completion and observed
+byte progress before applying the inactivity deadline; the absolute transfer and
+preparation deadlines still apply. Successful preparations remain reusable.
+Failed checkpoints retain diagnostics and require diagnosis rather than silently
+resetting ownership, attempts or integrity failures.
+
+Before each machine phase, the orchestrator verifies the exact separately
+enrolled mTLS builder and its operation-owned VM metadata. The generated machine
+script verifies its actual Windows SID is SYSTEM and rejects the restricted
+host-service context before mutation. The guest agent enables Windows features
+and downloads/verifies/installs the MSI directly under its existing service
+identity. It does **not** call `wsl.exe` as SYSTEM, including version probes.
+The local host's `NT SERVICE\LabLinkHyperV` account, grants and RPC allowlist are
+unchanged.
+
+WSL distribution registration is per-user, and WSL rejects LocalSystem.
+Every `wsl.exe` operation, including post-reboot setup and the filesystem
+transform, therefore runs under the builder profile's saved normal local
 administrator. The SYSTEM-side script receives that credential only through
 the agent request environment, creates a random 128-bit directory under
 `C:\ProgramData\LabLink\builder-user-jobs`, and registers one password-logon,
@@ -157,6 +185,10 @@ and unregisters the exact task and deletes the exact job directory in
 `finally`. Missing/invalid results, timeout, nonzero payload exit, and any
 cleanup failure fail closed. Passwords never enter scripts, task names, paths,
 arguments, state, plans, audit, logs, errors, or output.
+
+Builder failures report their phase, actual command, HRESULT chain, execution
+SID and relevant BITS job metadata without raw invocation text or arguments.
+Primary failures are retained when exact task cleanup also fails.
 
 The saved credential username is preferred, but Windows unattend may have set
 that password on the built-in Administrator account instead of creating the

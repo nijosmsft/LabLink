@@ -346,11 +346,7 @@ func prepareLinuxImageHandler(
 				opErr = err
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			setupPayload, _ := hyperv.BuildLinuxImageBuilderSetupScript(linuxImageBuilderStatePath)
-			setupScript, _ := hyperv.BuildLinuxImageBuilderUserTaskScript(setupPayload, linuxImageBuilderUserTaskTimeoutSec)
-			setupOut, _, err := runLinuxImageBuilderUserScript(
-				ctx, plan, reg, pool, builderTarget, creds, setupScript, vmDefaultTimeoutSec,
-			)
+			setupOut, err := runLinuxImageBuilderSetup(ctx, plan, target, builderTarget, reg, pool, creds)
 			if err != nil {
 				opErr = err
 				return mcp.NewToolResultError(fmt.Sprintf("configure WSL2 inside builder %s: %v", plan.BuilderNodeName, err)), nil
@@ -370,7 +366,7 @@ func prepareLinuxImageHandler(
 					break
 				}
 				if setupResult.Status == "setup_pending" {
-					return vmResult("**Linux image builder setup started/resumed** — the pinned WSL MSI BITS transfer is active; rerun `prepare_linux_image` to resume.", setupBody), nil
+					return vmResult("**Linux image builder setup started/resumed** — inspect the reported phase; rerun `prepare_linux_image` to resume.", setupBody), nil
 				}
 				if setupResult.Status != "reboot_required" {
 					opErr = fmt.Errorf("unexpected builder setup status %q in phase %q", setupResult.Status, setupResult.Phase)
@@ -389,9 +385,7 @@ func prepareLinuxImageHandler(
 					opErr = err
 					return mcp.NewToolResultError(fmt.Sprintf("rediscover builder after reboot: %v", err)), nil
 				}
-				setupOut, _, err = runLinuxImageBuilderUserScript(
-					ctx, plan, reg, pool, builderTarget, creds, setupScript, vmDefaultTimeoutSec,
-				)
+				setupOut, err = runLinuxImageBuilderSetup(ctx, plan, target, builderTarget, reg, pool, creds)
 				if err != nil {
 					opErr = err
 					return mcp.NewToolResultError(fmt.Sprintf("resume WSL2 setup after builder reboot: %v", err)), nil
@@ -837,6 +831,73 @@ func runLinuxImageBuilderUserScript(
 		secretValues[0] = ""
 	}()
 	return runPSWithEnv(ctx, reg, pool, builder, script, timeoutSec, env, secretValues)
+}
+
+func runLinuxImageBuilderSetup(
+	ctx context.Context,
+	plan linuxImagePlan,
+	host, builder Target,
+	reg *registry.Registry,
+	pool *agentclient.Pool,
+	creds *credentials.Store,
+) (string, error) {
+	if builder.IsLocal || builder.Node == nil || builder.Name != plan.BuilderNodeName ||
+		builder.Node.Name != plan.BuilderNodeName || builder.Node.TransportMode != "mtls" ||
+		builder.Node.TLSServerName != plan.BuilderNodeName || builder.Node.Role != "linux-image-builder" ||
+		(!host.IsLocal && (host.Node == nil || builder.Node.Address == host.Node.Address)) {
+		return "", fmt.Errorf("builder machine preparation requires the exact separately enrolled mTLS builder guest")
+	}
+	inspect, err := hyperv.BuildInspectLinuxImageBuilderScript(plan.BuilderVMName, builderMetadata(plan))
+	if err != nil {
+		return "", err
+	}
+	out, _, err := runPS(ctx, reg, pool, host, inspect, vmDefaultTimeoutSec)
+	if err != nil {
+		return "", fmt.Errorf("verify builder ownership before machine preparation: %w", err)
+	}
+	var owned struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.Unmarshal([]byte(jsonExtract(out)), &owned); err != nil || !owned.Exists {
+		return "", fmt.Errorf("builder ownership was not verified before machine preparation")
+	}
+	if creds == nil {
+		return "", fmt.Errorf("credential store unavailable for builder account selection")
+	}
+	credential, err := creds.Get(plan.Builder.AdminPasswordCredential)
+	if err != nil {
+		return "", fmt.Errorf("resolve builder account selection: %w", err)
+	}
+	machineScript, err := hyperv.BuildLinuxImageBuilderMachineSetupScript(linuxImageBuilderStatePath, credential.Username)
+	if err != nil {
+		return "", err
+	}
+	out, _, err = runPS(ctx, reg, pool, builder, machineScript, vmDefaultTimeoutSec)
+	if err != nil {
+		return "", fmt.Errorf("builder machine preparation: %w", err)
+	}
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(jsonExtract(out)), &result); err != nil {
+		return "", fmt.Errorf("parse builder machine preparation: %w", err)
+	}
+	if result.Status == "setup_pending" || result.Status == "reboot_required" {
+		return out, nil
+	}
+	if result.Status != "machine_ready" {
+		return "", fmt.Errorf("unexpected builder machine preparation status %q", result.Status)
+	}
+	payload, err := hyperv.BuildLinuxImageBuilderSetupScript(linuxImageBuilderStatePath)
+	if err != nil {
+		return "", err
+	}
+	script, err := hyperv.BuildLinuxImageBuilderUserTaskScript(payload, linuxImageBuilderUserTaskTimeoutSec)
+	if err != nil {
+		return "", err
+	}
+	out, _, err = runLinuxImageBuilderUserScript(ctx, plan, reg, pool, builder, creds, script, vmDefaultTimeoutSec)
+	return out, err
 }
 
 func rebootLinuxImageBuilder(ctx context.Context, builder Target, pool *agentclient.Pool) error {

@@ -124,8 +124,18 @@ func linuxImageBuilderSetupScriptForTest(t *testing.T) string {
 	return script
 }
 
+func linuxImageBuilderMachineSetupScriptForTest(t *testing.T) string {
+	t.Helper()
+	script, err := BuildLinuxImageBuilderMachineSetupScript(`C:\ProgramData\LabLink\builder.json`, "BuilderAdmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoPowerShellFormattingError(t, script)
+	return script
+}
+
 func TestLinuxImageBuilderSetupPersistsFeatureRebootAndPinnedMetadata(t *testing.T) {
-	script := linuxImageBuilderSetupScriptForTest(t)
+	script := linuxImageBuilderMachineSetupScriptForTest(t)
 	for _, want := range []string{
 		"Microsoft-Windows-Subsystem-Linux", "VirtualMachinePlatform", "-NoRestart",
 		"features_enabled_reboot_required", linuximage.WSLRuntimeVersion,
@@ -133,7 +143,7 @@ func TestLinuxImageBuilderSetupPersistsFeatureRebootAndPinnedMetadata(t *testing
 		linuximage.WSLMSISHA256, linuximage.WSLMSIFilename,
 		linuximage.WSLMSIDisplayName, linuximage.WSLDistributionName,
 		"schema_version -NotePropertyValue 2", "wsl_runtime",
-		"LABLINK_BUILDER_EFFECTIVE_USER", "LABLINK_BUILDER_EFFECTIVE_USER_SID",
+		"BUILDER_MACHINE_IDENTITY_UNSUPPORTED", "S-1-5-18", "Resolve-LabLinkBuilderUser",
 		"builder_user", "builder_user_sid", "BUILDER_USER_IDENTITY_MISMATCH",
 	} {
 		if !strings.Contains(script, want) {
@@ -146,12 +156,12 @@ func TestLinuxImageBuilderSetupPersistsFeatureRebootAndPinnedMetadata(t *testing
 }
 
 func TestLinuxImageBuilderSetupRejectsWSLStubAndUsesPinnedMSI(t *testing.T) {
-	script := linuxImageBuilderSetupScriptForTest(t)
+	script := linuxImageBuilderMachineSetupScriptForTest(t)
 	for _, want := range []string{
 		"Invoke-WSLNonTerminating @('--version')", "Get-LabLinkWSLProduct",
 		"command_ready=$commandReady", "product_ready=$productReady",
-		"WSL_RUNTIME_NOT_READY", "Start-BitsTransfer -Source $wslMSIURL",
-		"-DisplayName $wslBITSDisplayName", "C:\\ProgramData\\LabLink\\wsl",
+		"WSL_RUNTIME_NOT_READY", "Start-BitsTransfer -Source $prep.source",
+		"-DisplayName ($wslBITSDisplayName", "C:\\ProgramData\\LabLink\\wsl",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("stub/MSI bootstrap missing %q", want)
@@ -175,7 +185,7 @@ func TestLinuxImageBuilderSetupRejectsWSLStubAndUsesPinnedMSI(t *testing.T) {
 }
 
 func TestLinuxImageBuilderSetupFailsClosedOnMSITrustFailure(t *testing.T) {
-	script := linuxImageBuilderSetupScriptForTest(t)
+	script := linuxImageBuilderMachineSetupScriptForTest(t)
 	for _, want := range []string{
 		"Get-FileHash -Algorithm SHA256", "WSL_MSI_SHA256_MISMATCH",
 		"Get-AuthenticodeSignature", "SignatureStatus]::Valid",
@@ -190,15 +200,13 @@ func TestLinuxImageBuilderSetupFailsClosedOnMSITrustFailure(t *testing.T) {
 }
 
 func TestLinuxImageBuilderSetupHandlesMSIExitCodesWithoutUIOrElevation(t *testing.T) {
-	script := linuxImageBuilderSetupScriptForTest(t)
+	script := linuxImageBuilderMachineSetupScriptForTest(t)
 	for _, want := range []string{
-		"Start-Process -FilePath $msiexec", "'/i', $msiPath, '/qn', '/norestart', '/L*v', $msiLogPath",
-		"-Wait -PassThru -WindowStyle Hidden",
-		"$msiExit -eq 3010", "wsl_msi_installed_reboot_required",
-		"$msiAttempt -le 2", "wsl_msi_retrying", "WSL_MSI_INSTALL_FAILED",
-		"wsl_msi_installed", "wsl_msi_exit_code",
-		"wsl_msi_attempt", "wsl_msi_log_path", "Get-BoundedWSLMSILogTail",
-		"-Tail 40", "$tail.Length -gt 2000", "$runtime = Get-LabLinkWSLRuntime",
+		"Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\msiexec.exe')",
+		"'/qn', '/norestart', '/L*v'", "-PassThru -WindowStyle Hidden",
+		"$prep.install_exit_code -eq 3010", "wsl_msi_installed_reboot_required",
+		"$prep.install_attempts -ge 2", "wsl_msi_retrying", "WSL_MSI_INSTALL_FAILED",
+		"WSL_MSI_INSTALL_RESULT_UNKNOWN", "WSL_MSI_INSTALL_TIMEOUT", ".WaitForExit(300000)",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("MSI exit handling missing %q", want)
@@ -373,6 +381,7 @@ func TestLinuxImageGeneratedPowerShellParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	machine := linuxImageBuilderMachineSetupScriptForTest(t)
 	transform, err := BuildLinuxImageBuilderTransformScript(LinuxImageBuilderTransformParams{
 		StatePath: `C:\ProgramData\LabLink\builder.json`, ExpectedSizeBytes: 64 * 1024 * 1024 * 1024,
 		ExpectedTargetLocation: 1,
@@ -381,7 +390,7 @@ func TestLinuxImageGeneratedPowerShellParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, script := range map[string]string{
-		"wrapper": wrapper, "setup": setup, "transform": transform,
+		"wrapper": wrapper, "setup": setup, "machine": machine, "transform": transform,
 	} {
 		t.Run(name, func(t *testing.T) {
 			command := `$text=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null; ` +
@@ -428,17 +437,20 @@ func TestLinuxImageBuilderStartRetriesOnlyExactFatalWorkerEvent(t *testing.T) {
 }
 
 func TestLinuxImageBuilderSetupResumesBITSAndRecoversTerminalJobs(t *testing.T) {
-	script := linuxImageBuilderSetupScriptForTest(t)
+	script := linuxImageBuilderMachineSetupScriptForTest(t)
 	for _, want := range []string{
-		"Get-BitsTransfer -AllUsers", "WSL_BITS_JOB_SOURCE_MISMATCH",
-		"WSL_BITS_JOB_AMBIGUOUS", "'Error','Cancelled','Canceled','Acknowledged'",
-		"Remove-BitsTransfer", "'Suspended','TransientError'",
+		"Get-BitsTransfer -ErrorAction Stop", "WSL_BITS_JOB_SOURCE_MISMATCH",
+		"WSL_BITS_JOB_AMBIGUOUS", "WSL_BITS_JOB_IDENTITY_MISMATCH",
+		"Remove-BitsTransfer", "'Suspended'", "WSL_BITS_REPAIR_LIMIT",
 		"Resume-BitsTransfer", "Complete-BitsTransfer",
-		"status='setup_pending'", "phase='wsl_msi_downloading'",
+		"status='setup_pending'", "'wsl_msi_downloading'", "transfer_token",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("BITS recovery missing %q", want)
 		}
+	}
+	if strings.Contains(script, "-AllUsers") {
+		t.Fatal("machine preparation must never enumerate or adopt another owner's BITS jobs")
 	}
 }
 

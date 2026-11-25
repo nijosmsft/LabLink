@@ -679,8 +679,9 @@ func BuildLinuxImageBuilderUserTaskScript(payload string, timeoutSeconds int) (s
 		return "", fmt.Errorf("builder user task timeout must be between 1 and 3600 seconds")
 	}
 	payloadEncoded := base64.StdEncoding.EncodeToString([]byte(payload))
-	runner := `
+	runner := linuxImageBuilderDiagnosticsPowerShell + `
 $ErrorActionPreference = 'Stop'
+$script:builderPhase = 'user_task_runner'
 $payloadPath = Join-Path $PSScriptRoot 'payload.ps1'
 $outputPath = Join-Path $PSScriptRoot 'payload-output.txt'
 $resultPath = Join-Path $PSScriptRoot 'result.json'
@@ -697,7 +698,7 @@ try {
     & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $payloadPath *> $outputPath
     $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
 } catch {
-    [IO.File]::WriteAllText($outputPath, ("LABLINK_ERROR: " + $_.Exception.Message), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($outputPath, ("LABLINK_ERROR: " + (Format-BuilderError $_)), [Text.UTF8Encoding]::new($false))
     $exitCode = -1
 } finally {
     Remove-Item Env:LABLINK_BUILDER_EFFECTIVE_USER -ErrorAction SilentlyContinue
@@ -716,6 +717,7 @@ exit $exitCode
 	runnerEncoded := base64.StdEncoding.EncodeToString([]byte(runner))
 	body := fmt.Sprintf(`
 %s
+$script:builderPhase = 'user_task'
 $username = [Environment]::GetEnvironmentVariable('LABLINK_BUILDER_USERNAME', 'Process')
 $password = [Environment]::GetEnvironmentVariable('LABLINK_BUILDER_PASSWORD', 'Process')
 $jobRoot = 'C:\ProgramData\LabLink\builder-user-jobs'
@@ -753,8 +755,11 @@ try {
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds %d) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     try {
         $taskRegistrationAttempted = $true
+        $script:builderCommand = 'Register-ScheduledTask'
         Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $action -Settings $settings -User $effectiveUser -Password $password -RunLevel Highest -Force -ErrorAction Stop | Out-Null
         $taskRegistered = $true
+    } catch {
+        throw (Format-BuilderError $_)
     } finally {
         $password = $null
         Remove-Item Env:LABLINK_BUILDER_PASSWORD -ErrorAction SilentlyContinue
@@ -801,7 +806,7 @@ try {
         $payloadOutput = Get-Content -Raw -LiteralPath $outputPath -ErrorAction Stop
     }
 } catch {
-    $primaryError = $_.Exception.Message
+    $primaryError = Format-BuilderError $_
 } finally {
     $password = $null
     Remove-Item Env:LABLINK_BUILDER_PASSWORD -ErrorAction SilentlyContinue
@@ -818,12 +823,12 @@ try {
                 Stop-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction Stop
             }
         } catch {
-            $cleanupErrors.Add("stop exact scheduled task: $($_.Exception.Message)")
+            $cleanupErrors.Add("stop exact scheduled task: $(Format-BuilderError $_)")
         }
         try {
             Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
         } catch {
-            $cleanupErrors.Add("unregister exact scheduled task: $($_.Exception.Message)")
+            $cleanupErrors.Add("unregister exact scheduled task: $(Format-BuilderError $_)")
         }
     } elseif ($taskRegistered) {
         $cleanupErrors.Add('locate exact registered scheduled task for cleanup')
@@ -835,15 +840,21 @@ try {
                 throw 'exact job directory still exists'
             }
         } catch {
-            $cleanupErrors.Add("delete exact builder user job directory: $($_.Exception.Message)")
+            $cleanupErrors.Add("delete exact builder user job directory: $(Format-BuilderError $_)")
         }
     }
 }
+if ($cleanupErrors.Count -gt 0) {
+    $detail = "BUILDER_USER_TASK_CLEANUP_FAILED: " + ($cleanupErrors -join '; ')
+    if ($primaryError) { $detail = $primaryError + '; ' + $detail }
+    elseif ($null -ne $payloadExit -and $payloadExit -ne 0) {
+        $tagged = @($payloadOutput -split '\r?\n' | Where-Object { $_.StartsWith('LABLINK_ERROR:') } | Select-Object -First 1)
+        $detail = "BUILDER_USER_TASK_FAILED: payload exited $payloadExit; " + ($tagged -join '') + '; ' + $detail
+    }
+    throw $detail
+}
 if (-not [string]::IsNullOrEmpty($payloadOutput)) {
     Write-Output $payloadOutput
-}
-if ($cleanupErrors.Count -gt 0) {
-    throw ("BUILDER_USER_TASK_CLEANUP_FAILED: " + ($cleanupErrors -join '; '))
 }
 if ($primaryError) {
     throw $primaryError
@@ -854,27 +865,26 @@ if ($null -eq $payloadExit) {
 if ($payloadExit -ne 0) {
     throw "BUILDER_USER_TASK_FAILED: payload exited $payloadExit"
 }
-`, linuxImageBuilderAccountResolverPowerShell, PSLit(payloadEncoded), PSLit(runnerEncoded), timeoutSeconds, timeoutSeconds, timeoutSeconds)
+`, linuxImageBuilderDiagnosticsPowerShell+linuxImageBuilderAccountResolverPowerShell, PSLit(payloadEncoded), PSLit(runnerEncoded), timeoutSeconds, timeoutSeconds, timeoutSeconds)
 	return wrapTagged(body), nil
 }
 
 func BuildLinuxImageBuilderSetupScript(statePath string) (string, error) {
+	return buildLinuxImageBuilderSetupScript(statePath, "", false)
+}
+
+func BuildLinuxImageBuilderMachineSetupScript(statePath, configuredUsername string) (string, error) {
+	if strings.TrimSpace(configuredUsername) == "" {
+		return "", fmt.Errorf("configured builder username is required")
+	}
+	return buildLinuxImageBuilderSetupScript(statePath, configuredUsername, true)
+}
+
+func buildLinuxImageBuilderSetupScript(statePath, configuredUsername string, machine bool) (string, error) {
 	if strings.TrimSpace(statePath) == "" {
 		return "", fmt.Errorf("builder state path is required")
 	}
-	body := fmt.Sprintf(`
-$statePath = %s
-$parent = Split-Path -Parent $statePath
-New-Item -ItemType Directory -Force -Path $parent | Out-Null
-$wslVersion = %s
-$wslProductVersion = %s
-$wslMSIURL = %s
-$wslMSISHA256 = %s
-$wslMSIFilename = %s
-$wslBITSDisplayName = %s
-$distribution = %s
-$wslRoot = 'C:\ProgramData\LabLink\wsl'
-$msiPath = Join-Path $wslRoot $wslMSIFilename
+	identity := `
 $builderUser = [Environment]::GetEnvironmentVariable('LABLINK_BUILDER_EFFECTIVE_USER', 'Process')
 $builderUserSID = [Environment]::GetEnvironmentVariable('LABLINK_BUILDER_EFFECTIVE_USER_SID', 'Process')
 $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -884,6 +894,30 @@ if ([string]::IsNullOrWhiteSpace($builderUser) -or [string]::IsNullOrWhiteSpace(
 if ([string]$currentIdentity.User.Value -cne $builderUserSID -or [string]$currentIdentity.Name -cne $builderUser) {
     throw "BUILDER_EFFECTIVE_IDENTITY_MISMATCH: selected '$builderUser' ($builderUserSID), current '$($currentIdentity.Name)' ($($currentIdentity.User.Value))"
 }
+`
+	if machine {
+		identity = linuxImageBuilderAccountResolverPowerShell + `
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if ($env:LABLINK_HYPERV_RESTRICTED -eq '1' -or [string]$currentIdentity.User.Value -cne 'S-1-5-18') {
+    throw 'BUILDER_MACHINE_IDENTITY_UNSUPPORTED: machine preparation requires the enrolled guest agent running as SYSTEM'
+}
+$selectedIdentity = Resolve-LabLinkBuilderUser ` + PSLit(configuredUsername) + `
+$builderUser = [string]$selectedIdentity.account
+$builderUserSID = [string]$selectedIdentity.sid
+`
+	}
+	body := fmt.Sprintf(`
+$statePath = %s
+$wslVersion = %s
+$wslProductVersion = %s
+$wslMSIURL = %s
+$wslMSISHA256 = %s
+$wslMSIFilename = %s
+$wslBITSDisplayName = %s
+$distribution = %s
+$wslRoot = 'C:\ProgramData\LabLink\wsl'
+$msiPath = Join-Path $wslRoot $wslMSIFilename
+%s
 
 function Get-BuilderState {
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
@@ -910,8 +944,10 @@ function Assert-BuilderStateIdentity($State, [bool]$Required=$false) {
     }
 }
 function Save-BuilderState([string]$Phase, [string]$ErrorText='', [hashtable]$Properties=@{}) {
+    $script:builderPhase = $Phase
     $state = Get-BuilderState
     Assert-BuilderStateIdentity $state
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $statePath) | Out-Null
     $state | Add-Member -NotePropertyName schema_version -NotePropertyValue 2 -Force
     $state | Add-Member -NotePropertyName builder_user -NotePropertyValue $builderUser -Force
     $state | Add-Member -NotePropertyName builder_user_sid -NotePropertyValue $builderUserSID -Force
@@ -931,6 +967,13 @@ function Save-BuilderState([string]$Phase, [string]$ErrorText='', [hashtable]$Pr
     Move-Item -Force -LiteralPath $tmp -Destination $statePath
 }
 function Invoke-WSLNonTerminating([string[]]$Arguments) {
+    $script:builderCommand = 'wsl.exe'
+    $phases = @{
+        '--version'='user_runtime_probe'; '--list'='user_distribution_probe'
+        '--install'='user_distribution_install'; '--set-version'='user_distribution_version'
+        '--set-default'='user_distribution_default'; '--set-default-version'='user_default_version'
+    }
+    if ($Arguments.Count -gt 0 -and $phases.ContainsKey($Arguments[0])) { $script:builderPhase = $phases[$Arguments[0]] }
     $previousErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -1010,66 +1053,39 @@ function Quarantine-WSLMSI([string]$Reason) {
     }
     return $quarantinePath
 }
-function Test-WSLMSI {
-    if (-not (Test-Path -LiteralPath $msiPath -PathType Leaf)) { return $false }
-    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $msiPath -ErrorAction Stop).Hash.ToLowerInvariant()
+function Get-VerifiedWSLMSI([string]$Path) {
+    $actualHash = (Invoke-BuilderStep 'Get-FileHash' {
+        Get-FileHash -Algorithm SHA256 -LiteralPath $Path -ErrorAction Stop
+    }).Hash.ToLowerInvariant()
     if ($actualHash -cne $wslMSISHA256) {
-        Quarantine-WSLMSI "WSL_MSI_SHA256_MISMATCH: expected $wslMSISHA256, got $actualHash" | Out-Null
-        return $false
+        throw "WSL_MSI_SHA256_MISMATCH: expected $wslMSISHA256, got $actualHash; no automatic integrity retry"
     }
-    $signature = Get-AuthenticodeSignature -FilePath $msiPath -ErrorAction Stop
+    $signature = Invoke-BuilderStep 'Get-AuthenticodeSignature' {
+        Get-AuthenticodeSignature -FilePath $Path -ErrorAction Stop
+    }
     $subject = if ($signature.SignerCertificate) { [string]$signature.SignerCertificate.Subject } else { '' }
     $microsoftSigner = [regex]::IsMatch(
         $subject, '(^|,\s*)O=Microsoft Corporation(,|$)',
         [Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
     if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or -not $microsoftSigner) {
-        Quarantine-WSLMSI "WSL_MSI_SIGNATURE_INVALID: status=$($signature.Status), signer=$subject" | Out-Null
-        return $false
+        throw "WSL_MSI_SIGNATURE_INVALID: status=$($signature.Status), signer=$subject; no automatic integrity retry"
+    }
+    return [pscustomobject]@{ hash=$actualHash; signer=$subject }
+}
+function Test-WSLMSI {
+    if (-not (Test-Path -LiteralPath $msiPath -PathType Leaf)) { return $false }
+    try { $trust = Get-VerifiedWSLMSI $msiPath } catch {
+        $primary = Format-BuilderError $_
+        try { Quarantine-WSLMSI $primary | Out-Null } catch {
+            throw ($primary + '; quarantine_error=' + (Format-BuilderError $_))
+        }
+        throw $primary
     }
     Save-BuilderState 'wsl_msi_verified' '' @{
-        wsl_msi_path=$msiPath; wsl_msi_actual_sha256=$actualHash; wsl_msi_signer=$subject
+        wsl_msi_path=$msiPath; wsl_msi_actual_sha256=$trust.hash; wsl_msi_signer=$trust.signer
     }
     return $true
-}
-function Ensure-WSLMSIDownload {
-    New-Item -ItemType Directory -Force -Path $wslRoot | Out-Null
-    $matching = @(Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -ceq $wslBITSDisplayName } |
-        Sort-Object CreationTime -Descending)
-    $usable = @()
-    foreach ($candidate in $matching) {
-        $files = @($candidate.FileList)
-        if ($files.Count -ne 1 -or [string]$files[0].RemoteName -cne $wslMSIURL -or
-            -not [IO.Path]::GetFullPath([string]$files[0].LocalName).Equals(
-                [IO.Path]::GetFullPath($msiPath), [StringComparison]::OrdinalIgnoreCase)) {
-            throw "WSL_BITS_JOB_SOURCE_MISMATCH: '$wslBITSDisplayName' does not match the pinned URL and destination"
-        }
-        if ($candidate.JobState -in @('Error','Cancelled','Canceled','Acknowledged')) {
-            Remove-BitsTransfer -BitsJob $candidate -Confirm:$false -ErrorAction SilentlyContinue
-            continue
-        }
-        $usable += $candidate
-    }
-    if ($usable.Count -gt 1) {
-        throw "WSL_BITS_JOB_AMBIGUOUS: multiple active '$wslBITSDisplayName' jobs exist"
-    }
-    $job = if ($usable.Count -eq 1) { $usable[0] } else { $null }
-    if (-not $job) {
-        $job = Start-BitsTransfer -Source $wslMSIURL -Destination $msiPath -DisplayName $wslBITSDisplayName -Description "Pinned WSL $wslVersion runtime for LabLink" -Asynchronous
-    } elseif ($job.JobState -in @('Suspended','TransientError')) {
-        Resume-BitsTransfer -BitsJob $job -Asynchronous -ErrorAction Stop
-        $job = Get-BitsTransfer -JobId $job.JobId -ErrorAction Stop
-    }
-    if ($job.JobState -eq 'Transferred') {
-        Complete-BitsTransfer -BitsJob $job -ErrorAction Stop
-        return [pscustomobject]@{ complete=$true; state='Transferred'; id=[string]$job.JobId }
-    }
-    $bytesTotal = if ([uint64]$job.BytesTotal -gt [uint64][int64]::MaxValue) { -1 } else { [int64]$job.BytesTotal }
-    return [pscustomobject]@{
-        complete=$false; state=[string]$job.JobState; id=[string]$job.JobId
-        bytes_transferred=[int64]$job.BytesTransferred; bytes_total=$bytesTotal
-    }
 }
 function Get-LabLinkWSLDistributions {
     $result = Invoke-WSLNonTerminating @('--list','--quiet')
@@ -1087,93 +1103,27 @@ function Get-BoundedWSLMSILogTail([string]$Path) {
     if ($tail.Length -gt 2000) { return $tail.Substring($tail.Length - 2000) }
     return $tail
 }
-
+`, PSLit(statePath),
+		PSLit(linuximage.WSLRuntimeVersion), PSLit(linuximage.WSLRuntimeProductVersion),
+		PSLit(linuximage.WSLMSIURL), PSLit(linuximage.WSLMSISHA256),
+		PSLit(linuximage.WSLMSIFilename), PSLit(linuximage.WSLMSIDisplayName),
+		PSLit(linuximage.WSLDistributionName), identity)
+	body += linuxImageBuilderPreparationPowerShell
+	if machine {
+		body += linuxImageBuilderDownloadPowerShell + linuxImageBuilderMachinePhasePowerShell
+		return wrapLinuxImageBuilder(body), nil
+	}
+	body += `
 $initialState = Get-BuilderState
-Assert-BuilderStateIdentity $initialState
-
-$features = @('Microsoft-Windows-Subsystem-Linux','VirtualMachinePlatform')
-$disabled = @($features | Where-Object { (Get-WindowsOptionalFeature -Online -FeatureName $_ -ErrorAction Stop).State -ne 'Enabled' })
-if ($disabled.Count -gt 0) {
-    foreach ($feature in $disabled) {
-        Enable-WindowsOptionalFeature -Online -FeatureName $feature -All -NoRestart -ErrorAction Stop | Out-Null
-    }
-    Save-BuilderState 'features_enabled_reboot_required'
-    [pscustomobject]@{ status='reboot_required'; phase='features_enabled_reboot_required'; features=$disabled } | ConvertTo-Json -Compress
-    return
-}
-
+Assert-BuilderStateIdentity $initialState $true
+$prep = $initialState.machine_preparation
+Assert-PreparationState
+if (-not $prep.machine_ready) { throw 'BUILDER_MACHINE_NOT_READY: machine preparation must finish before user WSL setup' }
+$script:builderStateValidated = $true
+$script:builderPhase = 'user_runtime_probe'
 $runtime = Get-LabLinkWSLRuntime
 if (-not $runtime.ready) {
-    $msiReady = Test-WSLMSI
-    if (-not $msiReady) {
-        $download = Ensure-WSLMSIDownload
-        if (-not $download.complete) {
-            Save-BuilderState 'wsl_msi_downloading' '' @{
-                wsl_bits_job_id=$download.id; wsl_bits_state=$download.state
-                wsl_bits_bytes_transferred=$download.bytes_transferred; wsl_bits_bytes_total=$download.bytes_total
-            }
-            [pscustomobject]@{
-                status='setup_pending'; phase='wsl_msi_downloading'; bits_job_id=$download.id
-                bits_state=$download.state; bytes_transferred=$download.bytes_transferred
-                bytes_total=$download.bytes_total; wsl_runtime_version=$wslVersion
-            } | ConvertTo-Json -Compress
-            return
-        }
-        if (-not (Test-WSLMSI)) {
-            Save-BuilderState 'wsl_msi_verification_failed' 'Downloaded WSL MSI failed pinned hash or Microsoft signature verification'
-            throw "WSL_MSI_VERIFICATION_FAILED: quarantined downloaded MSI"
-        }
-    }
-    $msiexec = Join-Path $env:SystemRoot 'System32\msiexec.exe'
-    for ($msiAttempt = 1; $msiAttempt -le 2; $msiAttempt++) {
-        $msiLogPath = Join-Path $wslRoot ('wsl-msi-attempt-{0}.log' -f $msiAttempt)
-        Remove-Item -LiteralPath $msiLogPath -Force -ErrorAction SilentlyContinue
-        Save-BuilderState 'wsl_msi_installing' '' @{
-            wsl_msi_attempt=$msiAttempt; wsl_msi_log_path=$msiLogPath
-        }
-        $msiProcess = Start-Process -FilePath $msiexec -ArgumentList @(
-            '/i', $msiPath, '/qn', '/norestart', '/L*v', $msiLogPath
-        ) -Wait -PassThru -WindowStyle Hidden
-        $msiExit = [int]$msiProcess.ExitCode
-        Save-BuilderState 'wsl_msi_install_attempt_complete' '' @{
-            wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-        }
-        $runtime = Get-LabLinkWSLRuntime
-        if ($msiExit -eq 3010) {
-            Save-BuilderState 'wsl_msi_installed_reboot_required' '' @{
-                wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-            }
-            [pscustomobject]@{
-                status='reboot_required'; phase='wsl_msi_installed_reboot_required'
-                wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit
-                wsl_msi_log_path=$msiLogPath; wsl_runtime_version=$wslVersion
-            } | ConvertTo-Json -Compress
-            return
-        }
-        if ($runtime.ready) {
-            Save-BuilderState 'wsl_msi_installed' '' @{
-                wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-            }
-            break
-        }
-        if ($msiExit -eq 0) {
-            Save-BuilderState 'wsl_runtime_not_ready' 'Pinned MSI returned success but the WSL runtime is not ready' @{
-                wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-            }
-            throw "WSL_RUNTIME_NOT_READY: pinned MSI returned success without a real WSL runtime; log '$msiLogPath'"
-        }
-        if ($msiAttempt -lt 2) {
-            Save-BuilderState 'wsl_msi_retrying' "msiexec.exe exited $msiExit and WSL is still absent" @{
-                wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-            }
-            continue
-        }
-        $failureTail = Get-BoundedWSLMSILogTail $msiLogPath
-        Save-BuilderState 'wsl_msi_install_failed' "msiexec.exe exited $msiExit after $msiAttempt attempts" @{
-            wsl_msi_attempt=$msiAttempt; wsl_msi_exit_code=$msiExit; wsl_msi_log_path=$msiLogPath
-        }
-        throw "WSL_MSI_INSTALL_FAILED: exit $msiExit after $msiAttempt attempts; log '$msiLogPath'; tail: $failureTail"
-    }
+    throw 'WSL_RUNTIME_NOT_READY: machine MSI preparation did not produce a usable WSL runtime for the selected user'
 }
 Save-BuilderState 'wsl_runtime_ready' '' @{
     detected_wsl_command_version=$runtime.command_version
@@ -1182,8 +1132,7 @@ Save-BuilderState 'wsl_runtime_ready' '' @{
 
 $defaultVersion = Invoke-WSLNonTerminating @('--set-default-version','2')
 if (Test-RebootRequired $defaultVersion) {
-    Save-BuilderState 'wsl_default_version_reboot_required'
-    [pscustomobject]@{ status='reboot_required'; phase='wsl_default_version_reboot_required' } | ConvertTo-Json -Compress
+    Request-BuilderReboot 'wsl_default_version_reboot_required'
     return
 }
 if ($defaultVersion.exit_code -ne 0) {
@@ -1196,9 +1145,7 @@ if (@($distroList.distributions) -notcontains $distribution) {
     Save-BuilderState 'distro_installing'
     $install = Invoke-WSLNonTerminating @('--install','-d',$distribution,'--web-download','--no-launch')
     if (Test-RebootRequired $install) {
-        Save-BuilderState 'distro_install_reboot_required' (@($install.output) -join [Environment]::NewLine)
-        [pscustomobject]@{ status='reboot_required'; phase='distro_install_reboot_required'; distribution=$distribution } |
-            ConvertTo-Json -Compress
+        Request-BuilderReboot 'distro_install_reboot_required'
         return
     }
     if ($install.exit_code -ne 0) {
@@ -1207,9 +1154,7 @@ if (@($distroList.distributions) -notcontains $distribution) {
     }
     $distroList = Get-LabLinkWSLDistributions
     if (@($distroList.distributions) -notcontains $distribution) {
-        Save-BuilderState 'distro_install_reboot_required' 'Distribution install returned success but registration is not visible yet'
-        [pscustomobject]@{ status='reboot_required'; phase='distro_install_reboot_required'; distribution=$distribution } |
-            ConvertTo-Json -Compress
+        Request-BuilderReboot 'distro_install_reboot_required'
         return
     }
 }
@@ -1230,9 +1175,7 @@ $distroAlreadyV2 = $distroBeforeLine[0] -match '\s+2\s*$'
 if (-not $distroAlreadyV2) {
     $setVersion = Invoke-WSLNonTerminating @('--set-version',$distribution,'2')
     if (Test-RebootRequired $setVersion) {
-        Save-BuilderState 'distro_version_reboot_required' (@($setVersion.output) -join [Environment]::NewLine)
-        [pscustomobject]@{ status='reboot_required'; phase='distro_version_reboot_required'; distribution=$distribution } |
-            ConvertTo-Json -Compress
+        Request-BuilderReboot 'distro_version_reboot_required'
         return
     }
     if ($setVersion.exit_code -ne 0) {
@@ -1255,7 +1198,9 @@ if ($distroLine.Count -ne 1 -or $distroLine[0] -notmatch '^\s*\*' -or $distroLin
     Save-BuilderState 'distro_verification_failed' "Expected $distribution to be the default WSL2 distribution; list output: $(@($verboseList.output) -join ' | ')"
     throw "WSL_DISTRO_VERIFICATION_FAILED: $distribution is not the default version 2 distribution"
 }
+$prep.completed = $true
 Save-BuilderState 'builder_ready' '' @{
+    machine_preparation=$prep
     installed_distribution=$distribution; installed_distribution_version=2; installed_distribution_default=$true
 }
 [pscustomobject]@{
@@ -1263,12 +1208,8 @@ Save-BuilderState 'builder_ready' '' @{
     distribution_default=$true; wsl_runtime_version=$wslVersion
     builder_user=$builderUser; builder_user_sid=$builderUserSID
 } | ConvertTo-Json -Compress
-`, PSLit(statePath),
-		PSLit(linuximage.WSLRuntimeVersion), PSLit(linuximage.WSLRuntimeProductVersion),
-		PSLit(linuximage.WSLMSIURL), PSLit(linuximage.WSLMSISHA256),
-		PSLit(linuximage.WSLMSIFilename), PSLit(linuximage.WSLMSIDisplayName),
-		PSLit(linuximage.WSLDistributionName))
-	return wrapTagged(body), nil
+`
+	return wrapLinuxImageBuilder(body), nil
 }
 
 func BuildLinuxImageRecordBuilderScript(statePath, profile, vmName, nodeName string) (string, error) {

@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-24
+
+### Fixed
+
+- Headless Linux-image builders enable Windows features and transfer/install
+  the pinned WSL MSI through their existing SYSTEM guest agent; every WSL
+  command remains bound to the selected administrator's ephemeral user task.
+  The restricted local Hyper-V service boundary is unchanged.
+- Reboot-safe preparation checkpoints use exact-owner BITS job identities and
+  unique destinations, preserve foreign and legacy user jobs, verify reused
+  MSI copies, and bound startup, transfer, installer and reboot recovery.
+- Builder diagnostics retain the actual failing phase/command, HRESULT chain
+  and job identity, redact credentials, and preserve primary plus cleanup errors.
+
 ## [0.10.3] - 2026-11-24
 
 ### Fixed

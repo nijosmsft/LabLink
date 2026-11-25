@@ -601,15 +601,22 @@ configured before first start. Only the builder enables WSL features, reboots,
 detects and rejects the in-box-only `wsl.exe` stub, downloads the fixed WSL
 3.0.3 x64 MSI with resumable BITS, verifies its exact SHA-256 and Microsoft
 Authenticode signer, and then installs Ubuntu 24.04 with
-`--web-download --no-launch`. WSL setup/resume and transformation run as the
+`--web-download --no-launch`. Feature enablement and pinned MSI transfer/install
+run directly as SYSTEM through the separately enrolled builder's existing agent,
+without requiring an interactive logon. All `wsl.exe` operations and transformation run as the
 builder profile's saved normal administrator through a random, ephemeral,
 highest-run-level Scheduled Task because WSL rejects LocalSystem and keeps
 distribution registration per-user. The password travels only in the agent
 request environment, is cleared immediately after task registration, is
 redacted from transport failures/output, and never enters scripts, command
 lines, task names, paths, state, plans, or audit. Exact task/job cleanup is
-fail-closed. MSI execution uses bounded verbose logs and one retry only when
-an unexpected exit leaves WSL absent. The pinned MSI is
+fail-closed. Preparation-owned BITS jobs have persisted identities and unique
+destinations; legacy user jobs and unrelated/mismatching transfers are never
+adopted or removed. Startup, transfer, installation and reboot recovery are
+bounded across retries. MSI execution retries only installer-busy once; unknown
+interrupted installation results fail closed instead of launching another MSI.
+The host's restricted Hyper-V service identity and permissions are unchanged.
+The pinned MSI is
 `https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi`
 with SHA-256
 `ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211`.
