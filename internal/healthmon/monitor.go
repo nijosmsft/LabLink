@@ -69,8 +69,8 @@ func (m *Monitor) SetOnConnected(fn func(context.Context, *registry.Node, *pb.Ge
 	m.onConnected = fn
 }
 
-// SetBeforeProbe installs host-assisted endpoint reconciliation before the next
-// registry snapshot, including the initial startup probe.
+// SetBeforeProbe installs host-assisted endpoint reconciliation before each
+// probe cycle and after failed probes, before failures count toward offline.
 func (m *Monitor) SetBeforeProbe(fn func(context.Context) error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -229,20 +229,7 @@ func (m *Monitor) probeAll() {
 	reconcile := m.beforeProbe
 	m.mu.RUnlock()
 	if reconcile != nil {
-		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
-		err := reconcile(ctx)
-		cancel()
-		detail := ""
-		if err != nil {
-			detail = err.Error()
-		}
-		m.mu.Lock()
-		changed := detail != m.reconcileError
-		m.reconcileError = detail
-		m.mu.Unlock()
-		if err != nil && changed {
-			log.Printf("healthmon: endpoint reconciliation: %v", err)
-		}
+		m.reconcileEndpoints(reconcile)
 	}
 	if m.ctx.Err() != nil {
 		return
@@ -252,29 +239,77 @@ func (m *Monitor) probeAll() {
 		return
 	}
 
-	// Semaphore to limit concurrent probes.
+	failed := m.probeNodes(nodes, reconcile == nil)
+	if reconcile == nil || len(failed) == 0 || m.ctx.Err() != nil {
+		return
+	}
+	// DHCP may have changed after the initial discovery. Do not count failed
+	// probes until a fresh host-assisted lookup and authenticated retry finish.
+	m.reconcileEndpoints(reconcile)
+	if m.ctx.Err() != nil {
+		return
+	}
+	var retry []*registry.Node
+	for _, node := range failed {
+		if current, found := m.reg.GetNode(node.Name); found {
+			retry = append(retry, current)
+		}
+	}
+	m.probeNodes(retry, true)
+}
+
+func (m *Monitor) reconcileEndpoints(reconcile func(context.Context) error) {
+	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	err := reconcile(ctx)
+	cancel()
+	detail := ""
+	if err != nil {
+		detail = err.Error()
+	}
+	m.mu.Lock()
+	changed := detail != m.reconcileError
+	m.reconcileError = detail
+	m.mu.Unlock()
+	if err != nil && changed {
+		log.Printf("healthmon: endpoint reconciliation: %v", err)
+	}
+}
+
+func (m *Monitor) probeNodes(nodes []*registry.Node, countFailures bool) []*registry.Node {
 	sem := make(chan struct{}, maxConcurrentProbes)
 	var wg sync.WaitGroup
-
+	var failedMu sync.Mutex
+	var failed []*registry.Node
 	for _, node := range nodes {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(n *registry.Node) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			m.probeNode(n)
+			if !m.probeNodeAttempt(n, countFailures) {
+				failedMu.Lock()
+				failed = append(failed, n)
+				failedMu.Unlock()
+			}
 		}(node)
 	}
 
 	wg.Wait()
+	return failed
 }
 
 func (m *Monitor) probeNode(node *registry.Node) {
+	m.probeNodeAttempt(node, true)
+}
+
+func (m *Monitor) probeNodeAttempt(node *registry.Node, countFailures bool) bool {
 	m.refreshEndpoint(node)
 	client, err := m.pool.GetClient(node.Address, node.TLSServerName)
 	if err != nil {
-		m.recordFailure(node)
-		return
+		if countFailures && m.ctx.Err() == nil {
+			m.recordFailure(node)
+		}
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(m.ctx, m.probeTimeout)
@@ -283,11 +318,13 @@ func (m *Monitor) probeNode(node *registry.Node) {
 	info, err := client.GetInfo(ctx, &pb.GetInfoRequest{})
 	if current, found := m.reg.GetNode(node.Name); found &&
 		(current.Address != node.Address || current.TLSServerName != node.TLSServerName) {
-		return
+		return false
 	}
 	if err != nil {
-		m.recordFailure(node)
-		return
+		if countFailures && m.ctx.Err() == nil {
+			m.recordFailure(node)
+		}
+		return false
 	}
 
 	connected := m.recordSuccess(node, info.AgentVersion, true)
@@ -302,6 +339,7 @@ func (m *Monitor) probeNode(node *registry.Node) {
 		defer cancel()
 		callback(actionCtx, node, info)
 	}
+	return true
 }
 
 func (m *Monitor) refreshEndpoint(node *registry.Node) {

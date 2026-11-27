@@ -285,16 +285,6 @@ ANTI-PATTERNS — DO NOT do these things:
 	}
 	mcptools.RegisterIsolatedLifecycleTools(s, isolatedDeps)
 	localHyperV := strings.TrimSpace(os.Getenv("LABLINK_LOCAL_HYPERV_NODE"))
-	if localHyperV == "" {
-		for _, node := range reg.AllNodes() {
-			if node.Labels["lablink.local_hyperv"] == "true" {
-				if localHyperV != "" {
-					log.Fatal("multiple local Hyper-V hosts configured")
-				}
-				localHyperV = node.Name
-			}
-		}
-	}
 	mcptools.RegisterLocalVMProxy(s, reg, pool, vmDefaults, creds, isolatedStore, localHyperV)
 	endpoints := mcptools.NewVMEndpointReconciler(reg, pool, isolatedStore)
 	monitor.SetBeforeProbe(endpoints.Reconcile)

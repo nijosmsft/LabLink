@@ -42,10 +42,14 @@ func RegisterLocalVMProxy(
 				return mcp.NewToolResultError(err.Error()), nil
 			}
 			if isLocalAlias(target) {
-				if localNode == "" {
+				currentLocalNode, err := resolveLocalVMProxyHost(reg, localNode)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				if currentLocalNode == "" {
 					return original(ctx, req)
 				}
-				target = localNode
+				target = currentLocalNode
 			}
 			node, found := reg.GetNode(target)
 			if !found {
@@ -66,6 +70,11 @@ func RegisterLocalVMProxy(
 				restricted = restricted || capability == LocalHyperVCapability
 			}
 			if !restricted {
+				if node.Labels["lablink.local_hyperv"] == "true" || node.Name == localNode {
+					return mcp.NewToolResultError(fmt.Sprintf(
+						"registered local Hyper-V host %q is not in Hyper-V management mode; refusing operator-registry fallback",
+						node.Name)), nil
+				}
 				return original(ctx, req)
 			}
 			_, hasTarget := tool.InputSchema.Properties["target"]
@@ -123,6 +132,23 @@ func RegisterLocalVMProxy(
 			return result, nil
 		})
 	}
+}
+
+func resolveLocalVMProxyHost(reg *registry.Registry, configured string) (string, error) {
+	if configured = strings.TrimSpace(configured); configured != "" {
+		return configured, nil
+	}
+	localNode := ""
+	for _, node := range reg.AllNodes() {
+		if node.Labels["lablink.local_hyperv"] != "true" {
+			continue
+		}
+		if localNode != "" {
+			return "", fmt.Errorf("multiple local Hyper-V hosts configured; select an explicit target or LABLINK_LOCAL_HYPERV_NODE")
+		}
+		localNode = node.Name
+	}
+	return localNode, nil
 }
 
 func prepareLocalVMRequest(name string, req mcp.CallToolRequest, defaults *vmconfig.Store, creds *credentials.Store, hasTarget bool) (*pb.ManageVMRequest, error) {

@@ -37,6 +37,13 @@ an mTLS probe using the node's existing TLS identity. It does not scan subnets,
 start stopped VMs, change guest IP configuration or replay mutating commands.
 The protected local Hyper-V service reconciles its authoritative registry and
 returns updated node snapshots through the existing structured VM RPC.
+Before counting a failed probe toward offline status, LabLink performs another
+host-assisted endpoint refresh and retries the read-only agent probe. Concurrent
+endpoint discovery is awaited rather than silently skipped.
+
+Automatic local Hyper-V routing is resolved from the current registry on each
+request. Registering the host after MCP startup no longer sends ID-only isolated
+operations to the operator's separate database.
 
 An orchestrator management IP change refreshes its own registered endpoint and
 every active child's LabLink relay endpoint together, including offline guests.

@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.11] - 2026-11-27
+
+### Fixed
+
+- Resolve the local Hyper-V host from the current registry for each request
+  instead of caching automatic discovery at MCP startup. ID-only isolated
+  operations reach the protected host's database after late host registration.
+- Refuse operator-registry fallback when a registered local Hyper-V endpoint
+  is not in the expected management mode.
+- Recheck host-discovered VM endpoints and retry read-only agent probes before
+  counting failures toward offline status. Wait for in-flight endpoint discovery
+  rather than treating a skipped refresh as success.
+
 ## [0.10.10] - 2026-11-27
 
 ### Fixed

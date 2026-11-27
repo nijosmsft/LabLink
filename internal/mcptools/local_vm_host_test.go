@@ -3,17 +3,174 @@ package mcptools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/nijosmsft/lablink/internal/agentclient"
 	"github.com/nijosmsft/lablink/internal/credentials"
+	"github.com/nijosmsft/lablink/internal/isolatedstate"
 	"github.com/nijosmsft/lablink/internal/registry"
+	"github.com/nijosmsft/lablink/internal/security"
 	"github.com/nijosmsft/lablink/internal/vmconfig"
 	pb "github.com/nijosmsft/lablink/proto/agent"
+	"google.golang.org/grpc"
 )
+
+type isolatedRoutingAgent struct {
+	pb.UnimplementedNodeAgentServer
+	mu                sync.Mutex
+	network           string
+	requests          []string
+	withoutCapability bool
+}
+
+func (a *isolatedRoutingAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.withoutCapability {
+		return &pb.GetInfoResponse{}, nil
+	}
+	return &pb.GetInfoResponse{Capabilities: []string{LocalHyperVCapability}}, nil
+}
+
+func (a *isolatedRoutingAgent) ManageVM(req *pb.ManageVMRequest, stream grpc.ServerStreamingServer[pb.ManageVMResponse]) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var args map[string]any
+	if err := json.Unmarshal(req.ArgumentsJson, &args); err != nil {
+		return err
+	}
+	a.requests = append(a.requests, req.ToolName)
+	var result *mcp.CallToolResult
+	switch req.ToolName {
+	case "add_isolated_network":
+		a.network = "11111111-2222-4333-8444-555555555555"
+		result = simpleIsolatedResult("**Isolated network created**", isolatedstate.PrivateNetwork{
+			ID: a.network, LifecycleState: isolatedstate.NetworkReady,
+		})
+	case "create_isolated_vm":
+		if args["network_id"] != a.network || a.network == "" {
+			return fmt.Errorf("owning host cannot find network %v", args["network_id"])
+		}
+		result = mcp.NewToolResultText("owning host accepted the existing network")
+	default:
+		return fmt.Errorf("unexpected VM operation %q", req.ToolName)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return stream.Send(&pb.ManageVMResponse{ResultJson: data, NodesJson: []byte(`[]`)})
+}
+
+func TestRestrictedReadyNetworkRoutesAfterHostRegistered(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		target      string
+		modeMissing bool
+	}{
+		{"named-profile-target", "local-hyperv", false},
+		{"localhost-profile-target", "localhost", false},
+		{"wrong-service-mode-does-not-use-operator-database", "localhost", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			state, err := isolatedstate.Open(filepath.Join(dir, "isolated.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			reg := registry.Load(filepath.Join(dir, "nodes.json"))
+			defaultsPath := filepath.Join(dir, "vm-defaults.json")
+			config := fmt.Sprintf(`{"profiles":{"guest":{"guest_os":"windows","target":%q}}}`, test.target)
+			if err := os.WriteFile(defaultsPath, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+			defer pool.Close()
+			s := server.NewMCPServer("routing-test", "test")
+			s.AddTool(mcp.NewTool("add_isolated_network", mcp.WithString("target")),
+				func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					return mcp.NewToolResultError("network creation reached the operator registry"), nil
+				})
+			s.AddTool(mcp.NewTool("create_isolated_vm"),
+				createSimpleIsolatedVMHandler(&isolatedLifecycleDeps{state: state}))
+			RegisterLocalVMProxy(s, reg, pool, vmconfig.Load(defaultsPath), nil, state, "")
+			agent := &isolatedRoutingAgent{}
+			host := &registry.Node{
+				Name: "local-hyperv", Address: startNodeAgent(t, agent),
+				TLSServerName: "local-hyperv",
+				Labels:        map[string]string{"lablink.local_hyperv": "true"},
+			}
+			if err := reg.SetNode(host); err != nil {
+				t.Fatal(err)
+			}
+			created, err := s.ListTools()["add_isolated_network"].Handler(context.Background(),
+				reqNoMeta("add_isolated_network", map[string]any{"target": host.Name, "orchestrator_id": "test-orchestrator"}))
+			if err != nil || created == nil || created.IsError || !strings.Contains(toolResultText(created), "ready") {
+				t.Fatalf("network creation failed: %+v %v", created, err)
+			}
+			agent.mu.Lock()
+			networkID := agent.network
+			agent.withoutCapability = test.modeMissing
+			agent.mu.Unlock()
+			if _, err := state.GetNetwork(context.Background(), networkID); err == nil {
+				t.Fatal("fixture must keep the network in the owning host's registry, not the operator's")
+			}
+			result, err := s.ListTools()["create_isolated_vm"].Handler(context.Background(),
+				reqNoMeta("create_isolated_vm", map[string]any{
+					"network_id": networkID, "name": "guest", "guest_os": "windows", "profile": "guest",
+				}))
+			if test.modeMissing {
+				if err != nil || result == nil || !result.IsError ||
+					!strings.Contains(toolResultText(result), "refusing operator-registry fallback") {
+					t.Fatalf("wrong service mode fell back to the operator registry: %+v %v", result, err)
+				}
+				return
+			}
+			if err != nil || result == nil || result.IsError ||
+				!strings.Contains(toolResultText(result), "owning host accepted") {
+				t.Fatalf("Ready network was looked up in the wrong registry: %+v %v", result, err)
+			}
+			agent.mu.Lock()
+			defer agent.mu.Unlock()
+			if len(agent.requests) != 2 || agent.requests[1] != "create_isolated_vm" {
+				t.Fatalf("VM was not routed to the network's host: %v", agent.requests)
+			}
+		})
+	}
+}
+
+func TestLocalVMProxyHostResolvesLiveRegistryWithoutGuessing(t *testing.T) {
+	reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+	if host, err := resolveLocalVMProxyHost(reg, ""); err != nil || host != "" {
+		t.Fatalf("unexpected local host before registration: %q %v", host, err)
+	}
+	for _, name := range []string{"host-one", "host-two"} {
+		if err := reg.SetNode(&registry.Node{
+			Name: name, Labels: map[string]string{"lablink.local_hyperv": "true"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if name == "host-one" {
+			if host, err := resolveLocalVMProxyHost(reg, ""); err != nil || host != name {
+				t.Fatalf("newly registered host was not discovered: %q %v", host, err)
+			}
+		}
+	}
+	if _, err := resolveLocalVMProxyHost(reg, ""); err == nil {
+		t.Fatal("ambiguous local-host registration was silently guessed")
+	}
+	if host, err := resolveLocalVMProxyHost(reg, "host-two"); err != nil || host != "host-two" {
+		t.Fatalf("explicit host binding was not honored: %q %v", host, err)
+	}
+}
 
 func TestRestrictedVMPolicyRejectsHostEscapes(t *testing.T) {
 	h := &LocalVMHost{policy: LocalVMPolicy{

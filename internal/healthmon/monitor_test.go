@@ -2,6 +2,7 @@ package healthmon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"path/filepath"
 	"sync"
@@ -14,11 +15,87 @@ import (
 	"github.com/nijosmsft/lablink/internal/security"
 	pb "github.com/nijosmsft/lablink/proto/agent"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type recoveryProbeAgent struct {
 	pb.UnimplementedNodeAgentServer
 	responses chan *pb.GetInfoResponse
+}
+
+type unreachableProbeAgent struct {
+	pb.UnimplementedNodeAgentServer
+}
+
+func (*unreachableProbeAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {
+	return nil, status.Error(codes.Unavailable, "old endpoint is unreachable")
+}
+
+func TestFailedProbeRefreshesIPBeforeReportingOffline(t *testing.T) {
+	for _, recovered := range []bool{true, false} {
+		t.Run(fmt.Sprintf("recovered-%t", recovered), func(t *testing.T) {
+			startAgent := func(agent pb.NodeAgentServer) string {
+				t.Helper()
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := grpc.NewServer()
+				pb.RegisterNodeAgentServer(server, agent)
+				go server.Serve(listener)
+				t.Cleanup(server.Stop)
+				return listener.Addr().String()
+			}
+			oldAddress := startAgent(&unreachableProbeAgent{})
+			newAddress := startAgent(&recoveryProbeAgent{})
+			reg := registry.Load(filepath.Join(t.TempDir(), "nodes.json"))
+			node := &registry.Node{
+				Name: "orchestrator", Address: oldAddress, TLSServerName: "orchestrator",
+				Role: "isolated-orchestrator",
+			}
+			if err := reg.SetNode(node); err != nil {
+				t.Fatal(err)
+			}
+			pool := agentclient.NewPool("", security.ClientTransportConfig{Mode: security.TransportModeInsecure})
+			defer pool.Close()
+			monitor := New(reg, pool)
+			monitor.deadThreshold = 1
+			monitor.RecordAuthenticatedProbeSuccess(node)
+			oldContext := monitor.NodeContext(node.Name)
+			checks := 0
+			monitor.SetBeforeProbe(func(context.Context) error {
+				checks++
+				if checks == 2 {
+					if monitor.GetStatus(node.Name).Status == "offline" {
+						t.Error("node was declared offline before rechecking its IP")
+					}
+					if recovered {
+						next := *node
+						next.Address = newAddress
+						return reg.SetNode(&next)
+					}
+				}
+				return nil
+			})
+			monitor.probeAll()
+			if checks != 2 {
+				t.Fatalf("endpoint checks = %d, want initial and post-failure discovery", checks)
+			}
+			state := monitor.GetStatus(node.Name)
+			if recovered {
+				if state.Status != "online" || state.ConsecutiveFails != 0 ||
+					monitor.NodeContext(node.Name).Err() != nil {
+					t.Fatalf("IP change caused false offline status: %+v", state)
+				}
+			} else if state.Status != "offline" || state.ConsecutiveFails != 1 {
+				t.Fatalf("genuine unreachability was hidden after recovery check: %+v", state)
+			}
+			if oldContext.Err() != context.Canceled {
+				t.Fatal("obsolete in-flight context was retained")
+			}
+		})
+	}
 }
 
 func (a *recoveryProbeAgent) GetInfo(context.Context, *pb.GetInfoRequest) (*pb.GetInfoResponse, error) {

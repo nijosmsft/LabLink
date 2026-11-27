@@ -49,7 +49,7 @@ type vmEndpointObservation struct {
 // VMEndpointReconciler resolves managed endpoints through the owning Hyper-V
 // host, never through an unauthenticated subnet scan or an IP-derived identity.
 type VMEndpointReconciler struct {
-	mu       sync.Mutex
+	gate     chan struct{}
 	reg      *registry.Registry
 	pool     *agentclient.Pool
 	state    *isolatedstate.Store
@@ -58,7 +58,7 @@ type VMEndpointReconciler struct {
 }
 
 func NewVMEndpointReconciler(reg *registry.Registry, pool *agentclient.Pool, state *isolatedstate.Store) *VMEndpointReconciler {
-	r := &VMEndpointReconciler{reg: reg, pool: pool, state: state}
+	r := &VMEndpointReconciler{reg: reg, pool: pool, state: state, gate: make(chan struct{}, 1)}
 	r.discover = r.discoverOnHost
 	r.probe = r.probeEndpoint
 	return r
@@ -69,10 +69,12 @@ func normalizeVMMAC(value string) string {
 }
 
 func (r *VMEndpointReconciler) Reconcile(ctx context.Context) error {
-	if !r.mu.TryLock() {
-		return nil
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	defer r.mu.Unlock()
 	nodes := r.reg.AllNodes()
 	byName := make(map[string]*registry.Node, len(nodes))
 	bindings := make(map[string]map[string]vmEndpointBinding)

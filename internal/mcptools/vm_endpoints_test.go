@@ -43,6 +43,51 @@ func endpointTestNode(name, ip, vmID string) *registry.Node {
 	}
 }
 
+func TestEndpointRefreshWaitsForInFlightDiscoveryOrCancellation(t *testing.T) {
+	r := endpointTestReconciler(t)
+	node := endpointTestNode("guest", "192.0.2.10", "vm-1")
+	if err := r.reg.SetNode(node); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	r.discover = func(ctx context.Context, _ string, _ []vmEndpointBinding) ([]vmEndpointObservation, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return []vmEndpointObservation{{
+			NodeName: node.Name, VMID: "vm-1", MAC: "02155D000001", State: "Off",
+		}}, nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- r.Reconcile(context.Background()) }()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := r.Reconcile(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("busy discovery returned a success-shaped skip: %v", err)
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial endpoint refresh did not complete")
+	}
+}
+
 func TestVMEndpointRefreshRejectsUnverifiedAndWrongNICCandidates(t *testing.T) {
 	for _, test := range []struct {
 		name        string
