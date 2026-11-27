@@ -15,6 +15,59 @@ function Assert-Test([bool]$Condition,[string]$Name){
     Write-Output "PASS: $Name"
 }
 
+$stateStart=$ast.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+    $_.Left.VariablePath.UserPath -eq 'createdService'
+} | Select-Object -First 1
+$installTry=$ast.EndBlock.Statements | Where-Object {
+    $_ -is [Management.Automation.Language.TryStatementAst]
+} | Select-Object -First 1
+$installerText=[IO.File]::ReadAllText($installer)
+$stateInitialization=$installerText.Substring($stateStart.Extent.StartOffset,
+    $installTry.Extent.StartOffset-$stateStart.Extent.StartOffset)
+$bodyStatements=@($installTry.Body.Statements)
+$enrollmentStart=$bodyStatements | Where-Object {
+    $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $_.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+    $_.Left.VariablePath.UserPath -eq 'enrollArgs'
+} | Select-Object -First 1
+$enrollmentIndex=[Array]::IndexOf($bodyStatements,$enrollmentStart)
+if($enrollmentIndex -lt 0){throw 'Installer enrollment arguments are missing'}
+$enrollmentSource=($bodyStatements[$enrollmentIndex..($enrollmentIndex+2)] |
+    ForEach-Object {$_.Extent.Text}) -join [Environment]::NewLine
+foreach($scenario in @('fresh','fresh-inherited-policy','upgrade')){
+    & {
+        param($Scenario,$Initialization,$Enrollment)
+        Set-StrictMode -Version Latest
+        $service=$null
+        $PackageRoot='C:\Package'
+        $OperatorHome='C:\Operator'
+        $nodeName='local-hyperv'
+        $Port=19091
+        $VMRoot='E:\VMs'
+        $ImageRoot='E:\Images'
+        $VSwitch=@('Default Switch')
+        $VMCredential='test-profile'
+        $WindowsBaseVHD=@('E:\NewBase.vhdx')
+        if($Scenario -eq 'fresh-inherited-policy'){
+            $oldPolicy=[pscustomobject]@{base_vhds=@('E:\UnrelatedBase.vhdx')}
+            $policyExists=$true
+        }
+        . ([scriptblock]::Create($Initialization))
+        if($Scenario -eq 'upgrade'){
+            $oldPolicy=[pscustomobject]@{base_vhds=@('E:\PreviousBase.vhdx')}
+        }
+        . ([scriptblock]::Create($Enrollment))
+        $previousIndex=[Array]::IndexOf($enrollArgs,'--previous-windows-base')
+        if($Scenario -eq 'upgrade'){
+            Assert-Test ($previousIndex -ge 0 -and $enrollArgs[$previousIndex+1] -eq 'E:\PreviousBase.vhdx') 'strict-mode upgrade preserves previous Windows base migration'
+        }else{
+            Assert-Test ($previousIndex -lt 0) "strict-mode $Scenario does not use a previous Windows base"
+        }
+    } $scenario $stateInitialization $enrollmentSource
+}
+
 $script:prefs=[pscustomobject]@{ExclusionPath=@('C:\Protected\Code');ExclusionProcess=@()}
 $script:additions=0
 function Get-MpPreference {

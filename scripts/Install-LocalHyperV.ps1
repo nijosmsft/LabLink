@@ -242,6 +242,8 @@ function Set-PrivateDirectory([string]$Path,[string]$ServiceAccess) {
     Set-Acl -LiteralPath $Path -AclObject $secure -ErrorAction Stop
 }
 $createdService=$false
+$oldPolicy=$null
+$policyExists=$false
 $addedMembership=$false
 $grantedRights=[Collections.Generic.List[string]]::new()
 $previousTemp=$env:TEMP

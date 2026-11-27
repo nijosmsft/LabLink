@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-11-27
+
+### Fixed
+
+- Initialize previous-policy state before the local Hyper-V install/upgrade
+  branches so a fresh install works when the caller enables PowerShell strict
+  mode and does not inherit an unrelated policy from the caller.
+
 ## [0.10.9] - 2026-11-25
 
 ### Fixed
